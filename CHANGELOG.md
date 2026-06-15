@@ -6,10 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-16
+
+### Added
+- **Log tab** (Tunnels / Log) showing recent activity — the app's audit log plus
+  `wg-quick` service entries — with a Refresh button.
+
 ### Changed
+- The **Activate/Deactivate** button now sits below the interface details and
+  **Edit** sits at the bottom-right of the window, matching the WireGuard for
+  Windows client.
 - Updated dependencies (`rfd` 0.14 → 0.15) and pinned all GitHub Actions to
   their latest releases (checkout v6, rust-cache v2.9.1, gh-release v3) — also
   clears the Node 20 deprecation warning in CI.
+
+### Fixed
+- **Text inputs no longer render blank on a light background.** Root cause: in a
+  dark OS color scheme the std-widgets used near-white field fills that vanished
+  on white windows (visible only when focused). The app now forces the light
+  palette (`Palette.color-scheme = light`, built with the `fluent-light` style),
+  so the editor and inputs render correctly on the light theme.
 
 ## [0.2.0] - 2026-06-16
 
@@ -64,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/JamilleJung/wireguard-gui/releases/tag/v0.1.0

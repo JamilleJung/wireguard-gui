@@ -118,6 +118,14 @@ case "$verb" in
         validate_name "${1:-}"
         systemctl is-enabled "wg-quick@$1" 2>/dev/null || true
         ;;
+    log)
+        # Recent activity: this app's audit entries + wg-quick service logs.
+        echo "===== wireguard-gui activity ====="
+        journalctl --no-pager -o short-iso -n 300 -t "$LOG_TAG" 2>/dev/null || true
+        echo
+        echo "===== wg-quick (systemd) ====="
+        journalctl --no-pager -o short-iso -n 200 -u 'wg-quick@*' 2>/dev/null || true
+        ;;
     *)
         die "unknown verb: $verb"
         ;;
