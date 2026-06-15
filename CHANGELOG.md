@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-16
+
+### Added
+- The tray menu now shows a connection-status header, a hover tooltip listing
+  active tunnels, a **Tunnels** submenu, and a **Deactivate all** action; it
+  refreshes live.
+
+### Fixed
+- The **Edit** button's tooltip no longer overflows the right edge of the window.
+
 ## [1.1.0] - 2026-06-16
 
 ### Added
@@ -99,7 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.1.0...v0.2.0
