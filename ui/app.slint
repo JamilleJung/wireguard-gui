@@ -506,8 +506,14 @@ export component EditWindow inherits Window {
 
     // IMPORTANT: do NOT set `background` on the Window or any ancestor Rectangle
     // of these text inputs — on this GNOME-Wayland/femtovg setup that makes
-    // LineEdit/TextEdit render blank. The editor therefore uses the default
-    // (dark) theme. No `min-height` on the TextEdit either (Slint #6896).
+    // White look WITHOUT the bug: the background is painted by a sibling
+    // Rectangle BEHIND the content, never by the Window or by an ancestor of
+    // the text inputs (an ancestor background makes LineEdit/TextEdit render
+    // blank on this GNOME-Wayland/femtovg stack). No `min-height` on the
+    // TextEdit either (Slint #6896).
+    Rectangle {
+        background: white;
+    }
     Rectangle {
         VerticalLayout {
             padding: 18px;

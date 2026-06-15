@@ -215,6 +215,20 @@ falls back to `pkexec` (which prompts).
 
 ---
 
+## ⚠️ Known limitations
+
+- **Built & tested on x86_64, GNOME/Wayland.** It should work on other desktops
+  and X11, but those are less tested. Prebuilt binaries are x86_64 only — other
+  architectures can build from source.
+- **No in-app key generation yet.** Paste keys or import a `.conf`; the editor
+  validates them. (`wg genkey` integration is a nice future addition.)
+- **Multiple peers** are shown (one card each) and editable via the raw config,
+  but there's no dedicated add/remove-peer UI yet.
+- **AppImage privileged actions** work best with a system helper present — run
+  `install.sh` once, or use the `.deb`, for passwordless control.
+
+---
+
 ## 🧗 The story behind it — pain points & fixes
 
 I built this because the existing Linux options either hide WireGuard behind
@@ -249,9 +263,11 @@ the difference one property at a time, the trigger was finally clear:
 **setting `background` on the `Window` (or any ancestor of the text input) makes
 those widgets render blank on this Slint + GNOME-Wayland setup.** Remove the
 explicit background and they render instantly.
-**Fix:** the editor window doesn't set `Window.background` at all (so it uses the
-default theme behind the inputs). Related gotcha found along the way: an explicit
-`min-height` on a `TextEdit` can also suppress its text on femtovg
+**Fix:** never make a background an *ancestor* of a text input. The editor paints
+its white backdrop with a sibling `Rectangle` *behind* the content layer instead
+of setting `Window.background`, so it matches the light main window **and** the
+inputs render. Related gotcha found along the way: an explicit `min-height` on a
+`TextEdit` can also suppress its text on femtovg
 ([Slint #6896](https://github.com/slint-ui/slint/issues/6896)) — so that's avoided too.
 
 ### 3. Running privileged operations without nagging for a password
