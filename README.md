@@ -38,6 +38,14 @@ single native binary. No Electron, no web view.
 
 ---
 
+## 📸 Screenshots
+
+| Tunnel detail (active) | Inactive tunnel | Config editor |
+|:---:|:---:|:---:|
+| ![active](docs/screenshot.png) | ![inactive](docs/screenshot-inactive.png) | ![editor](docs/screenshot-editor.png) |
+
+---
+
 ## 🚀 Install (one command)
 
 ```sh
