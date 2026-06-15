@@ -14,7 +14,7 @@ single native binary. No Electron, no web view.
 ![screenshot](docs/screenshot.png)
 
 [![CI](https://github.com/JamilleJung/wireguard-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/JamilleJung/wireguard-gui/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/JamilleJung/wireguard-gui?display_name=tag&sort=semver)](https://github.com/JamilleJung/wireguard-gui/releases)
+[![Releases](https://img.shields.io/badge/Releases-latest-2ea44f)](https://github.com/JamilleJung/wireguard-gui/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-success.svg)
