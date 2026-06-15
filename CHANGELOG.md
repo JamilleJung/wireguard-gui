@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Updated dependencies (`rfd` 0.14 → 0.15) and pinned all GitHub Actions to
+  their latest releases (checkout v6, rust-cache v2.9.1, gh-release v3) — also
+  clears the Node 20 deprecation warning in CI.
+
 ## [0.2.0] - 2026-06-16
 
 ### Added
