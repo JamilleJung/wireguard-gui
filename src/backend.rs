@@ -642,6 +642,25 @@ pub fn validate_config(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// True if the config contains directives that `wg-quick` runs as **root** on
+/// activation (`PostUp`/`PreUp`/`PostDown`/`PreDown`). Used to warn the user
+/// before they save/activate a config from an untrusted source.
+pub fn config_runs_scripts(text: &str) -> bool {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, _)) = line.split_once('=') {
+            let k = key.trim().to_ascii_lowercase();
+            if matches!(k.as_str(), "postup" | "preup" | "postdown" | "predown") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Make a safe tunnel/interface name from an imported file name.
 pub fn sanitize_name(file_stem: &str) -> String {
     let cleaned: String = file_stem

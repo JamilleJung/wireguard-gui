@@ -45,12 +45,31 @@ Hardening in `wg-helper`:
   `pkexec` without a password for an **active local session** only.
 - If neither is configured, the app falls back to `pkexec`, which prompts.
 
+### Config hooks run as root — only import configs you trust
+
+WireGuard configs may contain `PostUp` / `PreUp` / `PostDown` / `PreDown`
+directives, which **`wg-quick` runs as root** when the tunnel is activated. A
+malicious `.conf` could therefore run arbitrary root commands on activation.
+
+This is inherent to `wg-quick` (the same risk as running `wg-quick up` on any
+config by hand) — it is **not** a flaw specific to this app. To mitigate it, the
+editor shows an amber warning whenever a config contains those directives. Treat
+importing a `.conf` like running a script: only do it from sources you trust.
+
 ### Notes & scope
 
+- The privileged surface is the `wg-helper` script: fixed `PATH` and `WG_DIR`,
+  strict name validation (no shell metacharacters, no path traversal), and no
+  use of `eval`/shell-interpolation of inputs (the Rust side spawns it with
+  `execve`-style argv, never a shell).
 - Config files contain private keys in clear text (same as upstream WireGuard
-  tools). They are stored `0600`, root-owned. The editor displays them in clear
-  text by design.
+  tools). They are stored `0600`, root-owned, in `/etc/wireguard` (mode `700`).
+  The editor displays them in clear text by design. The audit log records
+  actions and tunnel names only — **never** key material.
 - Treat the `sudoers`/`polkit` grant as "this local user may control WireGuard
   without a password" — equivalent to the trust you'd place in `wg-quick`.
-- Prebuilt release artifacts are published with a `SHA256SUMS` file; verify with
-  `sha256sum -c SHA256SUMS --ignore-missing`.
+- Supply chain: prebuilt release artifacts are published with a `SHA256SUMS`
+  file — verify with `sha256sum -c SHA256SUMS --ignore-missing`. Release builds
+  run in GitHub Actions; third-party Actions are pinned to major-version tags
+  and the AppImage step fetches `linuxdeploy` at build time (commit-SHA pinning
+  and signed releases are planned hardening).

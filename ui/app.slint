@@ -501,6 +501,7 @@ export component EditWindow inherits Window {
     in-out property <string> tunnel-name: "";
     in-out property <string> config-text: "";
     in property <string> error: "";
+    in property <string> warning: "";
     callback save(string, string);
     callback cancel();
 
@@ -545,6 +546,14 @@ export component EditWindow inherits Window {
             TextEdit {
                 vertical-stretch: 1;
                 text <=> root.config-text;
+            }
+
+            Text {
+                visible: root.warning != "";
+                text: root.warning;
+                color: #b06a00;
+                font-size: 12px;
+                wrap: word-wrap;
             }
 
             Text {
