@@ -17,7 +17,7 @@ jobs:
     name: Build artifacts & publish release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Version from tag
         id: ver
@@ -33,10 +33,10 @@ jobs:
             file desktop-file-utils
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build release binary
         run: cargo build --release
@@ -77,7 +77,9 @@ jobs:
           cp packaging/wg-helper "$APPDIR/usr/lib/wireguard-gui/"
           cp packaging/wireguard-gui.desktop "$APPDIR/usr/share/applications/"
           cp packaging/wireguard-gui.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
-          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          # Pinned linuxdeploy release + verified checksum (supply-chain hardening)
+          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+          echo "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  linuxdeploy" | sha256sum -c -
           chmod +x linuxdeploy
           ./linuxdeploy --appdir "$APPDIR" \
             -e "$APPDIR/usr/bin/wireguard-gui" \
@@ -91,8 +93,25 @@ jobs:
         run: |
           sha256sum *.tar.gz *.deb *.AppImage 2>/dev/null | tee SHA256SUMS
 
+      # ---------------- sign the checksums (minisign) ----------------
+      - name: Sign SHA256SUMS with minisign
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then
+            echo "::warning::MINISIGN_KEY secret not set — skipping signature"
+            exit 0
+          fi
+          sudo apt-get install -y --no-install-recommends minisign
+          printf '%s\n' "$MINISIGN_KEY" > minisign.key
+          minisign -S -s minisign.key -m SHA256SUMS \
+            -t "wireguard-gui ${{ steps.ver.outputs.v }}"
+          rm -f minisign.key
+          echo "Verifying signature with the committed public key…"
+          minisign -Vm SHA256SUMS -p minisign.pub
+
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
           files: |
@@ -100,3 +119,5 @@ jobs:
             *.deb
             *.AppImage
             SHA256SUMS
+            SHA256SUMS.minisig
+            minisign.pub

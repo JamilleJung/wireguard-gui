@@ -37,6 +37,13 @@ fn open_editor(
     };
     ed.set_is_new(is_new);
     ed.set_tunnel_name(prefill_name.into());
+    if backend::config_runs_scripts(&text) {
+        ed.set_warning(
+            "⚠ This config runs commands as root on activation (PostUp/PreUp/…). \
+             Only save it if you trust the source."
+                .into(),
+        );
+    }
     ed.set_config_text(text.into());
 
     // Cancel: just hide (the strong handle lives in EDITOR until next open).

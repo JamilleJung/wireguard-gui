@@ -501,13 +501,20 @@ export component EditWindow inherits Window {
     in-out property <string> tunnel-name: "";
     in-out property <string> config-text: "";
     in property <string> error: "";
+    in property <string> warning: "";
     callback save(string, string);
     callback cancel();
 
     // IMPORTANT: do NOT set `background` on the Window or any ancestor Rectangle
     // of these text inputs — on this GNOME-Wayland/femtovg setup that makes
-    // LineEdit/TextEdit render blank. The editor therefore uses the default
-    // (dark) theme. No `min-height` on the TextEdit either (Slint #6896).
+    // White look WITHOUT the bug: the background is painted by a sibling
+    // Rectangle BEHIND the content, never by the Window or by an ancestor of
+    // the text inputs (an ancestor background makes LineEdit/TextEdit render
+    // blank on this GNOME-Wayland/femtovg stack). No `min-height` on the
+    // TextEdit either (Slint #6896).
+    Rectangle {
+        background: white;
+    }
     Rectangle {
         VerticalLayout {
             padding: 18px;
@@ -539,6 +546,14 @@ export component EditWindow inherits Window {
             TextEdit {
                 vertical-stretch: 1;
                 text <=> root.config-text;
+            }
+
+            Text {
+                visible: root.warning != "";
+                text: root.warning;
+                color: #b06a00;
+                font-size: 12px;
+                wrap: word-wrap;
             }
 
             Text {

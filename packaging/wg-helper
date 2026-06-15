@@ -10,6 +10,11 @@
 # any filesystem or `wg` operation, and every mutating action is logged.
 set -euo pipefail
 
+# Run with a known-good PATH. sudo's `secure_path` and pkexec normally reset
+# PATH, but not every distro configures secure_path — set it ourselves so a
+# hijacked caller PATH can never point us at a malicious `wg`/`logger`/etc.
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+
 # Fixed paths — never taken from the (untrusted) caller's environment.
 readonly WG_DIR="/etc/wireguard"
 readonly BACKUP_DIR="${WG_DIR}/.backup"

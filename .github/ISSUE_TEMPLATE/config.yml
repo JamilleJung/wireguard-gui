@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/JamilleJung/wireguard-gui/security/advisories/new
+    about: Please report security issues privately, not as a public issue.
+  - name: 💬 Questions & ideas
+    url: https://github.com/JamilleJung/wireguard-gui/discussions
+    about: For usage questions and open-ended discussion.

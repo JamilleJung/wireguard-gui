@@ -1,0 +1,56 @@
+name: 🐛 Bug report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report! A few details make bugs much faster to fix.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: Steps to reproduce, expected vs actual…
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, or `git rev-parse --short HEAD` if built from source.
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distro & package manager
+      placeholder: "Ubuntu 24.04 (apt) / Arch (pacman) / Fedora 41 (dnf) …"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - install.sh (sudoers)
+        - install.sh --polkit
+        - .deb
+        - AppImage
+        - built from source
+    validations:
+      required: true
+  - type: input
+    id: session
+    attributes:
+      label: Desktop / session
+      placeholder: "GNOME on Wayland, KDE on X11, …  (echo $XDG_SESSION_TYPE)"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant output. Helpful commands:
+        `journalctl -t wireguard-gui --no-pager | tail -n 50`
+        and run the app from a terminal to capture its stderr.
+      render: shell
