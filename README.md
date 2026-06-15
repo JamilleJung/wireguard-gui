@@ -13,6 +13,8 @@ single native binary. No Electron, no web view.
 
 ![screenshot](docs/screenshot.png)
 
+[![CI](https://github.com/JamilleJung/wireguard-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/JamilleJung/wireguard-gui/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/JamilleJung/wireguard-gui?display_name=tag&sort=semver)](https://github.com/JamilleJung/wireguard-gui/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-success.svg)
@@ -83,6 +85,41 @@ manually, then still builds and installs.
 ./install.sh uninstall
 ```
 
+### Auth backend: sudoers (default) or polkit
+
+```sh
+./install.sh            # sudoers drop-in (light & fast — the default)
+./install.sh --polkit   # polkit rule instead (cleaner desktop integration)
+```
+
+Both make privileged tunnel control passwordless for your active local session.
+`sudoers` is simplest; `polkit` is the more "native desktop app" path (and is
+what the `.deb` uses automatically).
+
+---
+
+## 📦 Download prebuilt (no compiler needed)
+
+Every tagged release on the [**Releases**](https://github.com/JamilleJung/wireguard-gui/releases)
+page ships these, built by GitHub Actions:
+
+| Artifact | For |
+|----------|-----|
+| `wireguard-gui_*_amd64.deb` | Debian/Ubuntu — `sudo apt install ./wireguard-gui_*_amd64.deb` (sets up the polkit rule automatically) |
+| `wireguard-gui-*-x86_64.AppImage` | Any distro — `chmod +x *.AppImage && ./*.AppImage` |
+| `wireguard-gui-*-x86_64-linux.tar.gz` | Portable binary bundle + `install.sh` |
+| `SHA256SUMS` | Checksums for everything above |
+
+Verify your download:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+> The `.deb` is the smoothest prebuilt option (desktop integration + passwordless
+> polkit). The AppImage is fully portable; for passwordless privileged actions it
+> still benefits from a system helper (run `install.sh` once, or use the `.deb`).
+
 ---
 
 ## 🛠️ Manual build (for developers)
@@ -134,10 +171,28 @@ auditable shell script, **`wg-helper`**, which validates every tunnel name and
 exposes only a fixed set of verbs (`list`, `read`, `dump`, `up`, `down`, `save`,
 `delete`, …).
 
-`install.sh` whitelists **only that script** in `/etc/sudoers.d/wireguard-gui`,
-so the GUI never needs your password at runtime and the privileged surface stays
-tiny. If the helper isn't set up for passwordless `sudo`, the app falls back to
-`pkexec` (which prompts).
+`install.sh` whitelists **only that script** (via a `sudoers` drop-in, or a
+`polkit` rule with `--polkit` / the `.deb`), so the GUI never needs your password
+at runtime and the privileged surface stays tiny. If neither is set up, the app
+falls back to `pkexec` (which prompts).
+
+**Hardening built into `wg-helper`:**
+
+- **Fixed paths** — `WG_DIR` is hard-coded to `/etc/wireguard`; nothing comes from
+  the caller's environment.
+- **No path traversal** — tunnel names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`
+  and may never be `.`/`..` or contain `..`, so the target path can't escape the
+  config directory. (Verified: `read ../../etc/passwd` is rejected.)
+- **Atomic writes** — `save` writes to a temp file and `rename()`s it into place,
+  so a crash mid-write can't leave a truncated config.
+- **Backups before destruction** — every `save` (overwrite) and **`delete`** first
+  copies the current config to `/etc/wireguard/.backup/<name>.conf.<timestamp>`
+  (mode `600`). The delete button is deliberately reversible.
+- **Audit log** — `save`/`delete`/`up`/`down`/`enable`/`disable` and every backup
+  are logged to the system journal:
+  ```sh
+  journalctl -t wireguard-gui
+  ```
 
 ---
 

@@ -300,7 +300,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let w = ui.as_weak();
         ui.on_add_empty(move || {
             let ui = w.unwrap();
-            open_editor(&ui, true, String::new(), String::new(), TEMPLATE.to_string());
+            open_editor(
+                &ui,
+                true,
+                String::new(),
+                String::new(),
+                TEMPLATE.to_string(),
+            );
         });
     }
 

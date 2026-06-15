@@ -19,7 +19,21 @@ HELPER="$LIBDIR/wg-helper"
 DESKTOP="$PREFIX/share/applications/wireguard-gui.desktop"
 ICON_DIR="$PREFIX/share/icons/hicolor/scalable/apps"
 SUDOERS="/etc/sudoers.d/wireguard-gui"
+POLKIT_RULE="/etc/polkit-1/rules.d/49-wireguard-gui.rules"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Args:  [uninstall] [--polkit | --sudoers]
+# ---------------------------------------------------------------------------
+ACTION="install"; AUTH_MODE="sudoers"
+for arg in "$@"; do
+    case "$arg" in
+        uninstall)  ACTION="uninstall" ;;
+        --polkit)   AUTH_MODE="polkit" ;;
+        --sudoers)  AUTH_MODE="sudoers" ;;
+        *) ;;
+    esac
+done
 
 # ---------------------------------------------------------------------------
 # Pretty output
@@ -49,9 +63,9 @@ fi
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
-if [ "${1:-}" = "uninstall" ]; then
+if [ "$ACTION" = "uninstall" ]; then
     say "Removing wireguard-gui"
-    $SUDO rm -f "$BIN" "$HELPER" "$DESKTOP" "$SUDOERS" "$ICON_DIR/wireguard-gui.svg"
+    $SUDO rm -f "$BIN" "$HELPER" "$DESKTOP" "$SUDOERS" "$POLKIT_RULE" "$ICON_DIR/wireguard-gui.svg"
     $SUDO rm -rf "$LIBDIR"
     command -v update-desktop-database >/dev/null 2>&1 && \
         $SUDO update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
@@ -149,14 +163,23 @@ command -v update-desktop-database >/dev/null 2>&1 && \
     $SUDO update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
 ok "Files installed."
 
-say "Granting passwordless access to the wg-helper for $REAL_USER"
-printf '%s ALL=(root) NOPASSWD: %s\n' "$REAL_USER" "$HELPER" | $SUDO tee "$SUDOERS" >/dev/null
-$SUDO chmod 440 "$SUDOERS"
-if $SUDO visudo -cf "$SUDOERS" >/dev/null 2>&1; then
-    ok "sudoers drop-in valid."
-else
+if [ "$AUTH_MODE" = "polkit" ]; then
+    say "Installing polkit rule (passwordless for active local sessions)"
     $SUDO rm -f "$SUDOERS"
-    warn "sudoers validation failed; removed it. The app will fall back to pkexec (will prompt)."
+    $SUDO install -d /etc/polkit-1/rules.d
+    $SUDO install -m644 "$HERE/packaging/49-wireguard-gui.rules" "$POLKIT_RULE"
+    ok "polkit rule installed at $POLKIT_RULE"
+else
+    say "Granting passwordless access to the wg-helper for $REAL_USER (sudoers)"
+    $SUDO rm -f "$POLKIT_RULE"
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$REAL_USER" "$HELPER" | $SUDO tee "$SUDOERS" >/dev/null
+    $SUDO chmod 440 "$SUDOERS"
+    if $SUDO visudo -cf "$SUDOERS" >/dev/null 2>&1; then
+        ok "sudoers drop-in valid."
+    else
+        $SUDO rm -f "$SUDOERS"
+        warn "sudoers validation failed; removed it. The app will fall back to pkexec (will prompt)."
+    fi
 fi
 
 printf "\n${G}${B}Done!${N} Launch ${B}WireGuard${N} from your app menu, or run: ${B}wireguard-gui${N}\n"

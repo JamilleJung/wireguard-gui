@@ -252,9 +252,7 @@ pub fn get_detail(name: &str) -> Detail {
                 latest_handshake: lp
                     .map(|x| fmt_handshake(x.latest_handshake))
                     .unwrap_or_default(),
-                transfer: lp
-                    .map(|x| fmt_transfer(x.rx, x.tx))
-                    .unwrap_or_default(),
+                transfer: lp.map(|x| fmt_transfer(x.rx, x.tx)).unwrap_or_default(),
                 public_key: p.public_key,
             }
         })
@@ -595,6 +593,10 @@ pub fn sanitize_name(file_stem: &str) -> String {
         })
         .collect();
     let trimmed = cleaned.trim_matches('.');
-    let s = if trimmed.is_empty() { "tunnel" } else { trimmed };
+    let s = if trimmed.is_empty() {
+        "tunnel"
+    } else {
+        trimmed
+    };
     s.chars().take(15).collect()
 }

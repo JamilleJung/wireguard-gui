@@ -26,3 +26,21 @@ lto = true
 strip = true
 codegen-units = 1
 panic = "abort"
+
+# `cargo deb` packaging — installs to /usr and uses the polkit rule for auth.
+[package.metadata.deb]
+maintainer = "jamillejung <izeystudio@gmail.com>"
+copyright = "2026 wireguard-gui contributors"
+license-file = ["LICENSE", "0"]
+section = "net"
+priority = "optional"
+extended-description = "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client: tunnel list, live status, activate/deactivate, import, and an inline config editor with validation."
+depends = "$auto, wireguard-tools, libfontconfig1, libxkbcommon0, libgl1, libegl1, polkit-1 | policykit-1"
+assets = [
+    ["target/release/wireguard-gui", "usr/bin/", "755"],
+    ["packaging/wg-helper", "usr/lib/wireguard-gui/wg-helper", "755"],
+    ["packaging/wireguard-gui.desktop", "usr/share/applications/", "644"],
+    ["packaging/wireguard-gui.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["packaging/49-wireguard-gui.rules", "etc/polkit-1/rules.d/", "644"],
+    ["README.md", "usr/share/doc/wireguard-gui/README.md", "644"],
+]
