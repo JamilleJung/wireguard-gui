@@ -85,19 +85,19 @@ done
 # (fontconfig + xkbcommon), an OpenGL runtime, plus curl/git and wireguard-tools.
 case "$PM" in
     apt-get)
-        PKGS="build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 curl git wireguard-tools" ;;
+        PKGS="build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 libdbus-1-dev curl git wireguard-tools" ;;
     dnf|yum)
-        PKGS="gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel mesa-libGL mesa-libEGL curl git wireguard-tools" ;;
+        PKGS="gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel mesa-libGL mesa-libEGL dbus-devel curl git wireguard-tools" ;;
     pacman)
-        PKGS="base-devel fontconfig libxkbcommon libglvnd curl git wireguard-tools" ;;
+        PKGS="base-devel fontconfig libxkbcommon libglvnd dbus curl git wireguard-tools" ;;
     zypper)
-        PKGS="gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel Mesa-libGL1 Mesa-libEGL1 curl git wireguard-tools" ;;
+        PKGS="gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel Mesa-libGL1 Mesa-libEGL1 dbus-1-devel curl git wireguard-tools" ;;
     apk)
-        PKGS="build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-gl mesa-egl curl git wireguard-tools" ;;
+        PKGS="build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-gl mesa-egl dbus-dev curl git wireguard-tools" ;;
     xbps-install)
-        PKGS="base-devel fontconfig-devel libxkbcommon-devel MesaLib curl git wireguard-tools" ;;
+        PKGS="base-devel fontconfig-devel libxkbcommon-devel MesaLib dbus-devel curl git wireguard-tools" ;;
     eopkg)
-        PKGS="system.devel fontconfig-devel libxkbcommon-devel mesalib-devel curl git wireguard-tools" ;;
+        PKGS="system.devel fontconfig-devel libxkbcommon-devel mesalib-devel dbus-devel curl git wireguard-tools" ;;
     *)
         PM=""
         warn "Could not detect a supported package manager."

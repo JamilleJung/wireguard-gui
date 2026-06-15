@@ -4,19 +4,176 @@
 mod backend;
 
 use std::cell::RefCell;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 slint::include_modules!();
 
+/// The currently-selected tunnel name, shared with the background poll thread
+/// so it can fetch live status off the UI thread (keeps the UI smooth).
+static SELECTED: Mutex<Option<String>> = Mutex::new(None);
+
 thread_local! {
     // Keeps the currently-open editor window alive. Replaced (and the old one
     // dropped) on the next open; only ever touched on the UI thread.
     static EDITOR: RefCell<Option<EditWindow>> = const { RefCell::new(None) };
-    // True while the editor window is open. The main-window poll pauses then,
-    // so its periodic repaints don't blank the editor's text fields.
-    static EDITOR_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Keeps the currently-open QR window alive.
+    static QRWIN: RefCell<Option<QrWindow>> = const { RefCell::new(None) };
+    // Keeps the About window alive.
+    static ABOUTWIN: RefCell<Option<AboutWindow>> = const { RefCell::new(None) };
+    // Long-lived clipboard handle (kept alive so the copied text persists).
+    static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+}
+
+/// System-tray icon (StatusNotifierItem). Shows on KDE, and on GNOME with the
+/// AppIndicator extension. Menu: Show the window, or Quit.
+struct Tray {
+    window: slint::Weak<MainWindow>,
+}
+
+impl ksni::Tray for Tray {
+    fn id(&self) -> String {
+        "wireguard-gui".into()
+    }
+    fn title(&self) -> String {
+        "WireGuard".into()
+    }
+    fn icon_name(&self) -> String {
+        "wireguard-gui".into()
+    }
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+        let mut items: Vec<ksni::MenuItem<Self>> = vec![
+            StandardItem {
+                label: "Show WireGuard".into(),
+                activate: Box::new(|this: &mut Self| {
+                    let _ = this.window.upgrade_in_event_loop(|ui| {
+                        let _ = ui.show();
+                    });
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+        ];
+
+        // One toggle per tunnel — checked = active. Rebuilt each time the menu
+        // opens, so it reflects current state.
+        for t in backend::list_tunnels() {
+            let name = t.name.clone();
+            let active = t.active;
+            items.push(
+                CheckmarkItem {
+                    label: name.clone(),
+                    checked: active,
+                    activate: Box::new(move |_: &mut Self| {
+                        if active {
+                            let _ = backend::deactivate(&name);
+                        } else {
+                            let _ = backend::activate(&name);
+                        }
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
+        items.push(MenuItem::Separator);
+        items.push(
+            StandardItem {
+                label: "Quit".into(),
+                activate: Box::new(|_: &mut Self| {
+                    let _ = slint::invoke_from_event_loop(|| {
+                        let _ = slint::quit_event_loop();
+                    });
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        items
+    }
+}
+
+/// Open a URL in the user's default browser.
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// Copy text to the system clipboard. Returns whether it succeeded.
+fn copy_to_clipboard(text: &str) -> bool {
+    CLIPBOARD.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_none() {
+            *c = arboard::Clipboard::new().ok();
+        }
+        c.as_mut()
+            .map(|cb| cb.set_text(text.to_string()).is_ok())
+            .unwrap_or(false)
+    })
+}
+
+/// Replace (or insert) the `PrivateKey` line in a config with `key`.
+fn set_private_key(config: &str, key: &str) -> String {
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in config.lines() {
+        let t = line.trim_start().to_ascii_lowercase();
+        if !replaced && t.starts_with("privatekey") && line.contains('=') {
+            out.push_str(&format!("PrivateKey = {key}\n"));
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if replaced {
+        return out;
+    }
+    // No PrivateKey line: insert after the first [Interface], else prepend.
+    if let Some(pos) = out.to_ascii_lowercase().find("[interface]") {
+        let nl = out[pos..]
+            .find('\n')
+            .map(|n| pos + n + 1)
+            .unwrap_or(out.len());
+        out.insert_str(nl, &format!("PrivateKey = {key}\n"));
+        out
+    } else {
+        format!("[Interface]\nPrivateKey = {key}\n{out}")
+    }
+}
+
+/// Render a string to a black-on-white QR-code Slint image.
+fn qr_image(text: &str) -> slint::Image {
+    use slint::{Rgba8Pixel, SharedPixelBuffer};
+    let (scale, quiet) = (8usize, 4usize);
+    let code = match qrcode::QrCode::new(text.as_bytes()) {
+        Ok(c) => c,
+        Err(_) => return slint::Image::default(),
+    };
+    let modules = code.width();
+    let colors = code.to_colors();
+    let px = (modules + 2 * quiet) * scale;
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(px as u32, px as u32);
+    let bytes = buf.make_mut_bytes();
+    for y in 0..px {
+        for x in 0..px {
+            let mx = (x / scale).wrapping_sub(quiet);
+            let my = (y / scale).wrapping_sub(quiet);
+            let dark =
+                mx < modules && my < modules && colors[my * modules + mx] == qrcode::Color::Dark;
+            let v = if dark { 0u8 } else { 255u8 };
+            let i = (y * px + x) * 4;
+            bytes[i] = v;
+            bytes[i + 1] = v;
+            bytes[i + 2] = v;
+            bytes[i + 3] = 255;
+        }
+    }
+    slint::Image::from_rgba8(buf)
 }
 
 /// Open the tunnel editor in its own top-level window. A fresh window paints
@@ -44,13 +201,28 @@ fn open_editor(
                 .into(),
         );
     }
+    ed.set_public_key(backend::public_key_for_config(&text).into());
     ed.set_config_text(text.into());
+
+    // Live-update the public key as the config is edited.
+    {
+        let edw = ed.as_weak();
+        ed.on_config_changed(move |cfg| {
+            if let Some(ed) = edw.upgrade() {
+                ed.set_public_key(backend::public_key_for_config(&cfg).into());
+            }
+        });
+    }
+
+    // Copy (public key / config) to the clipboard.
+    ed.on_copy(move |t| {
+        copy_to_clipboard(&t);
+    });
 
     // Cancel: just hide (the strong handle lives in EDITOR until next open).
     {
         let edw = ed.as_weak();
         ed.on_cancel(move || {
-            EDITOR_OPEN.with(|f| f.set(false));
             if let Some(ed) = edw.upgrade() {
                 let _ = ed.hide();
             }
@@ -94,12 +266,28 @@ fn open_editor(
                 refresh_list(&main);
                 select_by_name(&main, &name);
             }
-            EDITOR_OPEN.with(|f| f.set(false));
             let _ = ed.hide();
         });
     }
 
-    EDITOR_OPEN.with(|f| f.set(true));
+    // Generate keypair: insert a fresh PrivateKey, show the public key.
+    {
+        let edw = ed.as_weak();
+        ed.on_generate_key(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            match backend::generate_keypair() {
+                Ok((priv_k, pub_k)) => {
+                    let updated = set_private_key(&ed.get_config_text(), &priv_k);
+                    ed.set_config_text(updated.into());
+                    ed.set_public_key(pub_k.clone().into());
+                    ed.set_error("".into());
+                    ed.set_warning("New keypair generated.".into());
+                }
+                Err(e) => ed.set_error(format!("Key generation failed: {e}").into()),
+            }
+        });
+    }
+
     let _ = ed.show();
     EDITOR.with(|slot| *slot.borrow_mut() = Some(ed));
 }
@@ -121,6 +309,7 @@ fn to_slint_detail(d: backend::Detail) -> TunnelDetail {
     TunnelDetail {
         name: d.name.into(),
         active: d.active,
+        autostart: d.autostart,
         public_key: d.public_key.into(),
         listen_port: d.listen_port.into(),
         addresses: d.addresses.into(),
@@ -164,10 +353,13 @@ fn refresh_list(ui: &MainWindow) {
     ui.set_has_selection(new_index >= 0);
     if new_index >= 0 {
         load_detail(ui, &tunnels[new_index as usize].name);
+    } else {
+        *SELECTED.lock().unwrap() = None;
     }
 }
 
 fn load_detail(ui: &MainWindow, name: &str) {
+    *SELECTED.lock().unwrap() = Some(name.to_string());
     let detail = backend::get_detail(name);
     ui.set_detail(to_slint_detail(detail));
     ui.set_has_selection(true);
@@ -203,6 +395,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = MainWindow::new()?;
     refresh_list(&ui);
+
+    // ---- system-tray icon (best-effort; needs SNI support on the desktop,
+    // e.g. KDE, or GNOME with the AppIndicator extension). Uses libdbus on its
+    // own thread, independent of the zbus stack Slint already uses. ----
+    ksni::TrayService::new(Tray {
+        window: ui.as_weak(),
+    })
+    .spawn();
 
     // ---- select ----
     {
@@ -307,13 +507,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let w = ui.as_weak();
         ui.on_add_empty(move || {
             let ui = w.unwrap();
-            open_editor(
-                &ui,
-                true,
-                String::new(),
-                String::new(),
-                TEMPLATE.to_string(),
-            );
+            // Pre-generate a keypair so a new tunnel opens ready, like the
+            // WireGuard for Windows "Create new tunnel" dialog.
+            let text = match backend::generate_keypair() {
+                Ok((priv_k, _)) => new_tunnel_template(&priv_k),
+                Err(_) => TEMPLATE.to_string(),
+            };
+            open_editor(&ui, true, String::new(), String::new(), text);
         });
     }
 
@@ -356,31 +556,152 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ---- live polling: refresh selected detail + list every 2s ----
-    let timer = slint::Timer::default();
+    // ---- export all tunnels to a .zip ----
     {
         let w = ui.as_weak();
-        timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_secs(1),
-            move || {
-                let Some(ui) = w.upgrade() else { return };
+        ui.on_export_zip(move || {
+            let ui = w.unwrap();
+            let Some(path) = rfd::FileDialog::new()
+                .set_title("Export tunnels to a zip archive")
+                .set_file_name("wireguard-tunnels.zip")
+                .add_filter("Zip archive", &["zip"])
+                .save_file()
+            else {
+                return;
+            };
+            match backend::export_zip(&path) {
+                Ok(n) => set_status(&ui, format!("Exported {n} tunnel(s) to {}", path.display())),
+                Err(e) => set_status(&ui, format!("Export failed: {e}")),
+            }
+        });
+    }
 
-                // Pause while the editor window is open so our repaints don't
-                // blank its text fields.
-                if EDITOR_OPEN.with(|f| f.get()) {
+    // ---- import a tunnel from a QR-code image ----
+    {
+        let w = ui.as_weak();
+        ui.on_import_qr(move || {
+            let ui = w.unwrap();
+            let Some(path) = rfd::FileDialog::new()
+                .set_title("Import tunnel from a QR-code image")
+                .add_filter("Image", &["png", "jpg", "jpeg"])
+                .pick_file()
+            else {
+                return;
+            };
+            match backend::decode_qr(&path) {
+                Ok(text) => {
+                    let stem = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "tunnel".into());
+                    let name = backend::unique_name(&stem);
+                    open_editor(&ui, true, String::new(), name, text);
+                }
+                Err(e) => set_status(&ui, format!("QR import failed: {e}")),
+            }
+        });
+    }
+
+    // ---- show a tunnel's config as a QR code ----
+    {
+        let w = ui.as_weak();
+        ui.on_show_qr(move |name| {
+            let ui = w.unwrap();
+            let text = match backend::read_config(&name) {
+                Ok(t) => t,
+                Err(e) => {
+                    set_status(&ui, format!("Couldn't read {name}: {e}"));
                     return;
                 }
+            };
+            let Ok(win) = QrWindow::new() else { return };
+            win.set_name(name.clone());
+            win.set_qr(qr_image(&text));
+            let _ = win.show();
+            QRWIN.with(|slot| *slot.borrow_mut() = Some(win));
+        });
+    }
 
-                if let Some(name) = selected_name(&ui) {
-                    load_detail(&ui, &name);
+    // ---- toggle start-on-boot ----
+    {
+        let w = ui.as_weak();
+        ui.on_set_autostart(move |name, on| {
+            let ui = w.unwrap();
+            match backend::set_autostart(&name, on) {
+                Ok(()) => set_status(
+                    &ui,
+                    format!(
+                        "{} autostart for {name}",
+                        if on { "Enabled" } else { "Disabled" }
+                    ),
+                ),
+                Err(e) => set_status(&ui, format!("Autostart change failed: {e}")),
+            }
+            load_detail(&ui, &name);
+        });
+    }
+
+    // ---- copy text to the clipboard ----
+    {
+        let w = ui.as_weak();
+        ui.on_copy_text(move |text| {
+            let ui = w.unwrap();
+            if text.is_empty() {
+                return;
+            }
+            if copy_to_clipboard(&text) {
+                set_status(&ui, "Copied to clipboard");
+            } else {
+                set_status(&ui, "Couldn't access the clipboard");
+            }
+        });
+    }
+
+    // ---- About window ----
+    ui.on_show_about(move || {
+        let Ok(about) = AboutWindow::new() else {
+            return;
+        };
+        about.set_version(env!("CARGO_PKG_VERSION").into());
+        about.on_open_url(|u| open_url(&u));
+        {
+            let aw = about.as_weak();
+            about.on_close_me(move || {
+                if let Some(a) = aw.upgrade() {
+                    let _ = a.hide();
                 }
-                // refresh active dots in the list
-                let actives: std::collections::HashSet<String> = backend::list_tunnels()
-                    .into_iter()
-                    .filter(|t| t.active)
-                    .map(|t| t.name)
-                    .collect();
+            });
+        }
+        let _ = about.show();
+        ABOUTWIN.with(|slot| *slot.borrow_mut() = Some(about));
+    });
+
+    // ---- live polling on a BACKGROUND thread ----
+    // All `wg`/`sudo` subprocess calls happen here, off the UI thread, so the
+    // interface never stutters. Results are pushed back via the event loop.
+    {
+        let w = ui.as_weak();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let name = SELECTED.lock().unwrap().clone();
+
+            // Blocking helper calls — fine here, we're not on the UI thread.
+            let tunnels = backend::list_tunnels();
+            let actives: std::collections::HashSet<String> = tunnels
+                .iter()
+                .filter(|t| t.active)
+                .map(|t| t.name.clone())
+                .collect();
+            let detail = name
+                .as_ref()
+                .filter(|n| actives.contains(*n) || tunnels.iter().any(|t| &t.name == *n))
+                .map(|n| backend::get_detail(n));
+
+            let pushed = w.upgrade_in_event_loop(move |ui| {
+                if let Some(d) = detail {
+                    ui.set_detail(to_slint_detail(d));
+                    ui.set_has_selection(true);
+                }
                 let model = ui.get_tunnels();
                 for i in 0..model.row_count() {
                     if let Some(mut row) = model.row_data(i) {
@@ -391,9 +712,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-
-                // Nudge a repaint for the live status fields.
                 ui.window().request_redraw();
+            });
+            if pushed.is_err() {
+                break; // UI is gone
+            }
+        });
+    }
+
+    // A cheap UI-thread timer that just asks for a repaint each second, so the
+    // live status fields refresh even if a frame callback would otherwise stall.
+    let redraw_timer = slint::Timer::default();
+    {
+        let w = ui.as_weak();
+        redraw_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(1),
+            move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.window().request_redraw();
+                }
             },
         );
     }
@@ -426,3 +764,12 @@ AllowedIPs = 0.0.0.0/0
 Endpoint = server.example.com:51820
 PersistentKeepalive = 25
 ";
+
+/// A fresh-tunnel template pre-filled with a real generated private key.
+fn new_tunnel_template(private_key: &str) -> String {
+    format!(
+        "[Interface]\nPrivateKey = {private_key}\nAddress = 10.0.0.2/24\nDNS = 1.1.1.1\n\n\
+         [Peer]\nPublicKey = <server public key>\nAllowedIPs = 0.0.0.0/0\n\
+         Endpoint = server.example.com:51820\nPersistentKeepalive = 25\n"
+    )
+}

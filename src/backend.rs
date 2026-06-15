@@ -134,6 +134,7 @@ pub struct Peer {
 pub struct Detail {
     pub name: String,
     pub active: bool,
+    pub autostart: bool,
     pub public_key: String,
     pub listen_port: String,
     pub addresses: String,
@@ -173,6 +174,7 @@ fn demo_detail(name: &str) -> Detail {
     Detail {
         name: name.to_string(),
         active,
+        autostart: active,
         public_key: "Hk3pQ2vN8sLrYwZ1aFcJ4mD6tB9eU0xKgPiR7oVnQ4=".to_string(),
         listen_port: if active {
             "51820".into()
@@ -341,6 +343,7 @@ pub fn get_detail(name: &str) -> Detail {
     Detail {
         name: name.to_string(),
         active,
+        autostart: is_autostart(name),
         public_key,
         listen_port,
         addresses: parsed.address.unwrap_or_default(),
@@ -658,6 +661,99 @@ pub fn validate_config(text: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Generate a fresh WireGuard keypair via `wg genkey` / `wg pubkey` (no root).
+pub fn generate_keypair() -> Result<(String, String), String> {
+    let genkey = Command::new("wg")
+        .arg("genkey")
+        .output()
+        .map_err(|e| format!("wg genkey: {e}"))?;
+    if !genkey.status.success() {
+        return Err("wg genkey failed".into());
+    }
+    let private = String::from_utf8_lossy(&genkey.stdout).trim().to_string();
+    let public = pubkey_of(&private).ok_or("wg pubkey failed")?;
+    Ok((private, public))
+}
+
+/// Derive the public key from whatever `PrivateKey = …` is in a config (live,
+/// for the editor's "Public key" line). Empty string if missing/invalid.
+pub fn public_key_for_config(text: &str) -> String {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim().eq_ignore_ascii_case("privatekey") {
+                let key = v.trim();
+                if is_wg_key(key) {
+                    return pubkey_of(key).unwrap_or_default();
+                }
+                return String::new();
+            }
+        }
+    }
+    String::new()
+}
+
+/// All tunnel configs as (filename, contents), for export.
+pub fn read_all_configs() -> Vec<(String, String)> {
+    list_tunnels()
+        .into_iter()
+        .filter_map(|t| {
+            read_config(&t.name)
+                .ok()
+                .map(|c| (format!("{}.conf", t.name), c))
+        })
+        .collect()
+}
+
+/// Write every tunnel config into a `.zip` at `dest`. Returns the count.
+pub fn export_zip(dest: &std::path::Path) -> Result<usize, String> {
+    let files = read_all_configs();
+    if files.is_empty() {
+        return Err("No tunnels to export.".into());
+    }
+    let f = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o600);
+    for (name, content) in &files {
+        zip.start_file(name, opts).map_err(|e| e.to_string())?;
+        zip.write_all(content.as_bytes())
+            .map_err(|e| e.to_string())?;
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(files.len())
+}
+
+/// Decode a QR-code image file into its text (a WireGuard `.conf`).
+pub fn decode_qr(path: &std::path::Path) -> Result<String, String> {
+    let img = image::open(path)
+        .map_err(|e| format!("Couldn't open image: {e}"))?
+        .to_luma8();
+    let mut prepared = rqrr::PreparedImage::prepare(img);
+    let grids = prepared.detect_grids();
+    let grid = grids.first().ok_or("No QR code found in the image.")?;
+    let (_meta, content) = grid
+        .decode()
+        .map_err(|e| format!("QR decode failed: {e}"))?;
+    Ok(content)
+}
+
+/// Whether `wg-quick@<name>` is enabled to start on boot.
+pub fn is_autostart(name: &str) -> bool {
+    helper(&["is-enabled", name], None)
+        .map(|s| s.trim() == "enabled")
+        .unwrap_or(false)
+}
+
+/// Enable/disable starting the tunnel on boot.
+pub fn set_autostart(name: &str, on: bool) -> Result<(), String> {
+    helper(&[if on { "enable" } else { "disable" }, name], None).map(|_| ())
 }
 
 /// True if the config contains directives that `wg-quick` runs as **root** on
