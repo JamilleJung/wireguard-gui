@@ -44,9 +44,11 @@ single native binary. No Electron, no web view.
 
 ## 📸 Screenshots
 
-| Tunnel detail (active) | Inactive tunnel | Config editor |
-|:---:|:---:|:---:|
-| ![active](docs/screenshot.png) | ![inactive](docs/screenshot-inactive.png) | ![editor](docs/screenshot-editor.png) |
+| Tunnel detail (active) | Inactive tunnel |
+|:---:|:---:|
+| ![active](docs/screenshot.png) | ![inactive](docs/screenshot-inactive.png) |
+| **Config editor (keypair)** | **Show QR for mobile** |
+| ![editor](docs/screenshot-editor.png) | ![qr](docs/screenshot-qr.png) |
 
 ---
 

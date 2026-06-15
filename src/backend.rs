@@ -247,6 +247,16 @@ pub fn unique_name(base: &str) -> String {
 }
 
 pub fn read_config(name: &str) -> Result<String, String> {
+    if demo_mode() {
+        return Ok(format!(
+            "[Interface]\nPrivateKey = oMM7e2Kf4pQ1sLrYwZ1aFcJ4mD6tB9eU0xKgPiR7oV=\n\
+             Address = 10.7.0.2/24, fd00:7::2/64\nDNS = 1.1.1.1, 1.0.0.1\n\n\
+             [Peer]\nPublicKey = T9bXm2Kp5LqWv8RcZ1hN6sJ3dY7uA0eFgB4iO+wQ5k=\n\
+             PresharedKey = aBcDeF2Kf4pQ1sLrYwZ1aFcJ4mD6tB9eU0xKgPiR7oV=\n\
+             AllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = vpn.example.com:51820\n\
+             PersistentKeepalive = 25\n# tunnel: {name}\n"
+        ));
+    }
     helper(&["read", name], None)
 }
 

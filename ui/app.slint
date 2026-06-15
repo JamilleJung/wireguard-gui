@@ -46,6 +46,7 @@ component PushButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> arrow;          // show a dropdown triangle
     in property <string> tooltip: "";
+    in property <string> tooltip-align: "left";   // "left" | "right"
     callback clicked;
 
     min-width: label.preferred-width + (root.arrow ? 40px : 26px);
@@ -93,7 +94,7 @@ component PushButton inherits Rectangle {
     }
 
     if root.tooltip != "" && ta.has-hover: Rectangle {
-        x: 0;
+        x: root.tooltip-align == "right" ? parent.width - self.width : 0px;
         y: -self.height - 4px;
         width: tip.preferred-width + 14px;
         height: tip.preferred-height + 8px;
@@ -654,6 +655,7 @@ export component MainWindow inherits Window {
                         PushButton {
                             text: "Edit";
                             tooltip: "Edit this tunnel's configuration";
+                            tooltip-align: "right";
                             clicked => { root.begin-edit(root.detail.name); }
                         }
                     }
