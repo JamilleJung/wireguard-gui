@@ -67,9 +67,9 @@ That's it. The installer:
 
 Then launch **WireGuard** from your application menu, or run `wireguard-gui`.
 
-> Prefer a true one-liner? Once the repo is public:
+> Prefer a single line?
 > ```sh
-> curl -fsSL https://raw.githubusercontent.com/JamilleJung/wireguard-gui/main/install.sh | bash
+> git clone https://github.com/JamilleJung/wireguard-gui.git && cd wireguard-gui && ./install.sh
 > ```
 
 ### ✅ Tested package managers

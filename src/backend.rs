@@ -264,6 +264,24 @@ pub fn delete(name: &str) -> Result<(), String> {
     helper(&["delete", name], None).map(|_| ())
 }
 
+/// Recent WireGuard-related log lines (this app's audit log + wg-quick units).
+pub fn get_log() -> String {
+    if demo_mode() {
+        return "===== wireguard-gui activity =====\n\
+                2026-06-16T09:41:02 home  wireguard-gui: user=demo action=up home-server\n\
+                2026-06-16T09:41:02 home  wireguard-gui: user=demo action=save home-server\n\
+                2026-06-16T09:12:55 home  wireguard-gui: user=demo action=down work-vpn\n\
+                \n===== wg-quick (systemd) =====\n\
+                2026-06-16T09:41:02 home  systemd: Started WireGuard via wg-quick(8) for home-server.\n"
+            .to_string();
+    }
+    match helper(&["log"], None) {
+        Ok(s) if !s.trim().is_empty() => s,
+        Ok(_) => "(no recent log entries)".to_string(),
+        Err(e) => format!("Could not read the log: {e}"),
+    }
+}
+
 /// Build the full detail view for a tunnel by merging its on-disk config with
 /// the live `wg show <name> dump` output.
 pub fn get_detail(name: &str) -> Detail {

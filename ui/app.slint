@@ -1,4 +1,4 @@
-import { ListView, ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
+import { ListView, ScrollView, LineEdit, TextEdit, Palette } from "std-widgets.slint";
 
 // ---- data shared with the Rust backend ------------------------------------
 
@@ -224,6 +224,36 @@ component MenuItem inherits Rectangle {
     }
 }
 
+// A top tab (Tunnels / Log), Windows-style with an accent underline.
+component TabButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    height: 34px;
+    background: ta.has-hover ? #ececec : transparent;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.text;
+                font-size: 13px;
+                color: root.selected ? #0067c0 : #444444;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: root.selected ? #0067c0 : transparent;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // ---- main window -----------------------------------------------------------
 
 export component MainWindow inherits Window {
@@ -243,7 +273,10 @@ export component MainWindow inherits Window {
     in property <TunnelDetail> detail;
     in property <string> status: "";
 
-    // edit / new-tunnel overlay
+    // tabs (0 = Tunnels, 1 = Log) + log contents
+    in-out property <int> active-tab: 0;
+    in property <string> log-text: "";
+
     // ---- callbacks into Rust ----
     callback select(int);
     callback activate(string);
@@ -252,8 +285,39 @@ export component MainWindow inherits Window {
     callback add-empty();
     callback delete-tunnel(string);
     callback begin-edit(string);
+    callback refresh-log();
 
-    HorizontalLayout {
+    // Force the light palette app-wide (Palette is a global). Without this,
+    // GNOME dark mode gives std-widgets near-white fills that vanish on our
+    // white backgrounds.
+    init => { Palette.color-scheme = ColorScheme.light; }
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ===================== tab bar =====================
+        Rectangle {
+            height: 35px;
+            background: #f3f3f3;
+            Rectangle { y: parent.height - 1px; height: 1px; background: #e0e0e0; }
+            HorizontalLayout {
+                alignment: start;
+                TabButton {
+                    text: "Tunnels";
+                    selected: root.active-tab == 0;
+                    clicked => { root.active-tab = 0; }
+                }
+                TabButton {
+                    text: "Log";
+                    selected: root.active-tab == 1;
+                    clicked => { root.active-tab = 1; root.refresh-log(); }
+                }
+            }
+        }
+
+        // ===================== Tunnels tab =====================
+        if root.active-tab == 0: HorizontalLayout {
+        vertical-stretch: 1;
         spacing: 0px;
 
         // ===================== left: tunnel list =====================
@@ -341,9 +405,11 @@ export component MainWindow inherits Window {
         Rectangle {
             background: #f6f6f6;
             horizontal-stretch: 1;
+            VerticalLayout {
 
             // empty state
             if !root.has-selection: VerticalLayout {
+                vertical-stretch: 1;
                 alignment: center;
                 HorizontalLayout {
                     alignment: center;
@@ -357,6 +423,7 @@ export component MainWindow inherits Window {
 
             // detail view
             if root.has-selection: ScrollView {
+                vertical-stretch: 1;
                 VerticalLayout {
                     padding: 16px;
                     spacing: 14px;
@@ -387,17 +454,6 @@ export component MainWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; }
-                            PushButton {
-                                text: root.detail.active ? "Deactivate" : "Activate";
-                                primary: !root.detail.active;
-                                clicked => {
-                                    if (root.detail.active) {
-                                        root.deactivate(root.detail.name);
-                                    } else {
-                                        root.activate(root.detail.name);
-                                    }
-                                }
-                            }
                         }
 
                         DetailRow {
@@ -417,11 +473,21 @@ export component MainWindow inherits Window {
                             value: root.detail.dns;
                         }
 
+                        // Activate / Deactivate — below the details, aligned under
+                        // the value column (matches the WireGuard for Windows client).
                         HorizontalLayout {
-                            padding-top: 4px;
+                            padding-top: 6px;
+                            Rectangle { width: 140px; }
                             PushButton {
-                                text: "Edit";
-                                clicked => { root.begin-edit(root.detail.name); }
+                                text: root.detail.active ? "Deactivate" : "Activate";
+                                primary: !root.detail.active;
+                                clicked => {
+                                    if (root.detail.active) {
+                                        root.deactivate(root.detail.name);
+                                    } else {
+                                        root.activate(root.detail.name);
+                                    }
+                                }
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
@@ -458,6 +524,63 @@ export component MainWindow inherits Window {
                             label: "Transfer:";
                             value: p.transfer;
                         }
+                    }
+                }
+            }
+
+            // ---- bottom-right Edit button (Windows-style) ----
+            if root.has-selection: Rectangle {
+                height: 46px;
+                background: #fafafa;
+                Rectangle { y: 0; height: 1px; background: #e0e0e0; }
+                HorizontalLayout {
+                    padding: 8px;
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        alignment: center;
+                        PushButton {
+                            text: "Edit";
+                            clicked => { root.begin-edit(root.detail.name); }
+                        }
+                    }
+                }
+            }
+            }
+        }
+        }
+
+        // ===================== Log tab =====================
+        if root.active-tab == 1: Rectangle {
+            vertical-stretch: 1;
+            background: white;
+            VerticalLayout {
+                ScrollView {
+                    vertical-stretch: 1;
+                    Text {
+                        x: 12px;
+                        y: 10px;
+                        text: root.log-text;
+                        font-family: "monospace";
+                        font-size: 12px;
+                        color: #1b1b1b;
+                        wrap: no-wrap;
+                    }
+                }
+                Rectangle {
+                    height: 46px;
+                    background: #fafafa;
+                    Rectangle { y: 0; height: 1px; background: #e0e0e0; }
+                    HorizontalLayout {
+                        padding: 8px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Refresh";
+                                clicked => { root.refresh-log(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
                 }
             }
@@ -505,16 +628,12 @@ export component EditWindow inherits Window {
     callback save(string, string);
     callback cancel();
 
-    // IMPORTANT: do NOT set `background` on the Window or any ancestor Rectangle
-    // of these text inputs — on this GNOME-Wayland/femtovg setup that makes
-    // White look WITHOUT the bug: the background is painted by a sibling
-    // Rectangle BEHIND the content, never by the Window or by an ancestor of
-    // the text inputs (an ancestor background makes LineEdit/TextEdit render
-    // blank on this GNOME-Wayland/femtovg stack). No `min-height` on the
-    // TextEdit either (Slint #6896).
-    Rectangle {
-        background: white;
-    }
+    // Force the light palette so the text inputs use dark-text-on-light fills —
+    // which is what makes them visible on a white background. (No `min-height`
+    // on the TextEdit either — Slint #6896.)
+    init => { Palette.color-scheme = ColorScheme.light; }
+
+    background: white;
     Rectangle {
         VerticalLayout {
             padding: 18px;

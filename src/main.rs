@@ -347,6 +347,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ---- refresh the Log tab ----
+    {
+        let w = ui.as_weak();
+        ui.on_refresh_log(move || {
+            let ui = w.unwrap();
+            ui.set_log_text(backend::get_log().into());
+        });
+    }
+
     // ---- live polling: refresh selected detail + list every 2s ----
     let timer = slint::Timer::default();
     {
