@@ -1,0 +1,119 @@
+#!/bin/bash
+# wg-helper — the single privileged entry point for wireguard-gui.
+#
+# The GUI runs as a normal user and invokes:
+#     sudo -n  wg-helper <verb> [name]      (sudoers mode)
+#     pkexec   wg-helper <verb> [name]      (polkit / fallback mode)
+#
+# Only this one script is whitelisted, so the privileged surface is exactly the
+# verbs below. Every tunnel name is validated against a strict pattern before
+# any filesystem or `wg` operation, and every mutating action is logged.
+set -euo pipefail
+
+# Fixed paths — never taken from the (untrusted) caller's environment.
+readonly WG_DIR="/etc/wireguard"
+readonly BACKUP_DIR="${WG_DIR}/.backup"
+readonly LOG_TAG="wireguard-gui"
+
+die() { echo "wg-helper: $*" >&2; exit 2; }
+
+# Audit log to syslog (journald). Records the invoking user when known.
+log() {
+    local who="${PKEXEC_UID:-}"
+    [ -n "${SUDO_USER:-}" ] && who="${SUDO_USER}"
+    logger -t "$LOG_TAG" -- "user=${who:-unknown} action=$*" 2>/dev/null || true
+}
+
+# A tunnel name must: start alphanumeric, then [A-Za-z0-9_.-], max 15 chars,
+# and never be "."/".." or contain "..". With no "/" allowed, the path
+# "$WG_DIR/<name>.conf" can never escape the directory.
+validate_name() {
+    local n="${1:-}"
+    [[ "$n" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$ ]] || die "invalid tunnel name: '${n}'"
+    [[ "$n" == *".."* ]] && die "invalid tunnel name: '${n}'"
+    return 0
+}
+
+# Copy an existing config to the timestamped backup dir before we touch it.
+backup_existing() {
+    local n="$1" src="${WG_DIR}/$1.conf"
+    [ -f "$src" ] || return 0
+    install -d -m 700 "$BACKUP_DIR"
+    local ts; ts="$(date +%Y%m%d-%H%M%S)"
+    local dst="${BACKUP_DIR}/${n}.conf.${ts}"
+    cp -p "$src" "$dst"
+    chmod 600 "$dst"
+    log "backup ${n} -> ${dst}"
+}
+
+verb="${1:-}"
+[ -n "$verb" ] || die "no verb"
+shift || true
+
+case "$verb" in
+    list)
+        [ -d "$WG_DIR" ] || exit 0
+        find "$WG_DIR" -maxdepth 1 -type f -name '*.conf' -printf '%f\n' 2>/dev/null \
+            | sed 's/\.conf$//' | sort
+        ;;
+    active)
+        wg show interfaces 2>/dev/null || true
+        ;;
+    read)
+        validate_name "${1:-}"
+        cat "${WG_DIR}/$1.conf"
+        ;;
+    dump)
+        validate_name "${1:-}"
+        wg show "$1" dump 2>/dev/null || true
+        ;;
+    up)
+        validate_name "${1:-}"
+        log "up $1"
+        wg-quick up "$1"
+        ;;
+    down)
+        validate_name "${1:-}"
+        log "down $1"
+        wg-quick down "$1"
+        ;;
+    save)
+        # Content from stdin. Back up first, then write atomically (temp + rename)
+        # so a crash mid-write can never leave a truncated config.
+        validate_name "${1:-}"
+        backup_existing "$1"
+        umask 077
+        tmp="${WG_DIR}/.$1.conf.tmp.$$"
+        trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
+        cat > "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "${WG_DIR}/$1.conf"
+        trap - EXIT
+        log "save $1"
+        ;;
+    delete)
+        # Always back up before removing — the GUI's delete button relies on this.
+        validate_name "${1:-}"
+        backup_existing "$1"
+        wg-quick down "$1" 2>/dev/null || true
+        rm -f "${WG_DIR}/$1.conf"
+        log "delete $1"
+        ;;
+    enable)
+        validate_name "${1:-}"
+        log "enable $1"
+        systemctl enable "wg-quick@$1" >/dev/null 2>&1
+        ;;
+    disable)
+        validate_name "${1:-}"
+        log "disable $1"
+        systemctl disable "wg-quick@$1" >/dev/null 2>&1
+        ;;
+    is-enabled)
+        validate_name "${1:-}"
+        systemctl is-enabled "wg-quick@$1" 2>/dev/null || true
+        ;;
+    *)
+        die "unknown verb: $verb"
+        ;;
+esac

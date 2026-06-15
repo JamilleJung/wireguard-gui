@@ -1,0 +1,102 @@
+name: Release
+
+# Tag a version to cut a release:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build artifacts & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from tag
+        id: ver
+        run: echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            file desktop-file-utils
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # ---------------- binary tarball ----------------
+      - name: Build binary tarball
+        run: |
+          V="${{ steps.ver.outputs.v }}"
+          D="wireguard-gui-${V}-x86_64-linux"
+          mkdir -p "$D"
+          cp target/release/wireguard-gui "$D/"
+          cp packaging/wg-helper "$D/"
+          cp packaging/wireguard-gui.desktop "$D/"
+          cp packaging/wireguard-gui.svg "$D/"
+          cp packaging/49-wireguard-gui.rules "$D/"
+          cp install.sh README.md LICENSE "$D/"
+          tar -czf "${D}.tar.gz" "$D"
+
+      # ---------------- .deb ----------------
+      - name: Build .deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build --no-strip || cargo deb
+          cp target/debian/*.deb . || true
+
+      # ---------------- AppImage ----------------
+      - name: Build AppImage
+        continue-on-error: true   # never block the .deb/tarball release
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          V="${{ steps.ver.outputs.v }}"
+          APPDIR=AppDir
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/wireguard-gui" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+          cp target/release/wireguard-gui "$APPDIR/usr/bin/"
+          cp packaging/wg-helper "$APPDIR/usr/lib/wireguard-gui/"
+          cp packaging/wireguard-gui.desktop "$APPDIR/usr/share/applications/"
+          cp packaging/wireguard-gui.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
+          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          ./linuxdeploy --appdir "$APPDIR" \
+            -e "$APPDIR/usr/bin/wireguard-gui" \
+            -d packaging/wireguard-gui.desktop \
+            -i packaging/wireguard-gui.svg \
+            --output appimage
+          mv ./*.AppImage "wireguard-gui-${V}-x86_64.AppImage" 2>/dev/null || true
+
+      # ---------------- checksums ----------------
+      - name: Generate checksums
+        run: |
+          sha256sum *.tar.gz *.deb *.AppImage 2>/dev/null | tee SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            *.tar.gz
+            *.deb
+            *.AppImage
+            SHA256SUMS
