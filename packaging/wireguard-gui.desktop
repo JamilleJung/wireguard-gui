@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=WireGuard
+GenericName=VPN Tunnel Manager
+Comment=Manage WireGuard tunnels
+Exec=wireguard-gui
+Icon=wireguard-gui
+Terminal=false
+Categories=Network;Security;
+Keywords=VPN;WireGuard;tunnel;network;
+StartupNotify=true

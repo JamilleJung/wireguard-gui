@@ -1,0 +1,568 @@
+import { ListView, ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
+
+// ---- data shared with the Rust backend ------------------------------------
+
+export struct TunnelItem {
+    name: string,
+    active: bool,
+}
+
+export struct PeerInfo {
+    public-key: string,
+    preshared: bool,
+    allowed-ips: string,
+    endpoint: string,
+    keepalive: string,
+    latest-handshake: string,
+    transfer: string,
+}
+
+export struct TunnelDetail {
+    name: string,
+    active: bool,
+    public-key: string,
+    listen-port: string,
+    addresses: string,
+    dns: string,
+    peers: [PeerInfo],
+}
+
+// ---- small reusable pieces -------------------------------------------------
+
+component StatusDot inherits Rectangle {
+    in property <bool> on;
+    width: 11px;
+    height: 11px;
+    border-radius: 5.5px;
+    background: on ? #2cbe4e : #b9b9b9;
+}
+
+// A Windows-style push button. Icons are drawn (vector) so they render
+// regardless of the system font.
+component PushButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    in property <bool> arrow;          // show a dropdown triangle
+    callback clicked;
+
+    min-width: label.preferred-width + (root.arrow ? 40px : 26px);
+    height: 29px;
+    vertical-stretch: 0;
+    border-radius: 3px;
+    border-width: 1px;
+    background: !root.enabled ? #f3f3f3
+        : root.primary ? (ta.pressed ? #005a9e : (ta.has-hover ? #1a86d9 : #0078d4))
+        : (ta.pressed ? #d6d6d6 : (ta.has-hover ? #e9f3fc : #fdfdfd));
+    border-color: !root.enabled ? #e0e0e0
+        : root.primary ? (ta.has-hover ? #1a86d9 : #0078d4)
+        : (ta.has-hover ? #7fb6e6 : #c4c4c4);
+
+    label := Text {
+        x: root.arrow ? (parent.width - self.width - 14px) / 2 : (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        text: root.text;
+        font-size: 13px;
+        color: !root.enabled ? #a6a6a6 : (root.primary ? white : #1b1b1b);
+    }
+
+    // dropdown triangle
+    if root.arrow: Path {
+        x: label.x + label.width + 7px;
+        y: (parent.height - self.height) / 2 + 1px;
+        width: 9px;
+        height: 5px;
+        viewbox-width: 9;
+        viewbox-height: 5;
+        fill: root.primary ? white : #444444;
+        commands: "M 0 0 L 9 0 L 4.5 5 Z";
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+// A small square button that draws an “✕”, used for Remove.
+component IconButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 29px;
+    height: 29px;
+    border-radius: 3px;
+    border-width: 1px;
+    background: !root.enabled ? #f3f3f3 : (ta.pressed ? #e7c4c4 : (ta.has-hover ? #fbeaea : #fdfdfd));
+    border-color: !root.enabled ? #e0e0e0 : (ta.has-hover ? #d98a8a : #c4c4c4);
+
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 11px;
+        height: 11px;
+        viewbox-width: 11;
+        viewbox-height: 11;
+        stroke: root.enabled ? #b23b3b : #bcbcbc;
+        stroke-width: 1.6px;
+        commands: "M 1 1 L 10 10 M 10 1 L 1 10";
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+// A "label : value" line, like the WireGuard for Windows detail grid.
+component DetailRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        width: 132px;
+        color: #6a6a6a;
+        font-size: 13px;
+        horizontal-alignment: right;
+        vertical-alignment: top;
+    }
+    Text {
+        text: root.value;
+        color: #1b1b1b;
+        font-size: 13px;
+        horizontal-stretch: 1;
+        wrap: word-wrap;
+    }
+}
+
+// A titled, bordered group box (the "Interface" / "Peer" cards).
+component Card inherits Rectangle {
+    in property <string> title;
+    background: white;
+    border-color: #e3e3e3;
+    border-width: 1px;
+    border-radius: 3px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 7px;
+        Text {
+            text: root.title;
+            font-size: 14px;
+            font-weight: 700;
+            color: #202020;
+        }
+        @children
+    }
+}
+
+// One row in the left-hand tunnel list.
+component TunnelRow inherits Rectangle {
+    in property <TunnelItem> item;
+    in property <bool> selected;
+    callback clicked;
+    height: 40px;
+    background: selected ? #cce8ff : (touch.has-hover ? #f1f1f1 : transparent);
+    border-color: selected ? #99d1ff : transparent;
+    border-width: 1px;
+    border-radius: 2px;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            StatusDot { on: item.active; }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: item.name;
+                font-size: 14px;
+                color: #1b1b1b;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// A menu entry inside the "Add Tunnel" popup.
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    callback chosen;
+    height: 34px;
+    background: t.has-hover ? #2f6fd6 : white;
+    t := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.chosen(); }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 18px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.text;
+                font-size: 13px;
+                color: t.has-hover ? white : #1b1b1b;
+            }
+        }
+    }
+}
+
+// ---- main window -----------------------------------------------------------
+
+export component MainWindow inherits Window {
+    title: "WireGuard";
+    default-font-family: "Noto Sans";
+    default-font-size: 13px;
+    preferred-width: 840px;
+    preferred-height: 600px;
+    min-width: 620px;
+    min-height: 420px;
+    background: white;
+
+    // ---- state driven by Rust ----
+    in property <[TunnelItem]> tunnels;
+    in-out property <int> selected-index: -1;
+    in property <bool> has-selection: false;
+    in property <TunnelDetail> detail;
+    in property <string> status: "";
+
+    // edit / new-tunnel overlay
+    // ---- callbacks into Rust ----
+    callback select(int);
+    callback activate(string);
+    callback deactivate(string);
+    callback import-file();
+    callback add-empty();
+    callback delete-tunnel(string);
+    callback begin-edit(string);
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        // ===================== left: tunnel list =====================
+        Rectangle {
+            width: 270px;
+            background: white;
+            // right divider
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                background: #e0e0e0;
+            }
+            VerticalLayout {
+                padding: 0px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    for t[i] in root.tunnels: TunnelRow {
+                        item: t;
+                        selected: i == root.selected-index;
+                        clicked => { root.select(i); }
+                    }
+                }
+
+                // bottom action bar
+                Rectangle {
+                    height: 46px;
+                    background: #fafafa;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: #e0e0e0;
+                    }
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Add Tunnel";
+                                arrow: true;
+                                clicked => { add-popup.show(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                enabled: root.has-selection;
+                                clicked => { root.delete-tunnel(root.detail.name); }
+                            }
+                        }
+                    }
+
+                    add-popup := PopupWindow {
+                        x: 8px;
+                        y: -78px;
+                        width: 244px;
+                        height: 72px;
+                        Rectangle {
+                            background: white;
+                            border-color: #b9b9b9;
+                            border-width: 1px;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: #00000030;
+                            VerticalLayout {
+                                padding: 1px;
+                                MenuItem {
+                                    text: "Import tunnel(s) from file…";
+                                    chosen => { add-popup.close(); root.import-file(); }
+                                }
+                                MenuItem {
+                                    text: "Add empty tunnel…";
+                                    chosen => { add-popup.close(); root.add-empty(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===================== right: details =====================
+        Rectangle {
+            background: #f6f6f6;
+            horizontal-stretch: 1;
+
+            // empty state
+            if !root.has-selection: VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: "Select a tunnel on the left, or import one with “Add Tunnel”.";
+                        color: #8a8a8a;
+                        font-size: 14px;
+                    }
+                }
+            }
+
+            // detail view
+            if root.has-selection: ScrollView {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    // ---- Interface card ----
+                    Card {
+                        title: "Interface: " + root.detail.name;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Status:";
+                                width: 132px;
+                                color: #6a6a6a;
+                                font-size: 13px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                StatusDot { on: root.detail.active; }
+                            }
+                            Text {
+                                text: root.detail.active ? "Active" : "Inactive";
+                                color: #1b1b1b;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            PushButton {
+                                text: root.detail.active ? "Deactivate" : "Activate";
+                                primary: !root.detail.active;
+                                clicked => {
+                                    if (root.detail.active) {
+                                        root.deactivate(root.detail.name);
+                                    } else {
+                                        root.activate(root.detail.name);
+                                    }
+                                }
+                            }
+                        }
+
+                        DetailRow {
+                            label: "Public key:";
+                            value: root.detail.public-key;
+                        }
+                        if root.detail.listen-port != "": DetailRow {
+                            label: "Listen port:";
+                            value: root.detail.listen-port;
+                        }
+                        if root.detail.addresses != "": DetailRow {
+                            label: "Addresses:";
+                            value: root.detail.addresses;
+                        }
+                        if root.detail.dns != "": DetailRow {
+                            label: "DNS servers:";
+                            value: root.detail.dns;
+                        }
+
+                        HorizontalLayout {
+                            padding-top: 4px;
+                            PushButton {
+                                text: "Edit";
+                                clicked => { root.begin-edit(root.detail.name); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+
+                    // ---- Peer cards ----
+                    for p in root.detail.peers: Card {
+                        title: "Peer";
+                        DetailRow {
+                            label: "Public key:";
+                            value: p.public-key;
+                        }
+                        if p.preshared: DetailRow {
+                            label: "Preshared key:";
+                            value: "enabled";
+                        }
+                        if p.allowed-ips != "": DetailRow {
+                            label: "Allowed IPs:";
+                            value: p.allowed-ips;
+                        }
+                        if p.endpoint != "": DetailRow {
+                            label: "Endpoint:";
+                            value: p.endpoint;
+                        }
+                        if p.keepalive != "": DetailRow {
+                            label: "Persistent keepalive:";
+                            value: p.keepalive == "0" ? "off" : (p.keepalive + " seconds");
+                        }
+                        if p.latest-handshake != "": DetailRow {
+                            label: "Latest handshake:";
+                            value: p.latest-handshake;
+                        }
+                        if p.transfer != "": DetailRow {
+                            label: "Transfer:";
+                            value: p.transfer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ===================== status bar =====================
+    if root.status != "": Rectangle {
+        x: 0;
+        y: parent.height - 24px;
+        width: parent.width;
+        height: 24px;
+        background: #2f2f2f;
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            Text {
+                text: root.status;
+                color: white;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+import { Button as StdButton } from "std-widgets.slint";
+
+// ===========================================================================
+// Editor as a SEPARATE top-level window. A fresh window gets a clean initial
+// paint, so its text-input widgets render immediately — unlike an in-place
+// overlay, which on this Wayland setup stays blank until clicked.
+// ===========================================================================
+export component EditWindow inherits Window {
+    title: "Edit Tunnel";
+    width: 600px;
+    height: 540px;
+
+    in property <bool> is-new: false;
+    in-out property <string> tunnel-name: "";
+    in-out property <string> config-text: "";
+    in property <string> error: "";
+    callback save(string, string);
+    callback cancel();
+
+    // IMPORTANT: do NOT set `background` on the Window or any ancestor Rectangle
+    // of these text inputs — on this GNOME-Wayland/femtovg setup that makes
+    // LineEdit/TextEdit render blank. The editor therefore uses the default
+    // (dark) theme. No `min-height` on the TextEdit either (Slint #6896).
+    Rectangle {
+        VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+
+            Text {
+                text: root.is-new ? "Create new tunnel" : ("Edit “" + root.tunnel-name + "”");
+                font-size: 16px;
+                font-weight: 700;
+                color: #1b1b1b;
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: 8px;
+                Text {
+                    text: "Name:";
+                    width: 56px;
+                    color: #6a6a6a;
+                    vertical-alignment: center;
+                }
+                LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> root.tunnel-name;
+                    placeholder-text: "tunnel name";
+                }
+            }
+
+            TextEdit {
+                vertical-stretch: 1;
+                text <=> root.config-text;
+            }
+
+            Text {
+                visible: root.error != "";
+                text: root.error;
+                color: #c0392b;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: 8px;
+                alignment: end;
+                PushButton {
+                    text: "Cancel";
+                    clicked => { root.cancel(); }
+                }
+                PushButton {
+                    text: "Save";
+                    primary: true;
+                    clicked => { root.save(root.tunnel-name, root.config-text); }
+                }
+            }
+        }
+    }
+}

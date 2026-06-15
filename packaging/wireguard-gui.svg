@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9c1f24"/>
+      <stop offset="1" stop-color="#6e1418"/>
+    </linearGradient>
+  </defs>
+  <!-- rounded badge -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <!-- shield -->
+  <path d="M64 24 L96 36 V66 C96 88 82 100 64 106 C46 100 32 88 32 66 V36 Z"
+        fill="#ffffff" fill-opacity="0.95"/>
+  <!-- tunnel / peer-link motif inside the shield -->
+  <g fill="#9c1f24">
+    <circle cx="48" cy="58" r="8"/>
+    <circle cx="80" cy="58" r="8"/>
+    <rect x="48" y="54" width="32" height="8" rx="4"/>
+    <circle cx="64" cy="82" r="8"/>
+    <rect x="60" y="58" width="8" height="24" rx="4"/>
+  </g>
+</svg>

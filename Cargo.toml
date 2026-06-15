@@ -1,0 +1,28 @@
+[package]
+name = "wireguard-gui"
+version = "0.1.0"
+edition = "2021"
+description = "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client."
+license = "MIT"
+repository = "https://github.com/jamillejung/wireguard-gui"
+readme = "README.md"
+default-run = "wireguard-gui"
+
+[[bin]]
+name = "wireguard-gui"
+path = "src/main.rs"
+
+[dependencies]
+slint = "1"
+rfd = "0.14"
+libc = "0.2"
+
+[build-dependencies]
+slint-build = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
