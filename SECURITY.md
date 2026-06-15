@@ -68,8 +68,12 @@ importing a `.conf` like running a script: only do it from sources you trust.
   actions and tunnel names only — **never** key material.
 - Treat the `sudoers`/`polkit` grant as "this local user may control WireGuard
   without a password" — equivalent to the trust you'd place in `wg-quick`.
-- Supply chain: prebuilt release artifacts are published with a `SHA256SUMS`
-  file — verify with `sha256sum -c SHA256SUMS --ignore-missing`. Release builds
-  run in GitHub Actions; third-party Actions are pinned to major-version tags
-  and the AppImage step fetches `linuxdeploy` at build time (commit-SHA pinning
-  and signed releases are planned hardening).
+- Supply chain: prebuilt release artifacts ship with a `SHA256SUMS` file that is
+  **signed with minisign** (`SHA256SUMS.minisig`; public key `minisign.pub`).
+  Verify with:
+  ```sh
+  sha256sum -c SHA256SUMS --ignore-missing
+  minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
+  ```
+  Release builds run in GitHub Actions with all third-party Actions **pinned to
+  commit SHAs**, and `linuxdeploy` pinned to a release with a verified SHA-256.

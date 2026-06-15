@@ -1,2 +1,4 @@
 /target
 *.swp
+minisign.key
+*.minisig

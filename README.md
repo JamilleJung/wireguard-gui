@@ -118,10 +118,14 @@ page ships these, built by GitHub Actions:
 | `wireguard-gui-*-x86_64-linux.tar.gz` | Portable binary bundle + `install.sh` |
 | `SHA256SUMS` | Checksums for everything above |
 
-Verify your download:
+Verify your download — checksums, and a minisign signature over them:
 
 ```sh
+# 1) checksums
 sha256sum -c SHA256SUMS --ignore-missing
+
+# 2) signature (needs `minisign`; public key also ships as minisign.pub)
+minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
 ```
 
 > The `.deb` is the smoothest prebuilt option (desktop integration + passwordless

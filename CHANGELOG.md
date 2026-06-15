@@ -6,11 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-16
+
 ### Added
 - Screenshots in the README.
 - A demo mode (`WGGUI_DEMO=1`) with sample tunnels, for local development.
 - Project docs: `CONTRIBUTING.md`, `SECURITY.md`, this changelog, and GitHub
   issue/PR templates.
+- **Signed releases**: `SHA256SUMS` is now signed with minisign
+  (`SHA256SUMS.minisig`), and the public key (`minisign.pub`) ships in the repo
+  and each release. Verify with
+  `minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG`.
+
+### Changed
+- The editor warns (amber) when a config contains `PostUp`/`PreUp`/`PostDown`/
+  `PreDown` — directives `wg-quick` runs as root on activation.
+
+### Security
+- `wg-helper` now exports a fixed `PATH`, so a hijacked caller `PATH` can't
+  redirect the commands it runs as root (defense-in-depth on distros without
+  sudo `secure_path`).
+- Supply-chain hardening in CI/release: all third-party GitHub Actions are
+  pinned to commit SHAs, and `linuxdeploy` is pinned to a release with a
+  verified SHA-256.
 
 ### Fixed
 - The editor window now uses the light theme (matching the main window) by
@@ -41,5 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/JamilleJung/wireguard-gui/releases/tag/v0.1.0
