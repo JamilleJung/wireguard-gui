@@ -43,9 +43,51 @@ impl ksni::Tray for Tray {
     fn icon_name(&self) -> String {
         "wireguard-gui".into()
     }
+    fn status(&self) -> ksni::Status {
+        // Always visible.
+        ksni::Status::Active
+    }
+    fn tool_tip(&self) -> ksni::ToolTip {
+        let actives: Vec<String> = backend::list_tunnels()
+            .into_iter()
+            .filter(|t| t.active)
+            .map(|t| t.name)
+            .collect();
+        let description = if actives.is_empty() {
+            "No active tunnel".to_string()
+        } else {
+            format!("Active: {}", actives.join(", "))
+        };
+        ksni::ToolTip {
+            title: "WireGuard".into(),
+            description,
+            icon_name: "wireguard-gui".into(),
+            icon_pixmap: Vec::new(),
+        }
+    }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
+        let tunnels = backend::list_tunnels();
+        let any_active = tunnels.iter().any(|t| t.active);
+        let active_names: Vec<String> = tunnels
+            .iter()
+            .filter(|t| t.active)
+            .map(|t| t.name.clone())
+            .collect();
+
         let mut items: Vec<ksni::MenuItem<Self>> = vec![
+            // Status header (disabled label).
+            StandardItem {
+                label: if any_active {
+                    format!("Connected: {}", active_names.join(", "))
+                } else {
+                    "Not connected".to_string()
+                },
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
             StandardItem {
                 label: "Show WireGuard".into(),
                 activate: Box::new(|this: &mut Self| {
@@ -56,15 +98,14 @@ impl ksni::Tray for Tray {
                 ..Default::default()
             }
             .into(),
-            MenuItem::Separator,
         ];
 
-        // One toggle per tunnel — checked = active. Rebuilt each time the menu
-        // opens, so it reflects current state.
-        for t in backend::list_tunnels() {
-            let name = t.name.clone();
-            let active = t.active;
-            items.push(
+        // A "Tunnels" submenu: one checkable toggle per tunnel.
+        let toggles: Vec<ksni::MenuItem<Self>> = tunnels
+            .iter()
+            .map(|t| {
+                let name = t.name.clone();
+                let active = t.active;
                 CheckmarkItem {
                     label: name.clone(),
                     checked: active,
@@ -77,9 +118,32 @@ impl ksni::Tray for Tray {
                     }),
                     ..Default::default()
                 }
-                .into(),
-            );
-        }
+                .into()
+            })
+            .collect();
+        items.push(
+            SubMenu {
+                label: "Tunnels".into(),
+                submenu: toggles,
+                ..Default::default()
+            }
+            .into(),
+        );
+
+        // Deactivate everything that's up.
+        items.push(
+            StandardItem {
+                label: "Deactivate all".into(),
+                enabled: any_active,
+                activate: Box::new(move |_: &mut Self| {
+                    for n in &active_names {
+                        let _ = backend::deactivate(n);
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
 
         items.push(MenuItem::Separator);
         items.push(
@@ -399,10 +463,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- system-tray icon (best-effort; needs SNI support on the desktop,
     // e.g. KDE, or GNOME with the AppIndicator extension). Uses libdbus on its
     // own thread, independent of the zbus stack Slint already uses. ----
-    ksni::TrayService::new(Tray {
+    let tray_service = ksni::TrayService::new(Tray {
         window: ui.as_weak(),
-    })
-    .spawn();
+    });
+    let tray_handle = tray_service.handle();
+    tray_service.spawn();
+    // Refresh the tray's tooltip/status periodically so it tracks live state.
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(3));
+        tray_handle.update(|_| {});
+    });
 
     // ---- select ----
     {
