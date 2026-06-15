@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-16
+
+### Added
+- **Keypair generation** — new tunnels open with a freshly generated private key
+  and a live "Public key" field (like the WireGuard for Windows dialog); a
+  "Generate keypair" button regenerates on demand.
+- **QR codes** — *Show QR* renders a tunnel as a QR code to scan into the mobile
+  app, and *Add Tunnel → Import from QR code…* imports from a QR image.
+- **Export** all tunnels to a `.zip` (the export button in the bottom bar).
+- **Copy** buttons for public keys, the full config, and the log.
+- **Start on boot** toggle (enables/disables the `wg-quick@` systemd unit).
+- **System-tray icon** with per-tunnel activate/deactivate, Show, and Quit
+  (StatusNotifierItem; needs KDE or GNOME's AppIndicator extension).
+- **Tooltips** on the toolbar/detail buttons, and an **About** window.
+
+### Changed
+- Live status now polls on a **background thread**, so the UI no longer stutters.
+- Buttons are sized to their content (no more over-wide buttons).
+
 ## [1.0.0] - 2026-06-16
 
 ### Added
@@ -80,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/JamilleJung/wireguard-gui/releases/tag/v0.1.0

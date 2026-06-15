@@ -1,4 +1,4 @@
-import { ListView, ScrollView, LineEdit, TextEdit, Palette } from "std-widgets.slint";
+import { ListView, ScrollView, LineEdit, TextEdit, Palette, CheckBox } from "std-widgets.slint";
 
 // ---- data shared with the Rust backend ------------------------------------
 
@@ -20,6 +20,7 @@ export struct PeerInfo {
 export struct TunnelDetail {
     name: string,
     active: bool,
+    autostart: bool,
     public-key: string,
     listen-port: string,
     addresses: string,
@@ -44,11 +45,14 @@ component PushButton inherits Rectangle {
     in property <bool> primary;
     in property <bool> enabled: true;
     in property <bool> arrow;          // show a dropdown triangle
+    in property <string> tooltip: "";
     callback clicked;
 
     min-width: label.preferred-width + (root.arrow ? 40px : 26px);
+    max-width: label.preferred-width + (root.arrow ? 56px : 42px);
     height: 29px;
     vertical-stretch: 0;
+    horizontal-stretch: 0;
     border-radius: 3px;
     border-width: 1px;
     background: !root.enabled ? #f3f3f3
@@ -87,20 +91,43 @@ component PushButton inherits Rectangle {
             }
         }
     }
+
+    if root.tooltip != "" && ta.has-hover: Rectangle {
+        x: 0;
+        y: -self.height - 4px;
+        width: tip.preferred-width + 14px;
+        height: tip.preferred-height + 8px;
+        background: #2f2f2f;
+        border-radius: 4px;
+        tip := Text {
+            x: 7px;
+            y: 4px;
+            text: root.tooltip;
+            color: white;
+            font-size: 11px;
+        }
+    }
 }
 
-// A small square button that draws an “✕”, used for Remove.
+// A small square icon button. kind = "delete" (✕) or "export" (download).
 component IconButton inherits Rectangle {
     in property <bool> enabled: true;
+    in property <string> kind: "delete";
+    in property <string> tooltip: "";
+    property <bool> danger: root.kind == "delete";
     callback clicked;
     width: 29px;
     height: 29px;
     border-radius: 3px;
     border-width: 1px;
-    background: !root.enabled ? #f3f3f3 : (ta.pressed ? #e7c4c4 : (ta.has-hover ? #fbeaea : #fdfdfd));
-    border-color: !root.enabled ? #e0e0e0 : (ta.has-hover ? #d98a8a : #c4c4c4);
+    background: !root.enabled ? #f3f3f3
+        : (ta.pressed ? (root.danger ? #e7c4c4 : #d6d6d6)
+        : (ta.has-hover ? (root.danger ? #fbeaea : #eef3f9) : #fdfdfd));
+    border-color: !root.enabled ? #e0e0e0
+        : (ta.has-hover ? (root.danger ? #d98a8a : #7fb6e6) : #c4c4c4);
 
-    Path {
+    // delete: an ✕
+    if root.kind == "delete": Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         width: 11px;
@@ -110,6 +137,18 @@ component IconButton inherits Rectangle {
         stroke: root.enabled ? #b23b3b : #bcbcbc;
         stroke-width: 1.6px;
         commands: "M 1 1 L 10 10 M 10 1 L 1 10";
+    }
+    // export: a download arrow into a tray
+    if root.kind == "export": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 13px;
+        height: 13px;
+        viewbox-width: 13;
+        viewbox-height: 13;
+        stroke: root.enabled ? #3a6ea5 : #bcbcbc;
+        stroke-width: 1.4px;
+        commands: "M 6.5 1 L 6.5 8 M 3 5 L 6.5 8.5 L 10 5 M 1.5 11.5 L 11.5 11.5";
     }
 
     ta := TouchArea {
@@ -121,12 +160,30 @@ component IconButton inherits Rectangle {
             }
         }
     }
+
+    if root.tooltip != "" && ta.has-hover: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: -self.height - 4px;
+        width: tip.preferred-width + 14px;
+        height: tip.preferred-height + 8px;
+        background: #2f2f2f;
+        border-radius: 4px;
+        tip := Text {
+            x: 7px;
+            y: 4px;
+            text: root.tooltip;
+            color: white;
+            font-size: 11px;
+        }
+    }
 }
 
 // A "label : value" line, like the WireGuard for Windows detail grid.
 component DetailRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
+    in property <bool> copyable: false;
+    callback copy();
     spacing: 8px;
     Text {
         text: root.label;
@@ -142,6 +199,13 @@ component DetailRow inherits HorizontalLayout {
         font-size: 13px;
         horizontal-stretch: 1;
         wrap: word-wrap;
+    }
+    if root.copyable: VerticalLayout {
+        alignment: start;
+        PushButton {
+            text: "Copy";
+            clicked => { root.copy(); }
+        }
     }
 }
 
@@ -286,6 +350,12 @@ export component MainWindow inherits Window {
     callback delete-tunnel(string);
     callback begin-edit(string);
     callback refresh-log();
+    callback export-zip();
+    callback import-qr();
+    callback show-qr(string);
+    callback set-autostart(string, bool);
+    callback copy-text(string);
+    callback show-about();
 
     // Force the light palette app-wide (Palette is a global). Without this,
     // GNOME dark mode gives std-widgets near-white fills that vanish on our
@@ -360,6 +430,7 @@ export component MainWindow inherits Window {
                             PushButton {
                                 text: "Add Tunnel";
                                 arrow: true;
+                                tooltip: "Add, import, or scan a tunnel";
                                 clicked => { add-popup.show(); }
                             }
                         }
@@ -368,16 +439,25 @@ export component MainWindow inherits Window {
                             alignment: center;
                             IconButton {
                                 enabled: root.has-selection;
+                                tooltip: "Remove the selected tunnel";
                                 clicked => { root.delete-tunnel(root.detail.name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                kind: "export";
+                                tooltip: "Export all tunnels to a zip";
+                                clicked => { root.export-zip(); }
                             }
                         }
                     }
 
                     add-popup := PopupWindow {
                         x: 8px;
-                        y: -78px;
+                        y: -146px;
                         width: 244px;
-                        height: 72px;
+                        height: 140px;
                         Rectangle {
                             background: white;
                             border-color: #b9b9b9;
@@ -391,8 +471,16 @@ export component MainWindow inherits Window {
                                     chosen => { add-popup.close(); root.import-file(); }
                                 }
                                 MenuItem {
+                                    text: "Import from QR code…";
+                                    chosen => { add-popup.close(); root.import-qr(); }
+                                }
+                                MenuItem {
                                     text: "Add empty tunnel…";
                                     chosen => { add-popup.close(); root.add-empty(); }
+                                }
+                                MenuItem {
+                                    text: "About…";
+                                    chosen => { add-popup.close(); root.show-about(); }
                                 }
                             }
                         }
@@ -459,6 +547,8 @@ export component MainWindow inherits Window {
                         DetailRow {
                             label: "Public key:";
                             value: root.detail.public-key;
+                            copyable: true;
+                            copy => { root.copy-text(root.detail.public-key); }
                         }
                         if root.detail.listen-port != "": DetailRow {
                             label: "Listen port:";
@@ -473,14 +563,30 @@ export component MainWindow inherits Window {
                             value: root.detail.dns;
                         }
 
-                        // Activate / Deactivate — below the details, aligned under
-                        // the value column (matches the WireGuard for Windows client).
+                        // Start-on-boot toggle (wg-quick@<name> systemd unit).
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: ""; width: 132px; }
+                            CheckBox {
+                                text: "Start on boot";
+                                checked: root.detail.autostart;
+                                toggled => {
+                                    root.set-autostart(root.detail.name, self.checked);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        // Activate / Deactivate + Show QR — below the details,
+                        // aligned under the value column (matches the Windows client).
                         HorizontalLayout {
                             padding-top: 6px;
-                            Rectangle { width: 140px; }
+                            spacing: 8px;
+                            Rectangle { width: 132px; }
                             PushButton {
                                 text: root.detail.active ? "Deactivate" : "Activate";
                                 primary: !root.detail.active;
+                                tooltip: root.detail.active ? "Take the tunnel down" : "Bring the tunnel up";
                                 clicked => {
                                     if (root.detail.active) {
                                         root.deactivate(root.detail.name);
@@ -488,6 +594,11 @@ export component MainWindow inherits Window {
                                         root.activate(root.detail.name);
                                     }
                                 }
+                            }
+                            PushButton {
+                                text: "Show QR";
+                                tooltip: "Show as a QR code to scan on a phone";
+                                clicked => { root.show-qr(root.detail.name); }
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
@@ -499,6 +610,8 @@ export component MainWindow inherits Window {
                         DetailRow {
                             label: "Public key:";
                             value: p.public-key;
+                            copyable: true;
+                            copy => { root.copy-text(p.public-key); }
                         }
                         if p.preshared: DetailRow {
                             label: "Preshared key:";
@@ -540,6 +653,7 @@ export component MainWindow inherits Window {
                         alignment: center;
                         PushButton {
                             text: "Edit";
+                            tooltip: "Edit this tunnel's configuration";
                             clicked => { root.begin-edit(root.detail.name); }
                         }
                     }
@@ -572,12 +686,20 @@ export component MainWindow inherits Window {
                     Rectangle { y: 0; height: 1px; background: #e0e0e0; }
                     HorizontalLayout {
                         padding: 8px;
+                        spacing: 6px;
                         alignment: start;
                         VerticalLayout {
                             alignment: center;
                             PushButton {
                                 text: "Refresh";
                                 clicked => { root.refresh-log(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Copy";
+                                clicked => { root.copy-text(root.log-text); }
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -625,8 +747,12 @@ export component EditWindow inherits Window {
     in-out property <string> config-text: "";
     in property <string> error: "";
     in property <string> warning: "";
+    in property <string> public-key: "";
     callback save(string, string);
     callback cancel();
+    callback generate-key();
+    callback config-changed(string);
+    callback copy(string);
 
     // Force the light palette so the text inputs use dark-text-on-light fills —
     // which is what makes them visible on a white background. (No `min-height`
@@ -662,9 +788,50 @@ export component EditWindow inherits Window {
                 }
             }
 
+            // Public key — derived live from the PrivateKey in the config
+            // (matches the WireGuard for Windows "create tunnel" dialog).
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: 8px;
+                Text {
+                    text: "Public key:";
+                    width: 80px;
+                    color: #6a6a6a;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.public-key != "" ? root.public-key : "—";
+                    color: #1b1b1b;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                PushButton {
+                    text: "Copy";
+                    enabled: root.public-key != "";
+                    clicked => { root.copy(root.public-key); }
+                }
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: 8px;
+                PushButton {
+                    text: "Generate keypair";
+                    clicked => { root.generate-key(); }
+                }
+                PushButton {
+                    text: "Copy config";
+                    clicked => { root.copy(root.config-text); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
             TextEdit {
                 vertical-stretch: 1;
                 text <=> root.config-text;
+                edited => { root.config-changed(self.text); }
             }
 
             Text {
@@ -696,6 +863,132 @@ export component EditWindow inherits Window {
                     primary: true;
                     clicked => { root.save(root.tunnel-name, root.config-text); }
                 }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// A small window that shows a tunnel's config as a QR code (scan it from the
+// WireGuard mobile app to import the tunnel on a phone).
+// ===========================================================================
+export component QrWindow inherits Window {
+    title: "Tunnel QR code";
+    width: 360px;
+    height: 430px;
+    in property <string> name;
+    in property <image> qr;
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    background: white;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 12px;
+        alignment: start;
+        Text {
+            text: "Scan to import “" + root.name + "”";
+            font-size: 15px;
+            font-weight: 700;
+            color: #1b1b1b;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: root.qr;
+                width: 300px;
+                height: 300px;
+                image-rendering: pixelated;
+            }
+        }
+        Text {
+            text: "On your phone: WireGuard → + → Scan from QR code.";
+            color: #6a6a6a;
+            font-size: 12px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// ===========================================================================
+// About window.
+// ===========================================================================
+export component AboutWindow inherits Window {
+    title: "About WireGuard GUI";
+    width: 440px;
+    height: 340px;
+    in property <string> version;
+    callback open-url(string);
+    callback close-me();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    background: white;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 10px;
+        alignment: start;
+
+        Text {
+            text: "🐉 WireGuard GUI";
+            font-size: 22px;
+            font-weight: 800;
+            color: #1b1b1b;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Version " + root.version;
+            color: #6a6a6a;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client.";
+            color: #444444;
+            font-size: 13px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 6px; }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 8px;
+            PushButton {
+                text: "GitHub";
+                clicked => { root.open-url("https://github.com/JamilleJung/wireguard-gui"); }
+            }
+            PushButton {
+                text: "Buy me a coffee";
+                clicked => { root.open-url("https://www.buymeacoffee.com/jamillejung"); }
+            }
+        }
+
+        Text {
+            text: "MIT License · Built with Rust + Slint";
+            color: #8a8a8a;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "WireGuard is a registered trademark of Jason A. Donenfeld. This is an independent, unofficial client.";
+            color: #a0a0a0;
+            font-size: 10px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: center;
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
             }
         }
     }

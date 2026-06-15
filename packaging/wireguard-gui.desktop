@@ -6,6 +6,7 @@ Comment=Manage WireGuard tunnels
 Exec=wireguard-gui
 Icon=wireguard-gui
 Terminal=false
+StartupWMClass=wireguard-gui
 Categories=Network;Security;
 Keywords=VPN;WireGuard;tunnel;network;
 StartupNotify=true

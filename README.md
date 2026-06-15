@@ -30,10 +30,14 @@ single native binary. No Electron, no web view.
 - 🧾 **Interface card** — status, public key, listen port, addresses, DNS.
 - 🛰️ **Peer card(s)** — public key, preshared-key indicator, allowed IPs, endpoint,
   persistent keepalive, **latest handshake** and **transfer**, polled live every second.
-- 📥 **Import** one or many `.conf` files — single imports open an editor so you can
-  **name the tunnel yourself**; bulk imports auto-deduplicate names (never overwrite).
+- 📥 **Import** one or many `.conf` files (single imports open an editor so you can
+  **name the tunnel yourself**; bulk imports auto-deduplicate), or **import from a QR-code image**.
+- 🔑 **Generate keypairs** — new tunnels open with a fresh private key and a live public-key field.
+- 📱 **Show QR** — display a tunnel as a QR code to scan into the WireGuard mobile app.
+- 📦 **Export** all tunnels to a `.zip`; **copy** public keys / config / log to the clipboard.
 - 📝 **Inline editor** with **config validation** (keys, addresses, endpoint, …) before saving.
-- ✏️ **Rename** a tunnel from the editor; **Remove** with one click.
+- ✏️ **Rename** / **Remove** tunnels; **Log** tab; **Start-on-boot** toggle.
+- 🗔 **System-tray icon** with per-tunnel activate/deactivate (where the desktop supports SNI).
 - 🔒 **Tiny, auditable privilege surface** (see below).
 
 ---
@@ -154,11 +158,11 @@ let it fall back to `pkexec`. Override the helper path with
 
 | Distro | Packages |
 |--------|----------|
-| Debian/Ubuntu | `build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 wireguard-tools` |
-| Fedora/RHEL | `gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel mesa-libGL mesa-libEGL wireguard-tools` |
-| Arch | `base-devel fontconfig libxkbcommon libglvnd wireguard-tools` |
-| openSUSE | `gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel Mesa-libGL1 Mesa-libEGL1 wireguard-tools` |
-| Alpine | `build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-gl mesa-egl wireguard-tools` |
+| Debian/Ubuntu | `build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 libdbus-1-dev wireguard-tools` |
+| Fedora/RHEL | `gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel mesa-libGL mesa-libEGL dbus-devel wireguard-tools` |
+| Arch | `base-devel fontconfig libxkbcommon libglvnd dbus wireguard-tools` |
+| openSUSE | `gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel Mesa-libGL1 Mesa-libEGL1 dbus-1-devel wireguard-tools` |
+| Alpine | `build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-gl mesa-egl dbus-dev wireguard-tools` |
 
 </details>
 
@@ -167,11 +171,15 @@ let it fall back to `pkexec`. Override the helper path with
 ## 🖥️ Usage
 
 1. Launch **WireGuard** (app menu) or `wireguard-gui`.
-2. Pick a tunnel on the left to see its Interface/Peer details and live status.
-3. **Activate / Deactivate** with the button in the Interface card.
-4. **Add Tunnel ▾** → *Import tunnel(s) from file…* or *Add empty tunnel…*.
-5. **Edit** opens the editor; rename via the Name field, fix the config, **Save**
-   (it's validated first). **✕** removes the selected tunnel.
+2. Pick a tunnel on the left to see its Interface/Peer details and live status;
+   toggle **Start on boot**, **Show QR**, or **Copy** the public key.
+3. **Activate / Deactivate** with the button in the Interface card (or from the
+   tray icon, per tunnel).
+4. **Add Tunnel ▾** → *Import from file…* / *Import from QR code…* /
+   *Add empty tunnel…* (a keypair is generated for you) / *About…*.
+5. **Edit** opens the editor (rename, **Generate keypair**, **Copy config**,
+   validate-on-Save). The **✕** removes a tunnel; the **⤓** exports all to a zip.
+6. The **Log** tab shows recent activity (`journalctl -t wireguard-gui` + `wg-quick`).
 
 ---
 
@@ -224,8 +232,8 @@ falls back to `pkexec` (which prompts).
 - **Built & tested on x86_64, GNOME/Wayland.** It should work on other desktops
   and X11, but those are less tested. Prebuilt binaries are x86_64 only — other
   architectures can build from source.
-- **No in-app key generation yet.** Paste keys or import a `.conf`; the editor
-  validates them. (`wg genkey` integration is a nice future addition.)
+- **The system-tray icon** uses the StatusNotifierItem standard. It shows on KDE
+  and most trays out of the box; on **GNOME it needs the AppIndicator extension**.
 - **Multiple peers** are shown (one card each) and editable via the raw config,
   but there's no dedicated add/remove-peer UI yet.
 - **AppImage privileged actions** work best with a system helper present — run
@@ -252,27 +260,21 @@ standalone via `wg-quick` + systemd, and mark `wg*` as `unmanaged` in NM so it
 can never touch (and re-break) the interface again. That experience is exactly
 why this app talks to `wg-quick` directly instead of going through NM.
 
-### 2. Slint text inputs rendered *blank* on GNOME/Wayland — the big one
-The editor's `LineEdit`/`TextEdit` would show up **completely empty** (no box, no
-text) and only appear after you clicked into them. Everything else — labels,
-buttons, the tunnel list — rendered fine. This burned the most time because the
-obvious culprits were all wrong:
-- It happened with **both** the femtovg **and** the software renderer, so it
-  wasn't GPU/glyph-cache specific.
-- It survived switching to a separate window, removing timers, removing
-  `request_redraw`, and forcing the widget style.
-The breakthrough came from building a series of **minimal isolation windows**:
-a bare window with a `TextEdit` worked perfectly, but my editor didn't. Bisecting
-the difference one property at a time, the trigger was finally clear:
-**setting `background` on the `Window` (or any ancestor of the text input) makes
-those widgets render blank on this Slint + GNOME-Wayland setup.** Remove the
-explicit background and they render instantly.
-**Fix:** never make a background an *ancestor* of a text input. The editor paints
-its white backdrop with a sibling `Rectangle` *behind* the content layer instead
-of setting `Window.background`, so it matches the light main window **and** the
-inputs render. Related gotcha found along the way: an explicit `min-height` on a
-`TextEdit` can also suppress its text on femtovg
-([Slint #6896](https://github.com/slint-ui/slint/issues/6896)) — so that's avoided too.
+### 2. Slint text inputs rendered *blank* on a light window — the big one
+The editor's `LineEdit`/`TextEdit` showed up **completely empty** on a white
+background, visible only when focused. It happened with **every** renderer
+(femtovg, software, *and* Skia), so it wasn't GPU/glyph-cache specific — which
+ruled out the obvious suspects and cost the most time.
+The real cause turned out to be **contrast, not rendering**: with the OS in dark
+mode, Slint's std-widgets pick a dark palette where the unfocused input fill is
+white-at-6%-opacity with white text. Put that over a white window and it's
+white-on-white — invisible; the focused state uses a near-black fill, which is
+why only the focused field showed. (Confirmed against the Fluent style source.)
+**Fix:** force the **light** palette so the inputs use dark-text-on-light fills
+that match the white window — `Palette.color-scheme = ColorScheme.light` plus the
+`fluent-light` style in `build.rs`. (Related gotcha ruled out along the way: an
+explicit `min-height` on a `TextEdit` can also suppress its text on femtovg,
+[Slint #6896](https://github.com/slint-ui/slint/issues/6896).)
 
 ### 3. Running privileged operations without nagging for a password
 `wg`/`wg-quick` need root, but I didn't want a password prompt on every status
