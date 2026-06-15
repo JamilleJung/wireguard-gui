@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client."
 license = "MIT"
-repository = "https://github.com/jamillejung/wireguard-gui"
+repository = "https://github.com/JamilleJung/wireguard-gui"
 readme = "README.md"
 default-run = "wireguard-gui"
 

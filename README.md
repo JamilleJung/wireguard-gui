@@ -39,7 +39,7 @@ single native binary. No Electron, no web view.
 ## 🚀 Install (one command)
 
 ```sh
-git clone https://github.com/jamillejung/wireguard-gui.git
+git clone https://github.com/JamilleJung/wireguard-gui.git
 cd wireguard-gui
 ./install.sh
 ```
@@ -59,7 +59,7 @@ Then launch **WireGuard** from your application menu, or run `wireguard-gui`.
 
 > Prefer a true one-liner? Once the repo is public:
 > ```sh
-> curl -fsSL https://raw.githubusercontent.com/jamillejung/wireguard-gui/main/install.sh | bash
+> curl -fsSL https://raw.githubusercontent.com/JamilleJung/wireguard-gui/main/install.sh | bash
 > ```
 
 ### ✅ Tested package managers
@@ -232,7 +232,7 @@ Issues and PRs welcome! The code is small and tidy:
 If wireguard-gui is useful to you, **please give it a star on GitHub** — it
 genuinely helps other people discover the project and motivates further work.
 
-👉 **[Star wireguard-gui on GitHub](https://github.com/jamillejung/wireguard-gui)** ⭐
+👉 **[Star wireguard-gui on GitHub](https://github.com/JamilleJung/wireguard-gui)** ⭐
 
 You can also **watch** the repo for releases and **fork** it to hack on your own ideas.
 
