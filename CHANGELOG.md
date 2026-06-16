@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-06-17
+
+### Fixed
+- **Installer now finds `sbin` tools after the root re-exec.** A normal user's
+  `PATH` (which `su` carries into the as-root re-exec) usually omits `/usr/sbin`
+  and `/sbin`, so `visudo` and the `resolvconf` probe silently failed - the
+  passwordless drop-in was skipped ("sudoers validation failed") and a present
+  `openresolv` was misreported as missing. The installer now puts sbin on `PATH`,
+  so the sudoers drop-in is written and resolvconf is detected correctly.
+- Clearer hint when the drop-in is skipped: re-run `./install.sh --polkit`.
+
 ## [1.5.3] - 2026-06-17
 
 ### Added
