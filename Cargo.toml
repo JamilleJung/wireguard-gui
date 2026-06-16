@@ -1,6 +1,6 @@
 [package]
 name = "wireguard-gui"
-version = "1.5.2"
+version = "1.5.3"
 edition = "2021"
 description = "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client."
 license = "MIT"
