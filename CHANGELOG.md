@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-06-17
+
+### Added
+- **"No usable sudo -> install sudo and set it up."** When you can't use sudo
+  (e.g. a Debian box where you aren't in the sudoers file), the installer re-runs
+  itself as root with a **single** ROOT-password prompt (instead of one per step),
+  installs `sudo` if it's missing, and writes a passwordless drop-in scoped to the
+  helper for *your* user - which makes the app work as a normal user (no root, no
+  prompt) even though you aren't in the `sudo` group.
+
+### Security
+- **Don't trust `$USER` when writing the sudoers rule.** The target user is now
+  taken from the real uid (`id -un`), validated against a strict username pattern
+  and confirmed to exist, so a crafted `$USER` can't inject a wider sudoers spec
+  (e.g. `NOPASSWD: ALL`) - `visudo -cf` alone does not catch that.
+- **The build no longer runs as root.** `cargo`/`rustup` run as the invoking user
+  via `runuser`, so dependency build scripts never execute with root privilege and
+  the toolchain/artifacts stay in that user's home.
+
+### Fixed
+- Clear, actionable error when the app can't gain root (no passwordless sudo and
+  no `pkexec`) instead of a cryptic `spawn failed: No such file or directory`.
+- Installer fails loudly if it can't set up any privilege path, rather than
+  reporting success and leaving a non-working install.
+
 ## [1.5.2] - 2026-06-17
 
 ### Fixed
