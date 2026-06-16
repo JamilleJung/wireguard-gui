@@ -88,6 +88,18 @@ fn helper_path() -> &'static str {
                 return c.to_string();
             }
         }
+        // A wg-helper sitting next to the binary — e.g. an extracted release
+        // tarball that hasn't run install.sh. Tried only after the trusted
+        // installed paths; under sudoers/polkit the grant is scoped to the
+        // installed path, so this mainly helps the run-as-root / portable case.
+        if let Some(adj) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("wg-helper")))
+        {
+            if adj.is_file() {
+                return adj.to_string_lossy().into_owned();
+            }
+        }
         // dev fallback: <manifest>/packaging/wg-helper
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging/wg-helper");
         dev.to_string_lossy().into_owned()
