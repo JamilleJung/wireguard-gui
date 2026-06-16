@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-06-16
+
+### Changed
+- **Privileged helper portability.** `wg-helper` no longer relies on GNU
+  `find -printf` (it uses a pure-bash glob, so it works with BusyBox `find` on
+  Alpine/Void) and filters listed tunnels to valid names. Start-on-boot now
+  detects `systemctl` first and fails with a clear message on non-systemd
+  systems (`is-enabled` reports "unknown" so the UI shows "off"); the log view
+  explains when `journalctl` isn't available.
+- **Helper-path override hardening.** `$WG_HELPER` is honoured freely in debug
+  builds, but in release builds it is ignored unless `WG_ALLOW_UNSAFE_HELPER=1`
+  is set *and* the target is an absolute, root-owned, non-world-writable file.
+
+### Added
+- Unit tests for config parsing, validation, name sanitisation and the form
+  representability check; a CI step that shell-syntax-checks `wg-helper` and
+  `install.sh`.
+- README cross-links the terminal sibling (`wireguard-tui`) and explains the
+  `wg-quick` (not NetworkManager) model, the init-system limitation, and the
+  QR/private-key warning.
+
 ## [1.3.1] - 2026-06-16
 
 ### Fixed
@@ -165,7 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.1...v1.2.0
