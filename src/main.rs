@@ -1245,3 +1245,57 @@ fn new_tunnel_template(private_key: &str) -> String {
          Endpoint = server.example.com:51820\nPersistentKeepalive = 25\n"
     )
 }
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+
+    fn single_peer() -> String {
+        format!("[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com:51820\n")
+    }
+
+    #[test]
+    fn representable_simple_config() {
+        assert!(form_representable(&single_peer()));
+    }
+
+    #[test]
+    fn not_representable_when_multi_peer_or_scripts() {
+        // Two peers — the form maps only one.
+        let two = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 10.1.0.0/24\n"
+        );
+        assert!(!form_representable(&two));
+        // PostUp runs as root and is not a form field.
+        let scripted = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPostUp = iptables -A FORWARD -i %i -j ACCEPT\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(!form_representable(&scripted));
+        // Table is also unmapped.
+        let table = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nTable = off\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(!form_representable(&table));
+    }
+
+    #[test]
+    fn fields_roundtrip_preserves_mapped_values() {
+        let f = config_to_fields(&single_peer());
+        assert_eq!(f.private_key, KEY);
+        assert_eq!(f.address, "10.0.0.2/24");
+        assert_eq!(f.peer_public_key, KEY);
+        assert_eq!(f.allowed_ips, "0.0.0.0/0");
+        assert_eq!(f.endpoint, "vpn.example.com:51820");
+        // Rebuilt config is itself representable and re-parses to the same fields.
+        let rebuilt = fields_to_config(&f);
+        assert!(form_representable(&rebuilt));
+        let f2 = config_to_fields(&rebuilt);
+        assert_eq!(f2.private_key, f.private_key);
+        assert_eq!(f2.endpoint, f.endpoint);
+        assert_eq!(f2.allowed_ips, f.allowed_ips);
+    }
+}

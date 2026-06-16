@@ -44,5 +44,6 @@ jobs:
       - name: Shell lint the helper & installer
         run: |
           sudo apt-get install -y shellcheck
+          bash -n packaging/wg-helper
           bash -n install.sh
           shellcheck -S warning packaging/wg-helper install.sh || true

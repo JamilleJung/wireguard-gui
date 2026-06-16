@@ -21,6 +21,24 @@ single native binary. No Electron, no web view.
 
 </div>
 
+> **Prefer the terminal?** **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)**
+> is the same tool as a keyboard-driven TUI — ideal over SSH and on headless servers.
+
+---
+
+## ℹ️ Good to know
+
+- **It drives `wg-quick`, not NetworkManager.** Tunnels are plain `.conf` files in
+  `/etc/wireguard`, brought up with `wg-quick up`/`down` — the standard WireGuard
+  path. NetworkManager is deliberately bypassed (it has historically mangled
+  `[Peer]` sections; see *The story behind it* below).
+- **Start-on-boot needs systemd** — it toggles the `wg-quick@<name>` unit. On
+  non-systemd systems (OpenRC, runit, …) that one feature is unavailable;
+  everything else works.
+- **A QR code — and an exported `.zip` — contains the tunnel's _private key_.**
+  Only show a QR when it's safe for someone to photograph your screen, and keep
+  exports somewhere safe.
+
 ---
 
 ## ✨ Features

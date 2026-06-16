@@ -41,12 +41,43 @@ pub fn init() {
     let _ = ESC.set(esc);
 }
 
-/// Resolve the helper path: $WG_HELPER, the installed location, or the
-/// in-tree copy used during `cargo run`.
+/// Whether to honour a `$WG_HELPER` override. Since the helper runs as root,
+/// an attacker who can set this env var could otherwise get their own script run
+/// with privilege (notably when the app itself is run as root). In **debug**
+/// builds it is always honoured (dev convenience). In **release** builds it is
+/// refused unless the operator opts in with `WG_ALLOW_UNSAFE_HELPER=1` *and* the
+/// target is a safe file: an absolute path to a regular file owned by root and
+/// not writable by group/other (so it can't be swapped under us).
+fn wg_helper_override_allowed(p: &str) -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    if std::env::var("WG_ALLOW_UNSAFE_HELPER").as_deref() != Ok("1") {
+        return false;
+    }
+    let path = std::path::Path::new(p);
+    if !path.is_absolute() {
+        return false;
+    }
+    match std::fs::metadata(path) {
+        Ok(m) => {
+            use std::os::unix::fs::MetadataExt;
+            m.is_file() && m.uid() == 0 && (m.mode() & 0o022) == 0
+        }
+        Err(_) => false,
+    }
+}
+
+/// Resolve the helper path: `$WG_HELPER` (when allowed), an installed location,
+/// or the in-tree copy used during `cargo run`.
 fn helper_path() -> &'static str {
     HELPER.get_or_init(|| {
         if let Ok(p) = std::env::var("WG_HELPER") {
-            return p;
+            if wg_helper_override_allowed(&p) {
+                return p;
+            }
+            // Unsafe override in a release build — ignore it and fall back to the
+            // trusted installed paths rather than running an attacker's script.
         }
         let candidates = [
             "/usr/local/lib/wireguard-gui/wg-helper",
@@ -573,7 +604,9 @@ fn is_wg_key(s: &str) -> bool {
 /// rejected because wg-quick requires brackets; the host charset is validated.
 fn is_endpoint(s: &str) -> bool {
     let s = s.trim();
-    let (host, port) = if let Some(rest) = s.strip_prefix('[') {
+    let port_ok = |port: &str| matches!(port.parse::<u32>(), Ok(p) if (1..=65535).contains(&p));
+
+    if let Some(rest) = s.strip_prefix('[') {
         // Bracketed IPv6: must be `[<ipv6>]:port`.
         let Some((inner, after)) = rest.split_once(']') else {
             return false;
@@ -581,29 +614,22 @@ fn is_endpoint(s: &str) -> bool {
         let Some(port) = after.strip_prefix(':') else {
             return false;
         };
-        if inner.parse::<std::net::Ipv6Addr>().is_err() {
-            return false;
-        }
-        (inner, port)
-    } else {
-        match s.rsplit_once(':') {
-            // A bare host containing ':' would be unbracketed IPv6 -> reject.
-            Some((h, p)) if !h.contains(':') => (h, p),
-            _ => return false,
-        }
+        return inner.parse::<std::net::Ipv6Addr>().is_ok() && port_ok(port);
+    }
+
+    // host:port where host is IPv4 or a DNS name. A bare host with ':' would be
+    // unbracketed IPv6, which wg-quick rejects, so reject it here too.
+    let Some((host, port)) = s.rsplit_once(':') else {
+        return false;
     };
-    if host.is_empty() {
+    if host.is_empty() || host.contains(':') {
         return false;
     }
-    // Non-bracketed host is IPv4 or a DNS name: restrict the charset.
     let host_ok = host.parse::<std::net::Ipv4Addr>().is_ok()
         || host
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    if !host_ok {
-        return false;
-    }
-    matches!(port.parse::<u32>(), Ok(p) if (1..=65535).contains(&p))
+    host_ok && port_ok(port)
 }
 
 /// A CIDR / address check via real parsing: `10.0.0.2/24`, `::1/128`, or a bare IP.
@@ -870,5 +896,92 @@ pub fn sanitize_name(file_stem: &str) -> String {
         "tunnel".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A syntactically valid 44-char base64 WireGuard key (43 chars + '=').
+    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+
+    #[test]
+    fn wg_key_shape() {
+        assert!(is_wg_key(KEY));
+        assert!(!is_wg_key("tooshort="));
+        assert!(!is_wg_key(""));
+        assert!(!is_wg_key(&KEY.replace('=', "x")));
+    }
+
+    #[test]
+    fn endpoint_validation() {
+        assert!(is_endpoint("vpn.example.com:51820"));
+        assert!(is_endpoint("10.0.0.1:51820"));
+        assert!(is_endpoint("[2402:6880:2000:590::2]:51820"));
+        assert!(!is_endpoint("2402:6880:2000:590::2:51820")); // bare IPv6 -> reject
+        assert!(!is_endpoint("[notanaddr]:51820"));
+        assert!(!is_endpoint("host:0"));
+        assert!(!is_endpoint("host:99999"));
+        assert!(!is_endpoint("host"));
+        assert!(!is_endpoint("@#$:51820"));
+    }
+
+    #[test]
+    fn inet_validation() {
+        assert!(looks_like_inet("10.0.0.2/24"));
+        assert!(looks_like_inet("10.0.0.2"));
+        assert!(looks_like_inet("::1/128"));
+        assert!(looks_like_inet("fd00:7::2/64"));
+        assert!(looks_like_inet("0.0.0.0/0"));
+        assert!(!looks_like_inet("10.0.0.2/33"));
+        assert!(!looks_like_inet("::1/129"));
+        assert!(!looks_like_inet("not-an-ip"));
+        assert!(!looks_like_inet("999.1.1.1"));
+    }
+
+    #[test]
+    fn sanitize_name_rules() {
+        assert_eq!(sanitize_name("home"), "home");
+        assert_eq!(sanitize_name("home server"), "home_server");
+        assert_eq!(sanitize_name("@#$"), "tunnel");
+        assert_eq!(sanitize_name("___abc"), "abc");
+        assert_eq!(sanitize_name("a.b.c."), "a.b.c");
+        assert_eq!(sanitize_name(""), "tunnel");
+        let long = sanitize_name("averylongtunnelname1234567");
+        assert!(long.chars().count() <= 15);
+        for input in ["...x", "___y", "@@@9abc", "valid-name"] {
+            let n = sanitize_name(input);
+            assert!(
+                n.chars().next().unwrap().is_ascii_alphanumeric(),
+                "{input} -> {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_and_validate_ok() {
+        let cfg = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24, fd00::2/64\n\
+             DNS = 1.1.1.1\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0, ::/0\n\
+             Endpoint = vpn.example.com:51820\nPersistentKeepalive = 25\n"
+        );
+        assert!(validate_config(&cfg).is_ok());
+        let p = parse_config(&cfg);
+        assert_eq!(p.address.as_deref(), Some("10.0.0.2/24, fd00::2/64"));
+        assert_eq!(p.peers.len(), 1);
+    }
+
+    #[test]
+    fn validate_rejects_missing_parts() {
+        assert!(validate_config("not a config").is_err());
+        assert!(validate_config(&format!(
+            "[Interface]\nAddress = 10.0.0.2/24\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        ))
+        .is_err());
+        assert!(validate_config(&format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n"
+        ))
+        .is_err());
     }
 }
