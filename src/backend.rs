@@ -43,10 +43,41 @@ pub fn init() {
 
 /// Resolve the helper path: $WG_HELPER, the installed location, or the
 /// in-tree copy used during `cargo run`.
+/// Whether to honour a `$WG_HELPER` override. Since the helper runs as root,
+/// an attacker who can set this env var could otherwise get their own script run
+/// with privilege (notably when the app itself is run as root). In **debug**
+/// builds it is always honoured (dev convenience). In **release** builds it is
+/// refused unless the operator opts in with `WG_ALLOW_UNSAFE_HELPER=1` *and* the
+/// target is a safe file: an absolute path to a regular file owned by root and
+/// not writable by group/other (so it can't be swapped under us).
+fn wg_helper_override_allowed(p: &str) -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    if std::env::var("WG_ALLOW_UNSAFE_HELPER").as_deref() != Ok("1") {
+        return false;
+    }
+    let path = std::path::Path::new(p);
+    if !path.is_absolute() {
+        return false;
+    }
+    match std::fs::metadata(path) {
+        Ok(m) => {
+            use std::os::unix::fs::MetadataExt;
+            m.is_file() && m.uid() == 0 && (m.mode() & 0o022) == 0
+        }
+        Err(_) => false,
+    }
+}
+
 fn helper_path() -> &'static str {
     HELPER.get_or_init(|| {
         if let Ok(p) = std::env::var("WG_HELPER") {
-            return p;
+            if wg_helper_override_allowed(&p) {
+                return p;
+            }
+            // Unsafe override in a release build — ignore it and fall back to the
+            // trusted installed paths rather than running an attacker's script.
         }
         let candidates = [
             "/usr/local/lib/wireguard-gui/wg-helper",
