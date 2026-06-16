@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please report security issues **privately** — do not open a public issue for
+Please report security issues **privately** - do not open a public issue for
 anything exploitable.
 
 - Preferred: GitHub **[Private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new)**
@@ -20,7 +20,7 @@ This is an early project; only the latest release (and `main`) receive fixes.
 ## Security model
 
 `wireguard-gui` runs as your normal user. Anything requiring root is funnelled
-through one small, auditable script — **`packaging/wg-helper`** — which is the
+through one small, auditable script - **`packaging/wg-helper`** - which is the
 *entire* privileged surface. The GUI binary itself never runs as root.
 
 Hardening in `wg-helper`:
@@ -45,14 +45,14 @@ Hardening in `wg-helper`:
   `pkexec` without a password for an **active local session** only.
 - If neither is configured, the app falls back to `pkexec`, which prompts.
 
-### Config hooks run as root — only import configs you trust
+### Config hooks run as root - only import configs you trust
 
 WireGuard configs may contain `PostUp` / `PreUp` / `PostDown` / `PreDown`
 directives, which **`wg-quick` runs as root** when the tunnel is activated. A
 malicious `.conf` could therefore run arbitrary root commands on activation.
 
 This is inherent to `wg-quick` (the same risk as running `wg-quick up` on any
-config by hand) — it is **not** a flaw specific to this app. To mitigate it, the
+config by hand) - it is **not** a flaw specific to this app. To mitigate it, the
 editor shows an amber warning whenever a config contains those directives. Treat
 importing a `.conf` like running a script: only do it from sources you trust.
 
@@ -65,9 +65,9 @@ importing a `.conf` like running a script: only do it from sources you trust.
 - Config files contain private keys in clear text (same as upstream WireGuard
   tools). They are stored `0600`, root-owned, in `/etc/wireguard` (mode `700`).
   The editor displays them in clear text by design. The audit log records
-  actions and tunnel names only — **never** key material.
+  actions and tunnel names only - **never** key material.
 - Treat the `sudoers`/`polkit` grant as "this local user may control WireGuard
-  without a password" — equivalent to the trust you'd place in `wg-quick`.
+  without a password" - equivalent to the trust you'd place in `wg-quick`.
 - Supply chain: prebuilt release artifacts ship with a `SHA256SUMS` file that is
   **signed with minisign** (`SHA256SUMS.minisig`; public key `minisign.pub`).
   Verify with:

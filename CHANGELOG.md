@@ -6,16 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-06-17
+
+### Added
+- **Distro packaging**: an **AUR `PKGBUILD`** (Arch) and an **RPM spec for COPR**
+  (Fedora/RHEL/Rocky), plus `packaging/PACKAGING.md`. (A Flatpak manifest is
+  included but documented as experimental — the sandbox is a poor fit for a
+  privileged system VPN manager.)
+
+### Changed
+- Documentation now uses plain ASCII hyphens instead of em dashes.
+
 ## [1.4.0] - 2026-06-17
 
 ### Added
 - **Live throughput + connection health** in the Interface card: real-time
   down/up speed and a handshake-based health line (OK / stale / waiting).
 - The **system-tray tooltip** now shows the active tunnels *and* live throughput.
-- **`wireguard-gui --version` / `--help`** — print and exit without opening a window.
+- **`wireguard-gui --version` / `--help`** - print and exit without opening a window.
 
 ### Changed
-- **Removed demo mode** (`WGGUI_DEMO`) — the app always talks to real tunnels.
+- **Removed demo mode** (`WGGUI_DEMO`) - the app always talks to real tunnels.
 - The privileged helper now **bounds every `wg`/`wg-quick` call with a timeout**,
   so a hang (DNS, a stuck `PostUp`, a wedged interface) can't lock up the app.
 - CI now runs a **smoke test** (`--version`/`--help` start and exit cleanly).
@@ -32,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Easy mode** (default) for everyday users: a toolbar toggle that hides expert
   tools (Export, Running cfg, Save live, *Add empty tunnel*), leaving the
-  everyday surface — Add (import/QR), Activate/Deactivate, Edit, Remove, Show QR,
+  everyday surface - Add (import/QR), Activate/Deactivate, Edit, Remove, Show QR,
   Start on boot. Click **Advanced mode** to reveal everything; the choice is
   remembered (`~/.config/wireguard-gui/mode`).
 
@@ -41,8 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - The form editor now matches config keys **exactly**: a directive like
   `PrivateKeyFile` or `EndpointBackup` is no longer mistaken (by prefix) for
-  `PrivateKey`/`Endpoint`, which could otherwise let the form open for — and then
-  rewrite — a config it can't actually represent. Covered by a regression test.
+  `PrivateKey`/`Endpoint`, which could otherwise let the form open for - and then
+  rewrite - a config it can't actually represent. Covered by a regression test.
 
 ### Changed
 - The privileged helper is also discovered **next to the binary**, so an
@@ -112,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in either view stay in sync, and **Generate keypair/PSK** update both.
 - **Minimal-install dependency check** in `install.sh`: before building it
   verifies the C toolchain, `pkg-config`, and the `fontconfig`/`xkbcommon`/
-  `dbus-1` dev headers, and checks `wireguard-tools` at runtime — failing early
+  `dbus-1` dev headers, and checks `wireguard-tools` at runtime - failing early
   with a clear message instead of a cryptic build error.
 
 ### Changed
@@ -124,13 +135,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.0] - 2026-06-16
 
 ### Added
-- **Generate preshared key** (`wg genpsk`) in the editor — pairs with the
+- **Generate preshared key** (`wg genpsk`) in the editor - pairs with the
   existing keypair generation.
-- **Apply edits to a running tunnel without dropping peer sessions** — saving an
+- **Apply edits to a running tunnel without dropping peer sessions** - saving an
   active tunnel now uses `wg syncconf`; wg-quick-only fields (Address/DNS/MTU/
   Table) still prompt to reconnect.
-- **Running cfg** — copy a live tunnel's running config (`wg showconf`).
-- **Save live** — write the running state back to the `.conf` (`wg-quick save`).
+- **Running cfg** - copy a live tunnel's running config (`wg showconf`).
+- **Save live** - write the running state back to the `.conf` (`wg-quick save`).
 
 ## [1.1.1] - 2026-06-16
 
@@ -145,10 +156,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.0] - 2026-06-16
 
 ### Added
-- **Keypair generation** — new tunnels open with a freshly generated private key
+- **Keypair generation** - new tunnels open with a freshly generated private key
   and a live "Public key" field (like the WireGuard for Windows dialog); a
   "Generate keypair" button regenerates on demand.
-- **QR codes** — *Show QR* renders a tunnel as a QR code to scan into the mobile
+- **QR codes** - *Show QR* renders a tunnel as a QR code to scan into the mobile
   app, and *Add Tunnel → Import from QR code…* imports from a QR image.
 - **Export** all tunnels to a `.zip` (the export button in the bottom bar).
 - **Copy** buttons for public keys, the full config, and the log.
@@ -164,15 +175,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0] - 2026-06-16
 
 ### Added
-- **Log tab** (Tunnels / Log) showing recent activity — the app's audit log plus
-  `wg-quick` service entries — with a Refresh button.
+- **Log tab** (Tunnels / Log) showing recent activity - the app's audit log plus
+  `wg-quick` service entries - with a Refresh button.
 
 ### Changed
 - The **Activate/Deactivate** button now sits below the interface details and
   **Edit** sits at the bottom-right of the window, matching the WireGuard for
   Windows client.
 - Updated dependencies (`rfd` 0.14 → 0.15) and pinned all GitHub Actions to
-  their latest releases (checkout v6, rust-cache v2.9.1, gh-release v3) — also
+  their latest releases (checkout v6, rust-cache v2.9.1, gh-release v3) - also
   clears the Node 20 deprecation warning in CI.
 
 ### Fixed
@@ -196,7 +207,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The editor warns (amber) when a config contains `PostUp`/`PreUp`/`PostDown`/
-  `PreDown` — directives `wg-quick` runs as root on activation.
+  `PreDown` - directives `wg-quick` runs as root on activation.
 
 ### Security
 - `wg-helper` now exports a fixed `PATH`, so a hijacked caller `PATH` can't
@@ -220,7 +231,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Interface card (status, public key, listen port, addresses, DNS) and Peer
   card(s) with **live** latest-handshake and transfer, polled every second.
 - Activate / Deactivate (`wg-quick up`/`down`).
-- Import one or many `.conf` files — single imports open the editor to name the
+- Import one or many `.conf` files - single imports open the editor to name the
   tunnel; bulk imports auto-deduplicate names.
 - Inline editor with **config validation** (keys, addresses, endpoint, …); rename
   and remove tunnels.
@@ -230,12 +241,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Privilege backends: **sudoers** (default) or **polkit** (`--polkit`, used by
   the `.deb`); `pkexec` fallback.
 - **Universal installer** (`install.sh`) supporting apt, dnf/yum, pacman, zypper,
-  apk, xbps and eopkg — auto-installs all missing dependencies (including
+  apk, xbps and eopkg - auto-installs all missing dependencies (including
   `wireguard-tools` and Rust via rustup), then builds and installs.
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.5...v1.4.0
 [1.3.5]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.3...v1.3.4

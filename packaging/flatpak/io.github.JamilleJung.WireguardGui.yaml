@@ -1,0 +1,53 @@
+# EXPERIMENTAL / UNSUPPORTED.
+#
+# WireGuard management is a *privileged system* task: it needs root, write access
+# to /etc/wireguard, and to run `wg-quick`/systemd via sudoers or polkit. The
+# Flatpak sandbox deliberately makes all of that hard, so this manifest is NOT a
+# turnkey, fully-working package — it is a starting point only.
+#
+# For a working install on any distro, prefer:
+#   * native:  ./install.sh   (or the .deb / AppImage from Releases)
+#   * Arch:    the AUR PKGBUILD in ../aur
+#   * Fedora:  the RPM spec in ../rpm (build on COPR)
+#
+# To make this actually manage tunnels you would additionally need to:
+#   * generate cargo-sources.json with flatpak-cargo-generator (for offline build)
+#   * have wg-helper installed ON THE HOST (this package can't install a root
+#     helper into the host), and
+#   * teach the app to run the helper on the host via `flatpak-spawn --host`
+#     (not implemented).
+app-id: io.github.JamilleJung.WireguardGui
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: wireguard-gui
+finish-args:
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # Talk to the host (to run the privileged helper via flatpak-spawn --host).
+  - --talk-name=org.freedesktop.Flatpak
+  # See the host's tray (StatusNotifierItem).
+  - --talk-name=org.kde.StatusNotifierWatcher
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: wireguard-gui
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/wireguard-gui/cargo
+    build-commands:
+      - cargo build --release --offline
+      - install -Dm755 target/release/wireguard-gui /app/bin/wireguard-gui
+      - install -Dm644 packaging/wireguard-gui.desktop /app/share/applications/io.github.JamilleJung.WireguardGui.desktop
+      - install -Dm644 packaging/wireguard-gui.svg /app/share/icons/hicolor/scalable/apps/io.github.JamilleJung.WireguardGui.svg
+    sources:
+      - type: git
+        url: https://github.com/JamilleJung/wireguard-gui.git
+        tag: v1.4.1
+      # - type: file
+      #   path: cargo-sources.json   # generate with flatpak-cargo-generator
