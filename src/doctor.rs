@@ -98,37 +98,115 @@ fn pkg_manager() -> Option<&'static str> {
     .find(|m| which(m))
 }
 
-/// A copy-pasteable command to install `wireguard-tools` on this distro.
-pub fn install_tools_hint() -> String {
-    match pkg_manager() {
-        Some("apt-get") => "sudo apt install wireguard-tools",
-        Some("dnf") => "sudo dnf install wireguard-tools",
-        Some("yum") => "sudo yum install wireguard-tools",
-        Some("pacman") => "sudo pacman -S wireguard-tools",
-        Some("zypper") => "sudo zypper install wireguard-tools",
-        Some("apk") => "sudo apk add wireguard-tools",
-        Some("xbps-install") => "sudo xbps-install -S wireguard-tools",
-        Some("eopkg") => "sudo eopkg install wireguard-tools",
-        _ => "install the 'wireguard-tools' package with your distro's package manager",
+/// Prefix a package-manager command with whatever gains root here (root → none,
+/// sudo → `sudo`, otherwise `su -c '…'` for Debian-minimal without sudo).
+fn with_priv(pkg_cmd: &str) -> String {
+    if unsafe { libc::geteuid() } == 0 {
+        pkg_cmd.to_string()
+    } else if which("sudo") {
+        format!("sudo {pkg_cmd}")
+    } else if which("su") {
+        format!("su -c '{pkg_cmd}'")
+    } else {
+        format!("{pkg_cmd}   (run as root)")
     }
-    .to_string()
 }
 
-/// The non-interactive shell command (to run as root) that installs
-/// `wireguard-tools`, for an automatic fix; `None` on an unknown distro.
-pub fn install_tools_command() -> Option<String> {
-    let c = match pkg_manager()? {
-        "apt-get" => "apt-get update && apt-get install -y wireguard-tools",
-        "dnf" => "dnf install -y wireguard-tools",
-        "yum" => "yum install -y wireguard-tools",
-        "pacman" => "pacman -Sy --noconfirm wireguard-tools",
-        "zypper" => "zypper --non-interactive install wireguard-tools",
-        "apk" => "apk add wireguard-tools",
-        "xbps-install" => "xbps-install -Sy wireguard-tools",
-        "eopkg" => "eopkg install -y wireguard-tools",
+/// The bare `<pkgmgr> install <pkg>` command for this distro (no privilege prefix).
+fn pkg_install(pkg: &str) -> Option<String> {
+    Some(match pkg_manager()? {
+        "apt-get" => format!("apt install {pkg}"),
+        "dnf" => format!("dnf install {pkg}"),
+        "yum" => format!("yum install {pkg}"),
+        "pacman" => format!("pacman -S {pkg}"),
+        "zypper" => format!("zypper install {pkg}"),
+        "apk" => format!("apk add {pkg}"),
+        "xbps-install" => format!("xbps-install -S {pkg}"),
+        "eopkg" => format!("eopkg install {pkg}"),
         _ => return None,
-    };
-    Some(c.to_string())
+    })
+}
+
+/// A copy-pasteable command to install `wireguard-tools` on this distro, with a
+/// privilege prefix that actually works here.
+pub fn install_tools_hint() -> String {
+    match pkg_install("wireguard-tools") {
+        Some(c) => with_priv(&c),
+        None => {
+            "install the 'wireguard-tools' package with your distro's package manager".to_string()
+        }
+    }
+}
+
+/// systemd-resolved running? Cheap file check (no subprocess). When it's up,
+/// modern wg-quick applies `DNS =` through it (resolvectl) - no resolvconf needed.
+fn systemd_resolved_active() -> bool {
+    std::path::Path::new("/run/systemd/resolve").is_dir()
+}
+
+/// The package providing a working `resolvconf` for wg-quick's `DNS =` here.
+/// On a systemd-resolved + Debian/Ubuntu system the correct shim is
+/// `systemd-resolvconf` (wires `resolvconf` -> systemd-resolved); everywhere
+/// else `openresolv` is the portable standalone provider (incl. non-systemd
+/// distros like Alpine/Void).
+fn resolvconf_pkg() -> &'static str {
+    if systemd_resolved_active() && pkg_manager() == Some("apt-get") {
+        "systemd-resolvconf"
+    } else {
+        "openresolv"
+    }
+}
+
+/// True when `DNS =` lines in configs will apply (a `resolvconf` command exists,
+/// or systemd-resolved is handling DNS). Read-only.
+pub fn dns_ok() -> bool {
+    which("resolvconf") || systemd_resolved_active()
+}
+
+/// A copy-pasteable command to install a resolvconf provider (for `DNS =` lines).
+pub fn install_resolvconf_hint() -> String {
+    match pkg_install(resolvconf_pkg()) {
+        Some(c) => with_priv(&c),
+        None => "install 'openresolv' (or another resolvconf provider)".to_string(),
+    }
+}
+
+/// Non-interactive root install command for `pkg`; `None` on an unknown distro.
+fn pkg_install_noninteractive(pkg: &str) -> Option<String> {
+    Some(match pkg_manager()? {
+        "apt-get" => format!("apt-get update && apt-get install -y {pkg}"),
+        "dnf" => format!("dnf install -y {pkg}"),
+        "yum" => format!("yum install -y {pkg}"),
+        "pacman" => format!("pacman -Sy --noconfirm {pkg}"),
+        "zypper" => format!("zypper --non-interactive install {pkg}"),
+        "apk" => format!("apk add {pkg}"),
+        "xbps-install" => format!("xbps-install -Sy {pkg}"),
+        "eopkg" => format!("eopkg install -y {pkg}"),
+        _ => return None,
+    })
+}
+
+/// The non-interactive root command to install `wireguard-tools` (auto-fix).
+pub fn install_tools_command() -> Option<String> {
+    pkg_install_noninteractive("wireguard-tools")
+}
+
+/// The non-interactive root command to install a resolvconf provider (auto-fix).
+pub fn install_resolvconf_command() -> Option<String> {
+    pkg_install_noninteractive(resolvconf_pkg())
+}
+
+/// Turn a raw `wg-quick`/helper error into a concise, actionable message for
+/// common, confusing failures (e.g. the missing-resolvconf one on Debian).
+pub fn friendly_error(raw: &str) -> String {
+    let r = raw.trim();
+    if r.contains("resolvconf") && r.contains("not found") {
+        return format!(
+            "this tunnel's 'DNS =' needs a resolvconf provider - install it: {}",
+            install_resolvconf_hint()
+        );
+    }
+    r.to_string()
 }
 
 /// The installed helper path, if any (trusted locations only). Read-only.
@@ -231,6 +309,28 @@ pub fn system_check() -> Report {
             Some(install_tools_hint())
         },
         critical: true,
+    });
+
+    // wg-quick needs a `resolvconf` (or systemd-resolved) to apply a config's
+    // `DNS =` line; without it such tunnels fail to come up (common on minimal
+    // Debian). Not critical, since DNS-less configs work fine.
+    let dns = dns_ok();
+    checks.push(Check {
+        name: "DNS for tunnels (resolvconf)",
+        status: if dns { Status::Ok } else { Status::Warning },
+        detail: if which("resolvconf") {
+            "resolvconf available".to_string()
+        } else if systemd_resolved_active() {
+            "via systemd-resolved".to_string()
+        } else {
+            "missing - tunnels with a 'DNS =' line will fail to connect".to_string()
+        },
+        fix: if dns {
+            None
+        } else {
+            Some(install_resolvconf_hint())
+        },
+        critical: false,
     });
 
     let helper = installed_helper_path();

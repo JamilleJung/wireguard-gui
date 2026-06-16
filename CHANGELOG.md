@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-06-17
+
+### Added
+- **DNS / resolvconf check.** The Setup window now reports whether a resolvconf
+  provider is available for tunnels that use a `DNS =` line, and **Fix
+  automatically** installs one (`openresolv`; systemd-resolved also counts). This
+  is the fix for minimal Debian, where such tunnels failed with
+  `resolvconf: command not found`.
+- **Per-distro guide** ([docs/DISTROS.md](docs/DISTROS.md)): what to install, what
+  to set up, what survives a reboot, and when - only as a server/gateway - you need
+  firewall and IP-forwarding changes.
+
+### Changed
+- **Works without `sudo`.** The installer falls back to `su` (the ROOT password)
+  on Debian-minimal where `sudo` isn't present, and auto-switches the helper
+  authorization from a sudoers drop-in to a polkit rule when there's no `sudo`.
+- Activation failures are now explained in plain language (e.g. the missing
+  resolvconf provider) instead of the raw `wg-quick` output.
+
+### Fixed
+- Tunnels with a `DNS =` line no longer fail on systems without a resolvconf
+  provider: the installer best-effort installs `openresolv` when neither it nor
+  systemd-resolved is present.
+
 ## [1.5.0] - 2026-06-17
 
 ### Added

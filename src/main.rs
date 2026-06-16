@@ -954,7 +954,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ui = w.unwrap();
             match backend::activate(&name) {
                 Ok(()) => set_status(&ui, format!("Activated {name}")),
-                Err(e) => set_status(&ui, format!("Activate failed: {e}")),
+                Err(e) => set_status(
+                    &ui,
+                    format!("Activate failed: {}", doctor::friendly_error(&e)),
+                ),
             }
             load_detail(&ui, &name);
             refresh_list(&ui);
@@ -1458,11 +1461,19 @@ fn show_setup_wizard(main: &MainWindow) {
         let sw = win.as_weak();
         win.on_fix_automatically(move || {
             let Some(s) = sw.upgrade() else { return };
-            // Only the safely-automatable steps: install wireguard-tools and
-            // create /etc/wireguard. Never installs the helper or touches configs.
+            // Only the safely-automatable steps: install wireguard-tools (+ a
+            // resolvconf provider for DNS) and create /etc/wireguard. Never
+            // installs the helper or touches configs.
             let mut steps: Vec<String> = Vec::new();
-            if let Some(c) = doctor::install_tools_command() {
-                steps.push(c);
+            if !(doctor::which("wg") && doctor::which("wg-quick")) {
+                if let Some(c) = doctor::install_tools_command() {
+                    steps.push(c);
+                }
+            }
+            if !doctor::dns_ok() {
+                if let Some(c) = doctor::install_resolvconf_command() {
+                    steps.push(c);
+                }
             }
             if !std::path::Path::new("/etc/wireguard").is_dir() {
                 steps.push("install -d -m 700 /etc/wireguard".to_string());
