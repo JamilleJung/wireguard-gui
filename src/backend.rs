@@ -41,8 +41,6 @@ pub fn init() {
     let _ = ESC.set(esc);
 }
 
-/// Resolve the helper path: $WG_HELPER, the installed location, or the
-/// in-tree copy used during `cargo run`.
 /// Whether to honour a `$WG_HELPER` override. Since the helper runs as root,
 /// an attacker who can set this env var could otherwise get their own script run
 /// with privilege (notably when the app itself is run as root). In **debug**
@@ -70,6 +68,8 @@ fn wg_helper_override_allowed(p: &str) -> bool {
     }
 }
 
+/// Resolve the helper path: `$WG_HELPER` (when allowed), an installed location,
+/// or the in-tree copy used during `cargo run`.
 fn helper_path() -> &'static str {
     HELPER.get_or_init(|| {
         if let Ok(p) = std::env::var("WG_HELPER") {
