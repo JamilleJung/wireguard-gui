@@ -357,6 +357,8 @@ export component MainWindow inherits Window {
     callback set-autostart(string, bool);
     callback copy-text(string);
     callback show-about();
+    callback persist-live(string);
+    callback show-running(string);
 
     // Force the light palette app-wide (Palette is a global). Without this,
     // GNOME dark mode gives std-widgets near-white fills that vanish on our
@@ -601,6 +603,16 @@ export component MainWindow inherits Window {
                                 tooltip: "Show as a QR code to scan on a phone";
                                 clicked => { root.show-qr(root.detail.name); }
                             }
+                            if root.detail.active: PushButton {
+                                text: "Running cfg";
+                                tooltip: "Copy the live running config (wg showconf)";
+                                clicked => { root.show-running(root.detail.name); }
+                            }
+                            if root.detail.active: PushButton {
+                                text: "Save live";
+                                tooltip: "Save the running state to disk (wg-quick save)";
+                                clicked => { root.persist-live(root.detail.name); }
+                            }
                             Rectangle { horizontal-stretch: 1; }
                         }
                     }
@@ -753,6 +765,7 @@ export component EditWindow inherits Window {
     callback save(string, string);
     callback cancel();
     callback generate-key();
+    callback generate-psk();
     callback config-changed(string);
     callback copy(string);
 
@@ -821,7 +834,13 @@ export component EditWindow inherits Window {
                 spacing: 8px;
                 PushButton {
                     text: "Generate keypair";
+                    tooltip: "Generate a new private/public key";
                     clicked => { root.generate-key(); }
+                }
+                PushButton {
+                    text: "Generate PSK";
+                    tooltip: "Generate a preshared key for the peer";
+                    clicked => { root.generate-psk(); }
                 }
                 PushButton {
                     text: "Copy config";

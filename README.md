@@ -32,7 +32,8 @@ single native binary. No Electron, no web view.
   persistent keepalive, **latest handshake** and **transfer**, polled live every second.
 - 📥 **Import** one or many `.conf` files (single imports open an editor so you can
   **name the tunnel yourself**; bulk imports auto-deduplicate), or **import from a QR-code image**.
-- 🔑 **Generate keypairs** — new tunnels open with a fresh private key and a live public-key field.
+- 🔑 **Generate keypairs and preshared keys** (`wg genkey`/`genpsk`); new tunnels open with a fresh private key and a live public-key field.
+- ♻️ **Apply edits to a running tunnel live** (`wg syncconf`) without dropping peer sessions; **copy the running config** (`wg showconf`) or **save live state** (`wg-quick save`).
 - 📱 **Show QR** — display a tunnel as a QR code to scan into the WireGuard mobile app.
 - 📦 **Export** all tunnels to a `.zip`; **copy** public keys / config / log to the clipboard.
 - 📝 **Inline editor** with **config validation** (keys, addresses, endpoint, …) before saving.
