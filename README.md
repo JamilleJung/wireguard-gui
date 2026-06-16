@@ -60,6 +60,8 @@ single native binary. No Electron, no web view.
 - ✏️ **Rename** / **Remove** tunnels; **Log** tab; **Start-on-boot** toggle.
 - 🗔 **System-tray icon** with per-tunnel activate/deactivate (where the desktop supports SNI);
   **closing the window minimizes to the tray** so tunnels keep running.
+- 🟢 **Easy mode** (default) for everyday users — hides expert tools (Export,
+  Running cfg, Save live, new-from-scratch); one click switches to **Advanced**.
 - 🔒 **Tiny, auditable privilege surface** (see below).
 
 ---

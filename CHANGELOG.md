@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-06-17
+
+### Added
+- **Easy mode** (default) for everyday users: a toolbar toggle that hides expert
+  tools (Export, Running cfg, Save live, *Add empty tunnel*), leaving the
+  everyday surface — Add (import/QR), Activate/Deactivate, Edit, Remove, Show QR,
+  Start on boot. Click **Advanced mode** to reveal everything; the choice is
+  remembered (`~/.config/wireguard-gui/mode`).
+
 ## [1.3.3] - 2026-06-16
 
 ### Fixed
@@ -205,7 +214,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.4...HEAD
+[1.3.4]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.0...v1.3.1
