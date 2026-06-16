@@ -51,27 +51,43 @@ die()  { printf "${R}✗ %s${N}\n" "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # Privilege helper
 # ---------------------------------------------------------------------------
-HAVE_SUDO=0
-command -v sudo >/dev/null 2>&1 && HAVE_SUDO=1
+# Having the `sudo` binary is NOT enough: on many Debian servers the login user
+# isn't in the sudoers file (sudo prompts, then says "is not in the sudoers
+# file"). Treat sudo as usable only if a non-interactive check passes
+# (passwordless / cached creds) or the user is in a typical admin group;
+# otherwise fall back to `su` (the ROOT password).
+CAN_SUDO=0
+if command -v sudo >/dev/null 2>&1; then
+    if sudo -n true >/dev/null 2>&1; then
+        CAN_SUDO=1
+    else
+        case " $(id -nG 2>/dev/null) " in
+            *" sudo "*|*" wheel "*|*" admin "*) CAN_SUDO=1 ;;
+        esac
+    fi
+fi
+
 if [ "$(id -u)" -eq 0 ]; then
     as_root() { "$@"; }                                # already root
     REAL_USER="${SUDO_USER:-root}"
-elif [ "$HAVE_SUDO" -eq 1 ]; then
+elif [ "$CAN_SUDO" -eq 1 ]; then
     as_root() { sudo "$@"; }
     REAL_USER="$USER"
 elif command -v su >/dev/null 2>&1; then
-    # Debian-minimal usually has no sudo - fall back to `su` (asks for the ROOT
-    # password). Tip: running this as root ('su -' first) avoids repeat prompts.
-    warn "sudo not found - using 'su' (you'll be asked for the ROOT password)."
+    # No usable sudo (missing, or you're not in the sudoers file) - fall back to
+    # `su` (asks for the ROOT password). Tip: become root once ('su -' then
+    # ./install.sh) to avoid being prompted at every step.
+    warn "can't use sudo here - using 'su' (you'll be asked for the ROOT password)."
     as_root() { su root -c "$(printf '%q ' "$@")"; }
     REAL_USER="$USER"
 else
-    die "Need root. Re-run as root ('su -' then ./install.sh) or install sudo first."
+    die "Need root. Re-run as root ('su -' then ./install.sh) or get sudo access."
 fi
 
-# A sudoers drop-in is useless without sudo; install a polkit rule instead.
-if [ "$HAVE_SUDO" -eq 0 ] && [ "$AUTH_MODE" = "sudoers" ]; then
-    warn "sudo isn't installed - using a polkit rule for passwordless privilege."
+# A sudoers drop-in is useless if you can't use sudo; install a polkit rule
+# instead (skipped when we're already root, which can write sudoers directly).
+if [ "$CAN_SUDO" -eq 0 ] && [ "$(id -u)" -ne 0 ] && [ "$AUTH_MODE" = "sudoers" ]; then
+    warn "no usable sudo - using a polkit rule for passwordless privilege."
     AUTH_MODE="polkit"
 fi
 

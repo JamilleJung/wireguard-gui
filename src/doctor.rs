@@ -98,15 +98,51 @@ fn pkg_manager() -> Option<&'static str> {
     .find(|m| which(m))
 }
 
+/// Whether THIS user can actually escalate with `sudo` - not merely whether the
+/// `sudo` binary exists. On many Debian servers the login user isn't in the
+/// sudoers file, so presence of `sudo` is not enough. True for root, when a
+/// non-interactive `sudo -n true` succeeds (passwordless / cached creds), or
+/// when the user is in a typical admin group (sudo/wheel/admin).
+pub fn can_sudo() -> bool {
+    if unsafe { libc::geteuid() } == 0 {
+        return true;
+    }
+    if !which("sudo") {
+        return false;
+    }
+    let probe_ok = Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if probe_ok {
+        return true;
+    }
+    // Password-required sudoers won't pass `-n`; fall back to group membership.
+    Command::new("id")
+        .arg("-nG")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|g| {
+            g.split_whitespace()
+                .any(|grp| matches!(grp, "sudo" | "wheel" | "admin"))
+        })
+        .unwrap_or(false)
+}
+
 /// Prefix a package-manager command with whatever gains root here (root → none,
-/// sudo → `sudo`, otherwise `su -c '…'` for Debian-minimal without sudo).
+/// usable sudo → `sudo`, otherwise `su root -c '…'` for boxes where the user
+/// can't sudo - e.g. Debian-minimal, or a server where they're not a sudoer).
 fn with_priv(pkg_cmd: &str) -> String {
     if unsafe { libc::geteuid() } == 0 {
         pkg_cmd.to_string()
-    } else if which("sudo") {
+    } else if can_sudo() {
         format!("sudo {pkg_cmd}")
     } else if which("su") {
-        format!("su -c '{pkg_cmd}'")
+        format!("su root -c '{pkg_cmd}'")
     } else {
         format!("{pkg_cmd}   (run as root)")
     }

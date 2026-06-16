@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-06-17
+
+### Fixed
+- **Install works when `sudo` is present but you're not a sudoer.** The installer
+  previously assumed that having the `sudo` binary meant you could use it - so on
+  a Debian server where the login user isn't in the sudoers file (`<user> is not
+  in the sudoers file`) it aborted. It now probes real sudo usability (`sudo -n` /
+  admin-group membership) and falls back to `su` (the ROOT password), and
+  auto-switches the helper authorization to a polkit rule. Tip: run `su -` first,
+  then `./install.sh`, to be prompted once instead of per step.
+
 ## [1.5.1] - 2026-06-17
 
 ### Added
