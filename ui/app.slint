@@ -442,14 +442,6 @@ export component MainWindow inherits Window {
                                 clicked => { add-popup.show(); }
                             }
                         }
-                        VerticalLayout {
-                            alignment: center;
-                            PushButton {
-                                text: root.easy-mode ? "Easy mode" : "Advanced mode";
-                                tooltip: "Easy mode hides expert tools — click to switch";
-                                clicked => { root.toggle-easy(); }
-                            }
-                        }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
@@ -669,15 +661,25 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ---- bottom-right Edit button (Windows-style) ----
-            if root.has-selection: Rectangle {
+            // ---- bottom-right action bar: Easy/Advanced toggle + Edit ----
+            Rectangle {
                 height: 46px;
                 background: #fafafa;
                 Rectangle { y: 0; height: 1px; background: #e0e0e0; }
                 HorizontalLayout {
                     padding: 8px;
+                    spacing: 8px;
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout {
+                        alignment: center;
+                        PushButton {
+                            text: root.easy-mode ? "Easy mode" : "Advanced mode";
+                            tooltip: "Easy mode hides expert tools - click to switch";
+                            tooltip-align: "right";
+                            clicked => { root.toggle-easy(); }
+                        }
+                    }
+                    if root.has-selection: VerticalLayout {
                         alignment: center;
                         PushButton {
                             text: "Edit";

@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-06-17
+
+### Fixed
+- The toolbar **Remove (delete) button** is no longer crowded off the bar: the
+  Easy/Advanced toggle moved out of the top toolbar to the **bottom action bar,
+  next to Edit**, where it's always reachable (even with no tunnel selected).
+
 ## [1.3.4] - 2026-06-17
 
 ### Added
@@ -214,7 +221,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.4...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.5...HEAD
+[1.3.5]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.1...v1.3.2
