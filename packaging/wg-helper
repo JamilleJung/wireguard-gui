@@ -45,6 +45,18 @@ validate_name() {
 # Not every distro uses systemd (start-on-boot uses `wg-quick@` units).
 have_systemctl() { command -v systemctl >/dev/null 2>&1; }
 
+# Bound external wg/wg-quick calls so a hang (DNS, a stuck PostUp, a wedged
+# interface, …) can't lock up the caller. `timeout` ships in coreutils on every
+# supported distro; if it's somehow missing, fall back to running directly.
+T() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 # Copy an existing config to the timestamped backup dir before we touch it.
 backup_existing() {
     local n="$1" src="${WG_DIR}/$1.conf"
@@ -75,7 +87,7 @@ case "$verb" in
         done | sort
         ;;
     active)
-        wg show interfaces 2>/dev/null || true
+        T 5 wg show interfaces 2>/dev/null || true
         ;;
     read)
         validate_name "${1:-}"
@@ -83,17 +95,17 @@ case "$verb" in
         ;;
     dump)
         validate_name "${1:-}"
-        wg show "$1" dump 2>/dev/null || true
+        T 5 wg show "$1" dump 2>/dev/null || true
         ;;
     up)
         validate_name "${1:-}"
         log "up $1"
-        wg-quick up "$1"
+        T 45 wg-quick up "$1"
         ;;
     down)
         validate_name "${1:-}"
         log "down $1"
-        wg-quick down "$1"
+        T 30 wg-quick down "$1"
         ;;
     save)
         # Content from stdin. Back up first, then write atomically (temp + rename)
@@ -113,7 +125,7 @@ case "$verb" in
         # Always back up before removing — the GUI's delete button relies on this.
         validate_name "${1:-}"
         backup_existing "$1"
-        wg-quick down "$1" 2>/dev/null || true
+        T 30 wg-quick down "$1" 2>/dev/null || true
         rm -f "${WG_DIR}/$1.conf"
         log "delete $1"
         ;;
@@ -142,21 +154,21 @@ case "$verb" in
         # empty config to syncconf, wiping every peer off the live interface.
         validate_name "${1:-}"
         log "sync $1"
-        stripped="$(wg-quick strip "$1")" || die "wg-quick strip failed for $1"
+        stripped="$(T 15 wg-quick strip "$1")" || die "wg-quick strip failed for $1"
         [ -n "$stripped" ] || die "wg-quick strip produced no output for $1"
-        printf '%s\n' "$stripped" | wg syncconf "$1" /dev/stdin
+        printf '%s\n' "$stripped" | T 15 wg syncconf "$1" /dev/stdin
         ;;
     showconf)
         # The live running wg-level config (no Address/DNS/MTU/Table).
         validate_name "${1:-}"
-        wg showconf "$1" 2>/dev/null || true
+        T 10 wg showconf "$1" 2>/dev/null || true
         ;;
     persist)
         # Save the live running state back to the .conf (wg-quick save).
         validate_name "${1:-}"
         backup_existing "$1"
         log "persist $1"
-        wg-quick save "$1"
+        T 30 wg-quick save "$1"
         ;;
     log)
         # Recent activity: this app's audit entries + wg-quick service logs.
