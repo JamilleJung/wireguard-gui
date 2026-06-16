@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-16
+
+### Added
+- **Structured editor (form view).** The tunnel editor now toggles between a
+  **Config text** view (the raw `.conf`) and an **Edit fields** form with
+  labelled Interface (Private key, Address, DNS, Listen port, MTU) and Peer
+  (Public key, Preshared key, Allowed IPs, Endpoint, Persistent keepalive)
+  fields. New tunnels open in the form; existing ones open in text view. Edits
+  in either view stay in sync, and **Generate keypair/PSK** update both.
+- **Minimal-install dependency check** in `install.sh`: before building it
+  verifies the C toolchain, `pkg-config`, and the `fontconfig`/`xkbcommon`/
+  `dbus-1` dev headers, and checks `wireguard-tools` at runtime — failing early
+  with a clear message instead of a cryptic build error.
+
+### Changed
+- **Closing the window now minimizes to the tray** instead of quitting, matching
+  the WireGuard for Windows client. The app keeps running; use the tray's
+  **Show WireGuard** to reopen or **Quit** to exit.
+- The main window opens larger (1000×720) for a roomier tunnel list and details.
+
 ## [1.2.0] - 2026-06-16
 
 ### Added
@@ -120,7 +140,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.0.0...v1.1.0

@@ -15,6 +15,13 @@ slint::include_modules!();
 /// so it can fetch live status off the UI thread (keeps the UI smooth).
 static SELECTED: Mutex<Option<String>> = Mutex::new(None);
 
+/// Latest live data computed by the background thread, applied on the UI thread.
+struct Live {
+    detail: Option<backend::Detail>,
+    actives: Vec<String>,
+}
+static LIVE: Mutex<Option<Live>> = Mutex::new(None);
+
 thread_local! {
     // Keeps the currently-open editor window alive. Replaced (and the old one
     // dropped) on the next open; only ever touched on the UI thread.
@@ -93,6 +100,7 @@ impl ksni::Tray for Tray {
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.window.upgrade_in_event_loop(|ui| {
                         let _ = ui.show();
+                        ui.window().set_minimized(false);
                     });
                 }),
                 ..Default::default()
@@ -249,6 +257,136 @@ fn set_psk(config: &str, key: &str) -> String {
     result
 }
 
+/// The structured fields shown in the form editor (Interface + a single Peer).
+#[derive(Default)]
+struct Fields {
+    private_key: String,
+    address: String,
+    dns: String,
+    listen_port: String,
+    mtu: String,
+    peer_public_key: String,
+    preshared_key: String,
+    allowed_ips: String,
+    endpoint: String,
+    keepalive: String,
+}
+
+/// Value to the right of the first `=` on a `key = value` line, trimmed.
+fn kv_value(line: &str) -> String {
+    line.split_once('=')
+        .map(|(_, v)| v)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Parse a raw config into the structured form fields (first peer only).
+fn config_to_fields(cfg: &str) -> Fields {
+    let mut f = Fields::default();
+    let mut section = "";
+    for line in cfg.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let lower = t.to_ascii_lowercase();
+        if lower.starts_with('[') {
+            section = if lower.starts_with("[interface]") {
+                "interface"
+            } else if lower.starts_with("[peer]") {
+                "peer"
+            } else {
+                "other"
+            };
+            continue;
+        }
+        match section {
+            "interface" => {
+                if lower.starts_with("privatekey") {
+                    f.private_key = kv_value(t);
+                } else if lower.starts_with("address") {
+                    f.address = kv_value(t);
+                } else if lower.starts_with("dns") {
+                    f.dns = kv_value(t);
+                } else if lower.starts_with("listenport") {
+                    f.listen_port = kv_value(t);
+                } else if lower.starts_with("mtu") {
+                    f.mtu = kv_value(t);
+                }
+            }
+            // Only the first peer is mapped to the form.
+            "peer" => {
+                if lower.starts_with("publickey") && f.peer_public_key.is_empty() {
+                    f.peer_public_key = kv_value(t);
+                } else if lower.starts_with("presharedkey") && f.preshared_key.is_empty() {
+                    f.preshared_key = kv_value(t);
+                } else if lower.starts_with("allowedips") && f.allowed_ips.is_empty() {
+                    f.allowed_ips = kv_value(t);
+                } else if lower.starts_with("endpoint") && f.endpoint.is_empty() {
+                    f.endpoint = kv_value(t);
+                } else if lower.starts_with("persistentkeepalive") && f.keepalive.is_empty() {
+                    f.keepalive = kv_value(t);
+                }
+            }
+            _ => {}
+        }
+    }
+    f
+}
+
+/// Build a raw config from the structured form fields (omitting empty ones).
+fn fields_to_config(f: &Fields) -> String {
+    let mut s = String::from("[Interface]\n");
+    let push = |s: &mut String, k: &str, v: &str| {
+        if !v.trim().is_empty() {
+            s.push_str(&format!("{k} = {}\n", v.trim()));
+        }
+    };
+    push(&mut s, "PrivateKey", &f.private_key);
+    push(&mut s, "Address", &f.address);
+    push(&mut s, "DNS", &f.dns);
+    push(&mut s, "ListenPort", &f.listen_port);
+    push(&mut s, "MTU", &f.mtu);
+    s.push_str("\n[Peer]\n");
+    push(&mut s, "PublicKey", &f.peer_public_key);
+    push(&mut s, "PresharedKey", &f.preshared_key);
+    push(&mut s, "AllowedIPs", &f.allowed_ips);
+    push(&mut s, "Endpoint", &f.endpoint);
+    push(&mut s, "PersistentKeepalive", &f.keepalive);
+    s
+}
+
+/// Push parsed fields into the editor's form properties.
+fn apply_fields(ed: &EditWindow, f: &Fields) {
+    ed.set_f_private_key(f.private_key.clone().into());
+    ed.set_f_address(f.address.clone().into());
+    ed.set_f_dns(f.dns.clone().into());
+    ed.set_f_listen_port(f.listen_port.clone().into());
+    ed.set_f_mtu(f.mtu.clone().into());
+    ed.set_f_peer_public_key(f.peer_public_key.clone().into());
+    ed.set_f_preshared_key(f.preshared_key.clone().into());
+    ed.set_f_allowed_ips(f.allowed_ips.clone().into());
+    ed.set_f_endpoint(f.endpoint.clone().into());
+    ed.set_f_keepalive(f.keepalive.clone().into());
+}
+
+/// Read the editor's form properties back into a `Fields`.
+fn read_fields(ed: &EditWindow) -> Fields {
+    Fields {
+        private_key: ed.get_f_private_key().to_string(),
+        address: ed.get_f_address().to_string(),
+        dns: ed.get_f_dns().to_string(),
+        listen_port: ed.get_f_listen_port().to_string(),
+        mtu: ed.get_f_mtu().to_string(),
+        peer_public_key: ed.get_f_peer_public_key().to_string(),
+        preshared_key: ed.get_f_preshared_key().to_string(),
+        allowed_ips: ed.get_f_allowed_ips().to_string(),
+        endpoint: ed.get_f_endpoint().to_string(),
+        keepalive: ed.get_f_keepalive().to_string(),
+    }
+}
+
 /// Render a string to a black-on-white QR-code Slint image.
 fn qr_image(text: &str) -> slint::Image {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
@@ -305,7 +443,13 @@ fn open_editor(
         );
     }
     ed.set_public_key(backend::public_key_for_config(&text).into());
-    ed.set_config_text(text.into());
+    ed.set_config_text(text.clone().into());
+
+    // New tunnels open in the structured form; existing ones in raw-text mode
+    // (so a hand-tuned config is never silently rewritten on open). Either way,
+    // populate the form fields from the starting config.
+    apply_fields(&ed, &config_to_fields(&text));
+    ed.set_form_mode(is_new);
 
     // Live-update the public key as the config is edited.
     {
@@ -314,6 +458,36 @@ fn open_editor(
             if let Some(ed) = edw.upgrade() {
                 ed.set_public_key(backend::public_key_for_config(&cfg).into());
             }
+        });
+    }
+
+    // Form edits: rebuild the raw config (the source of truth for Save) and
+    // refresh the live public key.
+    {
+        let edw = ed.as_weak();
+        ed.on_fields_changed(move || {
+            if let Some(ed) = edw.upgrade() {
+                let cfg = fields_to_config(&read_fields(&ed));
+                ed.set_public_key(backend::public_key_for_config(&cfg).into());
+                ed.set_config_text(cfg.into());
+            }
+        });
+    }
+
+    // Toggle between the form and the raw-text views, converting as we go so no
+    // edits are lost in either direction.
+    {
+        let edw = ed.as_weak();
+        ed.on_switch_mode(move |to_form| {
+            let Some(ed) = edw.upgrade() else { return };
+            if to_form {
+                apply_fields(&ed, &config_to_fields(&ed.get_config_text()));
+            } else {
+                let cfg = fields_to_config(&read_fields(&ed));
+                ed.set_public_key(backend::public_key_for_config(&cfg).into());
+                ed.set_config_text(cfg.into());
+            }
+            ed.set_form_mode(to_form);
         });
     }
 
@@ -397,6 +571,7 @@ fn open_editor(
             match backend::generate_keypair() {
                 Ok((priv_k, pub_k)) => {
                     let updated = set_private_key(&ed.get_config_text(), &priv_k);
+                    apply_fields(&ed, &config_to_fields(&updated));
                     ed.set_config_text(updated.into());
                     ed.set_public_key(pub_k.clone().into());
                     ed.set_error("".into());
@@ -415,6 +590,7 @@ fn open_editor(
             match backend::generate_psk() {
                 Ok(psk) => {
                     let updated = set_psk(&ed.get_config_text(), &psk);
+                    apply_fields(&ed, &config_to_fields(&updated));
                     ed.set_config_text(updated.into());
                     ed.set_error("".into());
                     ed.set_warning("New preshared key generated.".into());
@@ -531,6 +707,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = MainWindow::new()?;
     refresh_list(&ui);
+
+    // ---- close to tray: hide instead of quitting (Quit is on the tray) ----
+    ui.window()
+        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
 
     // ---- system-tray icon (best-effort; needs SNI support on the desktop,
     // e.g. KDE, or GNOME with the AppIndicator extension). Uses libdbus on its
@@ -847,36 +1027,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ---- live polling on a BACKGROUND thread ----
-    // All `wg`/`sudo` subprocess calls happen here, off the UI thread, so the
-    // interface never stutters. Results are pushed back via the event loop.
+    // ---- live polling: data on a BACKGROUND thread, applied on the UI thread ----
+    // The background thread does all the blocking `wg`/`sudo` calls (no UI
+    // stutter) and drops the result into LIVE. A cheap UI-thread timer then
+    // applies it with set_detail — a real property change, so Slint always
+    // repaints (request_redraw alone can stall on Wayland).
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let name = SELECTED.lock().unwrap().clone();
+        let tunnels = backend::list_tunnels();
+        let actives: Vec<String> = tunnels
+            .iter()
+            .filter(|t| t.active)
+            .map(|t| t.name.clone())
+            .collect();
+        let detail = name
+            .as_ref()
+            .filter(|n| tunnels.iter().any(|t| &t.name == *n))
+            .map(|n| backend::get_detail(n));
+        *LIVE.lock().unwrap() = Some(Live { detail, actives });
+    });
+
+    let live_timer = slint::Timer::default();
     {
         let w = ui.as_weak();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(1));
-            let name = SELECTED.lock().unwrap().clone();
-
-            // Blocking helper calls — fine here, we're not on the UI thread.
-            let tunnels = backend::list_tunnels();
-            let actives: std::collections::HashSet<String> = tunnels
-                .iter()
-                .filter(|t| t.active)
-                .map(|t| t.name.clone())
-                .collect();
-            let detail = name
-                .as_ref()
-                .filter(|n| actives.contains(*n) || tunnels.iter().any(|t| &t.name == *n))
-                .map(|n| backend::get_detail(n));
-
-            let pushed = w.upgrade_in_event_loop(move |ui| {
-                if let Some(d) = detail {
+        live_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(1),
+            move || {
+                let Some(ui) = w.upgrade() else { return };
+                let Some(live) = LIVE.lock().unwrap().take() else {
+                    return;
+                };
+                if let Some(d) = live.detail {
                     ui.set_detail(to_slint_detail(d));
                     ui.set_has_selection(true);
                 }
                 let model = ui.get_tunnels();
                 for i in 0..model.row_count() {
                     if let Some(mut row) = model.row_data(i) {
-                        let want = actives.contains(&row.name.to_string());
+                        let want = live.actives.iter().any(|a| a == &row.name.to_string());
                         if row.active != want {
                             row.active = want;
                             model.set_row_data(i, row);
@@ -884,30 +1074,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 ui.window().request_redraw();
-            });
-            if pushed.is_err() {
-                break; // UI is gone
-            }
-        });
-    }
-
-    // A cheap UI-thread timer that just asks for a repaint each second, so the
-    // live status fields refresh even if a frame callback would otherwise stall.
-    let redraw_timer = slint::Timer::default();
-    {
-        let w = ui.as_weak();
-        redraw_timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_secs(1),
-            move || {
-                if let Some(ui) = w.upgrade() {
-                    ui.window().request_redraw();
-                }
             },
         );
     }
 
-    ui.run()?;
+    // Show the window, then run until the tray's Quit calls `quit_event_loop()`.
+    // (Plain `ui.run()` would quit the loop the moment the window hides into the
+    // tray, shutting the app down — which is exactly what we want to avoid.)
+    ui.show()?;
+    slint::run_event_loop_until_quit()?;
     Ok(())
 }
 

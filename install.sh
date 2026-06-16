@@ -139,6 +139,42 @@ ensure_rust() {
 }
 
 # ---------------------------------------------------------------------------
+# Verify the toolchain is actually usable (catches minimal installs where a
+# package "installed" but the command/headers still aren't where we need them).
+# ---------------------------------------------------------------------------
+verify_build_deps() {
+    say "Checking the build toolchain"
+    local missing=0
+
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+        warn "No C compiler (cc/gcc) found."; missing=1
+    fi
+    command -v pkg-config >/dev/null 2>&1 || command -v pkgconf >/dev/null 2>&1 || {
+        warn "pkg-config not found."; missing=1; }
+
+    # dev headers Slint + ksni link against
+    if command -v pkg-config >/dev/null 2>&1; then
+        for lib in fontconfig xkbcommon dbus-1; do
+            pkg-config --exists "$lib" 2>/dev/null || { warn "Dev headers for '$lib' not found (pkg-config)."; missing=1; }
+        done
+    fi
+
+    if [ "$missing" -ne 0 ]; then
+        warn "Some build dependencies are still missing after the package step."
+        warn "On a minimal install you may need to install them by hand — see the"
+        warn "per-distro table in the README — then re-run ./install.sh."
+        die "Cannot build until the toolchain is complete."
+    fi
+    ok "Build toolchain OK."
+}
+
+# Runtime tools the app needs at run time (not for the build).
+verify_runtime_deps() {
+    command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 \
+        || warn "wireguard-tools (wg/wg-quick) not found — the app needs them at runtime. Install the 'wireguard-tools' package."
+}
+
+# ---------------------------------------------------------------------------
 # Go
 # ---------------------------------------------------------------------------
 printf "${B}wireguard-gui installer${N}\n"
@@ -146,6 +182,8 @@ printf "${B}wireguard-gui installer${N}\n"
 
 install_pkgs
 ensure_rust
+verify_build_deps
+verify_runtime_deps
 
 say "Building release binary (first build downloads crates, ~1–3 min)"
 ( cd "$HERE" && cargo build --release )
