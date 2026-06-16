@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-06-16
+
+### Fixed
+- The form editor now matches config keys **exactly**: a directive like
+  `PrivateKeyFile` or `EndpointBackup` is no longer mistaken (by prefix) for
+  `PrivateKey`/`Endpoint`, which could otherwise let the form open for — and then
+  rewrite — a config it can't actually represent. Covered by a regression test.
+
+### Changed
+- The privileged helper is also discovered **next to the binary**, so an
+  extracted release tarball / AppImage works without first running `install.sh`.
+- CI now **hard-fails on `shellcheck` warnings** for `wg-helper` and `install.sh`.
+
 ## [1.3.2] - 2026-06-16
 
 ### Fixed
@@ -192,7 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.2.0...v1.3.0

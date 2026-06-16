@@ -298,6 +298,14 @@ fn kv_value(line: &str) -> String {
         .to_string()
 }
 
+/// The lowercased key to the left of the first `=`, so keys are matched
+/// *exactly* (a directive like `PrivateKeyFile`/`AddressExtra` is not a prefix
+/// match for `PrivateKey`/`Address`). `None` for a line with no `=`.
+fn line_key(line: &str) -> Option<String> {
+    line.split_once('=')
+        .map(|(k, _)| k.trim().to_ascii_lowercase())
+}
+
 /// Whether the form view can faithfully represent this config. The form maps a
 /// single peer and a fixed set of keys; anything else (a second [Peer],
 /// PostUp/PreUp/Table/SaveConfig/…, or an unknown section) would be silently
@@ -322,19 +330,20 @@ fn form_representable(cfg: &str) -> bool {
             }
             continue;
         }
+        // Match the exact key (before `=`); an unknown key the form can't map
+        // means we must stay in raw-text mode.
+        let Some(key) = line_key(t) else {
+            return false;
+        };
         let mapped = match section {
-            "interface" => ["privatekey", "address", "dns", "listenport", "mtu"]
-                .iter()
-                .any(|k| lower.starts_with(k)),
-            "peer" => [
-                "publickey",
-                "presharedkey",
-                "allowedips",
-                "endpoint",
-                "persistentkeepalive",
-            ]
-            .iter()
-            .any(|k| lower.starts_with(k)),
+            "interface" => matches!(
+                key.as_str(),
+                "privatekey" | "address" | "dns" | "listenport" | "mtu"
+            ),
+            "peer" => matches!(
+                key.as_str(),
+                "publickey" | "presharedkey" | "allowedips" | "endpoint" | "persistentkeepalive"
+            ),
             _ => false,
         };
         if !mapped {
@@ -364,34 +373,29 @@ fn config_to_fields(cfg: &str) -> Fields {
             };
             continue;
         }
+        // Match keys exactly (before `=`) so e.g. `PrivateKeyFile` isn't picked
+        // up as `PrivateKey`.
+        let Some(key) = line_key(t) else {
+            continue;
+        };
         match section {
-            "interface" => {
-                if lower.starts_with("privatekey") {
-                    f.private_key = kv_value(t);
-                } else if lower.starts_with("address") {
-                    f.address = kv_value(t);
-                } else if lower.starts_with("dns") {
-                    f.dns = kv_value(t);
-                } else if lower.starts_with("listenport") {
-                    f.listen_port = kv_value(t);
-                } else if lower.starts_with("mtu") {
-                    f.mtu = kv_value(t);
-                }
-            }
+            "interface" => match key.as_str() {
+                "privatekey" => f.private_key = kv_value(t),
+                "address" => f.address = kv_value(t),
+                "dns" => f.dns = kv_value(t),
+                "listenport" => f.listen_port = kv_value(t),
+                "mtu" => f.mtu = kv_value(t),
+                _ => {}
+            },
             // Only the first peer is mapped to the form.
-            "peer" => {
-                if lower.starts_with("publickey") && f.peer_public_key.is_empty() {
-                    f.peer_public_key = kv_value(t);
-                } else if lower.starts_with("presharedkey") && f.preshared_key.is_empty() {
-                    f.preshared_key = kv_value(t);
-                } else if lower.starts_with("allowedips") && f.allowed_ips.is_empty() {
-                    f.allowed_ips = kv_value(t);
-                } else if lower.starts_with("endpoint") && f.endpoint.is_empty() {
-                    f.endpoint = kv_value(t);
-                } else if lower.starts_with("persistentkeepalive") && f.keepalive.is_empty() {
-                    f.keepalive = kv_value(t);
-                }
-            }
+            "peer" => match key.as_str() {
+                "publickey" if f.peer_public_key.is_empty() => f.peer_public_key = kv_value(t),
+                "presharedkey" if f.preshared_key.is_empty() => f.preshared_key = kv_value(t),
+                "allowedips" if f.allowed_ips.is_empty() => f.allowed_ips = kv_value(t),
+                "endpoint" if f.endpoint.is_empty() => f.endpoint = kv_value(t),
+                "persistentkeepalive" if f.keepalive.is_empty() => f.keepalive = kv_value(t),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1297,5 +1301,18 @@ mod form_tests {
         assert_eq!(f2.private_key, f.private_key);
         assert_eq!(f2.endpoint, f.endpoint);
         assert_eq!(f2.allowed_ips, f.allowed_ips);
+    }
+
+    #[test]
+    fn unknown_prefix_keys_are_not_mapped() {
+        // Keys that merely *start with* a mapped key must not be treated as
+        // representable, nor scooped up by config_to_fields.
+        let cfg = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPrivateKeyFile = /tmp/x\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpointBackup = other:1\n"
+        );
+        assert!(!form_representable(&cfg)); // PrivateKeyFile/EndpointBackup are unknown
+        let f = config_to_fields(&cfg);
+        assert_eq!(f.private_key, KEY); // exact PrivateKey, not PrivateKeyFile
+        assert_eq!(f.endpoint, ""); // EndpointBackup must not become Endpoint
     }
 }
