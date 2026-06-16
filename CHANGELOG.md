@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-17
+
+### Added
+- **First-run Setup wizard.** On launch, the app runs a read-only system check
+  (WireGuard tools, the privileged helper + its authorization, `/etc/wireguard`,
+  systemd, journald). If everything critical is OK it goes straight to Easy mode;
+  if not, a friendly wizard explains what's missing in plain language with
+  **Fix automatically** (installs `wireguard-tools` via your package manager
+  through pkexec, and creates `/etc/wireguard` - with confirmation), **Show
+  commands**, **Re-check** and **Skip for now**. It never connects tunnels,
+  enables start-on-boot, or touches existing configs.
+- **Beginner-friendly empty state.** With no tunnels, the app shows "No tunnels
+  yet" and **Import .conf / Import QR image** buttons (plus **New tunnel** in
+  Advanced mode) instead of a blank pane.
+
+### Notes
+- The app **does not bundle WireGuard kernel modules or `wg`/`wg-quick`** - it
+  uses your system's `wireguard-tools`, and helps you install them.
+
 ## [1.4.1] - 2026-06-17
 
 ### Added
@@ -246,7 +265,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.5...v1.4.0
 [1.3.5]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.4...v1.3.5

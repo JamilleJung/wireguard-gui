@@ -38,6 +38,13 @@ single native binary. No Electron, no web view.
 - **A QR code - and an exported `.zip` - contains the tunnel's _private key_.**
   Only show a QR when it's safe for someone to photograph your screen, and keep
   exports somewhere safe.
+- **First run is guided.** If `wireguard-tools` or the helper isn't set up yet,
+  a friendly Setup wizard explains what's missing and can fix it for you (with
+  your confirmation) - no reading the README required.
+- **It does not bundle WireGuard itself.** No kernel modules, no vendored
+  `wg`/`wg-quick` - it uses your distro's `wireguard-tools` (and helps install
+  them). The `.deb` is the smoothest option on Debian/Ubuntu/Mint; the AppImage
+  and tarball still need `wireguard-tools` present on the system.
 
 ---
 

@@ -17,6 +17,13 @@ export struct PeerInfo {
     transfer: string,
 }
 
+export struct CheckItem {
+    name: string,
+    detail: string,
+    ok: bool,
+    warn: bool,
+}
+
 export struct TunnelDetail {
     name: string,
     active: bool,
@@ -509,16 +516,43 @@ export component MainWindow inherits Window {
             horizontal-stretch: 1;
             VerticalLayout {
 
-            // empty state
+            // empty state - beginner-friendly when there are no tunnels at all
             if !root.has-selection: VerticalLayout {
                 vertical-stretch: 1;
                 alignment: center;
+                spacing: 12px;
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        text: "Select a tunnel on the left, or import one with “Add Tunnel”.";
-                        color: #8a8a8a;
-                        font-size: 14px;
+                        text: root.tunnels.length == 0 ? "No tunnels yet" : "Select a tunnel on the left";
+                        color: #1b1b1b;
+                        font-size: 18px;
+                        font-weight: 700;
+                    }
+                }
+                if root.tunnels.length == 0: HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: "Import a WireGuard .conf file or a QR-code image to begin.";
+                        color: #6a6a6a;
+                        font-size: 13px;
+                    }
+                }
+                if root.tunnels.length == 0: HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    PushButton {
+                        text: "Import .conf";
+                        primary: true;
+                        clicked => { root.import-file(); }
+                    }
+                    PushButton {
+                        text: "Import QR image";
+                        clicked => { root.import-qr(); }
+                    }
+                    if !root.easy-mode: PushButton {
+                        text: "New tunnel";
+                        clicked => { root.add-empty(); }
                     }
                 }
             }
@@ -1196,6 +1230,115 @@ export component AboutWindow inherits Window {
                 text: "Close";
                 primary: true;
                 clicked => { root.close-me(); }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// First-run Setup wizard: shown when a critical requirement is missing, so new
+// users get friendly guidance instead of an empty technical screen.
+// ===========================================================================
+export component SetupWindow inherits Window {
+    title: "Set up WireGuard";
+    width: 580px;
+    height: 480px;
+    in property <[CheckItem]> checks;
+    in property <string> commands: "";
+    in property <bool> show-commands: false;
+    in property <string> busy: "";
+    callback fix-automatically();
+    callback toggle-commands();
+    callback re-check();
+    callback skip();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    background: white;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+
+        Text {
+            text: "Welcome to WireGuard";
+            font-size: 19px;
+            font-weight: 800;
+            color: #1b1b1b;
+        }
+        Text {
+            text: "Let's check your system is ready. Nothing is changed without your confirmation, and no tunnels are connected.";
+            color: #555555;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+
+        for c in root.checks: HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: c.ok ? "OK" : (c.warn ? "!" : "X");
+                color: c.ok ? #2cbe4e : (c.warn ? #b06a00 : #c0392b);
+                font-weight: 800;
+                font-size: 13px;
+                width: 26px;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                Text {
+                    text: c.name;
+                    color: #1b1b1b;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: c.detail;
+                    color: #6a6a6a;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.show-commands && root.commands != "": Rectangle {
+            background: #f4f4f4;
+            border-radius: 4px;
+            VerticalLayout {
+                padding: 8px;
+                Text {
+                    text: root.commands;
+                    font-size: 12px;
+                    color: #1b1b1b;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if root.busy != "": Text {
+            text: root.busy;
+            color: #1e66f5;
+            font-size: 13px;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Fix automatically";
+                primary: true;
+                tooltip: "Install missing pieces with your package manager (asks for your password)";
+                clicked => { root.fix-automatically(); }
+            }
+            PushButton {
+                text: "Show commands";
+                clicked => { root.toggle-commands(); }
+            }
+            PushButton {
+                text: "Re-check";
+                clicked => { root.re-check(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Skip for now";
+                clicked => { root.skip(); }
             }
         }
     }

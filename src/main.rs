@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod doctor;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +46,8 @@ thread_local! {
     static QRWIN: RefCell<Option<QrWindow>> = const { RefCell::new(None) };
     // Keeps the About window alive.
     static ABOUTWIN: RefCell<Option<AboutWindow>> = const { RefCell::new(None) };
+    // Keeps the first-run Setup wizard alive while it's shown.
+    static SETUPWIN: RefCell<Option<SetupWindow>> = const { RefCell::new(None) };
     // Long-lived clipboard handle (kept alive so the copied text persists).
     static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
 }
@@ -1358,12 +1361,148 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Show the window, then run until the tray's Quit calls `quit_event_loop()`.
-    // (Plain `ui.run()` would quit the loop the moment the window hides into the
-    // tray, shutting the app down — which is exactly what we want to avoid.)
-    ui.show()?;
+    // First-run check: if something critical is missing, greet new users with a
+    // friendly Setup wizard instead of an empty technical window. Otherwise go
+    // straight to the (Easy-mode) main window.
+    if doctor::system_check().critical_ok() {
+        ui.show()?;
+    } else {
+        show_setup_wizard(&ui);
+    }
     slint::run_event_loop_until_quit()?;
     Ok(())
+}
+
+/// Build the wizard's checklist model from a doctor report.
+fn build_checks(report: &doctor::Report) -> ModelRc<CheckItem> {
+    let items: Vec<CheckItem> = report
+        .checks
+        .iter()
+        .map(|c| CheckItem {
+            name: c.name.into(),
+            detail: c.detail.clone().into(),
+            ok: matches!(c.status, doctor::Status::Ok),
+            warn: matches!(c.status, doctor::Status::Warning),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(items))
+}
+
+/// The "Show commands" text: the fix command for each non-OK check.
+fn commands_text(report: &doctor::Report) -> String {
+    let mut s = String::new();
+    for c in &report.checks {
+        if !matches!(c.status, doctor::Status::Ok) {
+            if let Some(fix) = &c.fix {
+                s.push_str(&format!("# {}\n{}\n\n", c.name, fix));
+            }
+        }
+    }
+    if s.is_empty() {
+        "Everything looks good.".to_string()
+    } else {
+        s.trim_end().to_string()
+    }
+}
+
+/// Show the first-run Setup wizard. The main window is shown when the user skips
+/// or once the checks pass. Never auto-installs or connects without confirmation.
+fn show_setup_wizard(main: &MainWindow) {
+    let Ok(win) = SetupWindow::new() else {
+        let _ = main.show();
+        return;
+    };
+    let report = doctor::system_check();
+    win.set_checks(build_checks(&report));
+    win.set_commands(commands_text(&report).into());
+
+    {
+        let mw = main.as_weak();
+        let sw = win.as_weak();
+        win.on_skip(move || {
+            if let Some(s) = sw.upgrade() {
+                let _ = s.hide();
+            }
+            if let Some(m) = mw.upgrade() {
+                let _ = m.show();
+            }
+        });
+    }
+    {
+        let sw = win.as_weak();
+        win.on_toggle_commands(move || {
+            if let Some(s) = sw.upgrade() {
+                s.set_show_commands(!s.get_show_commands());
+            }
+        });
+    }
+    {
+        let mw = main.as_weak();
+        let sw = win.as_weak();
+        win.on_re_check(move || {
+            let Some(s) = sw.upgrade() else { return };
+            let report = doctor::system_check();
+            s.set_checks(build_checks(&report));
+            s.set_commands(commands_text(&report).into());
+            if report.critical_ok() {
+                let _ = s.hide();
+                if let Some(m) = mw.upgrade() {
+                    let _ = m.show();
+                }
+            } else {
+                s.set_busy("Still missing something - see the list above.".into());
+            }
+        });
+    }
+    {
+        let sw = win.as_weak();
+        win.on_fix_automatically(move || {
+            let Some(s) = sw.upgrade() else { return };
+            // Only the safely-automatable steps: install wireguard-tools and
+            // create /etc/wireguard. Never installs the helper or touches configs.
+            let mut steps: Vec<String> = Vec::new();
+            if let Some(c) = doctor::install_tools_command() {
+                steps.push(c);
+            }
+            if !std::path::Path::new("/etc/wireguard").is_dir() {
+                steps.push("install -d -m 700 /etc/wireguard".to_string());
+            }
+            if steps.is_empty() {
+                s.set_busy(
+                    "Nothing to auto-install here. Install the helper via the .deb / AUR / \
+                     ./install.sh, then Re-check."
+                        .into(),
+                );
+                return;
+            }
+            s.set_busy("Working - enter your password in the dialog that appears...".into());
+            let script = steps.join(" && ");
+            let sw2 = s.as_weak();
+            std::thread::spawn(move || {
+                let ok = std::process::Command::new("pkexec")
+                    .arg("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .status()
+                    .map(|st| st.success())
+                    .unwrap_or(false);
+                let _ = sw2.upgrade_in_event_loop(move |s| {
+                    let report = doctor::system_check();
+                    s.set_checks(build_checks(&report));
+                    s.set_commands(commands_text(&report).into());
+                    s.set_busy(if ok {
+                        "Done - click Re-check to continue.".into()
+                    } else {
+                        "Couldn't finish automatically - try Show commands and run them by hand."
+                            .into()
+                    });
+                });
+            });
+        });
+    }
+
+    let _ = win.show();
+    SETUPWIN.with(|slot| *slot.borrow_mut() = Some(win));
 }
 
 fn select_by_name(ui: &MainWindow, name: &str) {
