@@ -1,6 +1,6 @@
 # Maintainer: jamillejung <izeystudio@gmail.com>
 pkgname=wireguard-gui
-pkgver=1.5.1
+pkgver=1.5.2
 pkgrel=1
 pkgdesc="A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client"
 arch=('x86_64')
