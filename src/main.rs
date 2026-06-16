@@ -4,6 +4,7 @@
 mod backend;
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -11,12 +12,20 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 slint::include_modules!();
 
+/// Set once the tray registers with a StatusNotifierItem host. If it never does
+/// (e.g. GNOME without the AppIndicator extension), closing the window must quit
+/// rather than hide into a tray that will never appear.
+static TRAY_ONLINE: AtomicBool = AtomicBool::new(false);
+
 /// The currently-selected tunnel name, shared with the background poll thread
 /// so it can fetch live status off the UI thread (keeps the UI smooth).
 static SELECTED: Mutex<Option<String>> = Mutex::new(None);
 
 /// Latest live data computed by the background thread, applied on the UI thread.
 struct Live {
+    /// The tunnel `detail` was computed for, so the UI can drop a payload that
+    /// no longer matches the current selection (avoids clobbering a fresh pick).
+    name: Option<String>,
     detail: Option<backend::Detail>,
     actives: Vec<String>,
 }
@@ -53,6 +62,14 @@ impl ksni::Tray for Tray {
     fn status(&self) -> ksni::Status {
         // Always visible.
         ksni::Status::Active
+    }
+    fn watcher_online(&self) {
+        TRAY_ONLINE.store(true, Ordering::Relaxed);
+    }
+    fn watcher_offine(&self) -> bool {
+        // The SNI host went away — closing the window should now quit, not hide.
+        TRAY_ONLINE.store(false, Ordering::Relaxed);
+        true
     }
     fn tool_tip(&self) -> ksni::ToolTip {
         let actives: Vec<String> = backend::list_tunnels()
@@ -281,6 +298,52 @@ fn kv_value(line: &str) -> String {
         .to_string()
 }
 
+/// Whether the form view can faithfully represent this config. The form maps a
+/// single peer and a fixed set of keys; anything else (a second [Peer],
+/// PostUp/PreUp/Table/SaveConfig/…, or an unknown section) would be silently
+/// dropped on a round-trip, so such configs must stay in raw-text mode.
+fn form_representable(cfg: &str) -> bool {
+    let mut peers = 0;
+    let mut section = "";
+    for line in cfg.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let lower = t.to_ascii_lowercase();
+        if lower.starts_with('[') {
+            if lower.starts_with("[peer]") {
+                peers += 1;
+                section = "peer";
+            } else if lower.starts_with("[interface]") {
+                section = "interface";
+            } else {
+                return false;
+            }
+            continue;
+        }
+        let mapped = match section {
+            "interface" => ["privatekey", "address", "dns", "listenport", "mtu"]
+                .iter()
+                .any(|k| lower.starts_with(k)),
+            "peer" => [
+                "publickey",
+                "presharedkey",
+                "allowedips",
+                "endpoint",
+                "persistentkeepalive",
+            ]
+            .iter()
+            .any(|k| lower.starts_with(k)),
+            _ => false,
+        };
+        if !mapped {
+            return false;
+        }
+    }
+    peers <= 1
+}
+
 /// Parse a raw config into the structured form fields (first peer only).
 fn config_to_fields(cfg: &str) -> Fields {
     let mut f = Fields::default();
@@ -449,7 +512,10 @@ fn open_editor(
     // (so a hand-tuned config is never silently rewritten on open). Either way,
     // populate the form fields from the starting config.
     apply_fields(&ed, &config_to_fields(&text));
-    ed.set_form_mode(is_new);
+    // New tunnels open in the form; existing ones in raw text. Never open the
+    // form for a config the form can't represent (multi-peer / scripts / Table),
+    // or saving would silently drop those parts.
+    ed.set_form_mode(is_new && form_representable(&text));
 
     // Live-update the public key as the config is edited.
     {
@@ -467,6 +533,10 @@ fn open_editor(
         let edw = ed.as_weak();
         ed.on_fields_changed(move || {
             if let Some(ed) = edw.upgrade() {
+                // Never clobber a config the form can't represent.
+                if !form_representable(&ed.get_config_text()) {
+                    return;
+                }
                 let cfg = fields_to_config(&read_fields(&ed));
                 ed.set_public_key(backend::public_key_for_config(&cfg).into());
                 ed.set_config_text(cfg.into());
@@ -481,6 +551,17 @@ fn open_editor(
         ed.on_switch_mode(move |to_form| {
             let Some(ed) = edw.upgrade() else { return };
             if to_form {
+                // Refuse to enter the form for configs it can't represent —
+                // keep raw text so nothing is dropped, and say why.
+                if !form_representable(&ed.get_config_text()) {
+                    ed.set_warning(
+                        "This config has parts the form can't show (extra peers, \
+                         PostUp/Table, …). Edit it as Config text."
+                            .into(),
+                    );
+                    ed.set_form_mode(false);
+                    return;
+                }
                 apply_fields(&ed, &config_to_fields(&ed.get_config_text()));
             } else {
                 let cfg = fields_to_config(&read_fields(&ed));
@@ -587,6 +668,11 @@ fn open_editor(
         let edw = ed.as_weak();
         ed.on_generate_psk(move || {
             let Some(ed) = edw.upgrade() else { return };
+            // A preshared key belongs to a [Peer]; without one it would dangle.
+            if !ed.get_config_text().to_ascii_lowercase().contains("[peer]") {
+                ed.set_error("Add a [Peer] before generating a preshared key.".into());
+                return;
+            }
             match backend::generate_psk() {
                 Ok(psk) => {
                     let updated = set_psk(&ed.get_config_text(), &psk);
@@ -709,8 +795,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     refresh_list(&ui);
 
     // ---- close to tray: hide instead of quitting (Quit is on the tray) ----
-    ui.window()
-        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+    // …but only if a tray actually exists to restore the window from. With no
+    // SNI host, hiding would strand the app with no window and no way to quit,
+    // so close quits instead.
+    ui.window().on_close_requested(|| {
+        if TRAY_ONLINE.load(Ordering::Relaxed) {
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            let _ = slint::quit_event_loop();
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
 
     // ---- system-tray icon (best-effort; needs SNI support on the desktop,
     // e.g. KDE, or GNOME with the AppIndicator extension). Uses libdbus on its
@@ -798,24 +893,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Multiple files: import each with an auto-deduped name (never
-            // overwrites an existing tunnel).
+            // overwrites an existing tunnel). Validate each, skip the invalid
+            // ones, and flag any that run root scripts on activation.
             let mut last = None;
             let mut count = 0;
+            let mut skipped = 0;
+            let mut scripts = false;
             for path in &files {
                 let Some((stem, content)) = read(path) else {
+                    skipped += 1;
                     continue;
                 };
+                if backend::validate_config(&content).is_err() {
+                    skipped += 1;
+                    continue;
+                }
+                scripts |= backend::config_runs_scripts(&content);
                 let name = backend::unique_name(&stem);
                 match backend::save_config(&name, &content) {
                     Ok(()) => {
                         last = Some(name);
                         count += 1;
                     }
-                    Err(e) => set_status(&ui, format!("Import failed: {e}")),
+                    Err(_) => skipped += 1,
                 }
             }
             if count > 0 {
-                set_status(&ui, format!("Imported {count} tunnel(s)"));
+                let warn = if scripts {
+                    " — ⚠ some run scripts as root"
+                } else {
+                    ""
+                };
+                let skip = if skipped > 0 {
+                    format!(", {skipped} skipped (invalid)")
+                } else {
+                    String::new()
+                };
+                set_status(&ui, format!("Imported {count} tunnel(s){skip}{warn}"));
+            } else if skipped > 0 {
+                set_status(&ui, format!("Nothing imported — {skipped} file(s) invalid"));
             }
             refresh_list(&ui);
             if let Some(name) = last {
@@ -1045,7 +1161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .filter(|n| tunnels.iter().any(|t| &t.name == *n))
             .map(|n| backend::get_detail(n));
-        *LIVE.lock().unwrap() = Some(Live { detail, actives });
+        *LIVE.lock().unwrap() = Some(Live {
+            name,
+            detail,
+            actives,
+        });
     });
 
     let live_timer = slint::Timer::default();
@@ -1059,9 +1179,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(live) = LIVE.lock().unwrap().take() else {
                     return;
                 };
+                // Only apply detail if it still matches the current selection,
+                // so a payload computed for a previously-selected tunnel can't
+                // overwrite a selection the user just changed.
+                let current = SELECTED.lock().unwrap().clone();
                 if let Some(d) = live.detail {
-                    ui.set_detail(to_slint_detail(d));
-                    ui.set_has_selection(true);
+                    if live.name == current {
+                        ui.set_detail(to_slint_detail(d));
+                        ui.set_has_selection(true);
+                    }
                 }
                 let model = ui.get_tunnels();
                 for i in 0..model.row_count() {

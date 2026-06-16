@@ -149,13 +149,15 @@ verify_build_deps() {
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         warn "No C compiler (cc/gcc) found."; missing=1
     fi
-    command -v pkg-config >/dev/null 2>&1 || command -v pkgconf >/dev/null 2>&1 || {
-        warn "pkg-config not found."; missing=1; }
-
-    # dev headers Slint + ksni link against
-    if command -v pkg-config >/dev/null 2>&1; then
+    # Resolve one pkg-config tool and use it for BOTH the presence test and the
+    # header checks, so they can't diverge (some distros ship only `pkgconf`).
+    PKGCONF="$(command -v pkg-config || command -v pkgconf || true)"
+    if [ -z "$PKGCONF" ]; then
+        warn "pkg-config not found."; missing=1
+    else
+        # dev headers Slint + ksni link against
         for lib in fontconfig xkbcommon dbus-1; do
-            pkg-config --exists "$lib" 2>/dev/null || { warn "Dev headers for '$lib' not found (pkg-config)."; missing=1; }
+            "$PKGCONF" --exists "$lib" 2>/dev/null || { warn "Dev headers for '$lib' not found ($PKGCONF)."; missing=1; }
         done
     fi
 
