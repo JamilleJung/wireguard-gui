@@ -325,10 +325,10 @@ export component MainWindow inherits Window {
     title: "WireGuard";
     default-font-family: "Noto Sans";
     default-font-size: 13px;
-    preferred-width: 840px;
-    preferred-height: 600px;
-    min-width: 620px;
-    min-height: 420px;
+    preferred-width: 1000px;
+    preferred-height: 720px;
+    min-width: 720px;
+    min-height: 480px;
     background: white;
 
     // ---- state driven by Rust ----
@@ -751,10 +751,35 @@ import { Button as StdButton } from "std-widgets.slint";
 // paint, so its text-input widgets render immediately — unlike an in-place
 // overlay, which on this Wayland setup stays blank until clicked.
 // ===========================================================================
+// A single labelled field used by the structured (form) editor view.
+component FormField {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> value;
+    callback edited;
+    height: 30px;
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.label;
+            width: 120px;
+            color: #6a6a6a;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        LineEdit {
+            horizontal-stretch: 1;
+            text <=> root.value;
+            placeholder-text: root.placeholder;
+            edited => { root.edited(); }
+        }
+    }
+}
+
 export component EditWindow inherits Window {
     title: "Edit Tunnel";
     width: 600px;
-    height: 540px;
+    height: 600px;
 
     in property <bool> is-new: false;
     in-out property <string> tunnel-name: "";
@@ -762,11 +787,28 @@ export component EditWindow inherits Window {
     in property <string> error: "";
     in property <string> warning: "";
     in property <string> public-key: "";
+
+    // Form view: structured fields (single peer). `form-mode` toggles between
+    // the form and the raw config text.
+    in-out property <bool> form-mode: false;
+    in-out property <string> f-private-key;
+    in-out property <string> f-address;
+    in-out property <string> f-dns;
+    in-out property <string> f-listen-port;
+    in-out property <string> f-mtu;
+    in-out property <string> f-peer-public-key;
+    in-out property <string> f-preshared-key;
+    in-out property <string> f-allowed-ips;
+    in-out property <string> f-endpoint;
+    in-out property <string> f-keepalive;
+
     callback save(string, string);
     callback cancel();
     callback generate-key();
     callback generate-psk();
     callback config-changed(string);
+    callback fields-changed();
+    callback switch-mode(bool);
     callback copy(string);
 
     // Force the light palette so the text inputs use dark-text-on-light fills —
@@ -849,7 +891,107 @@ export component EditWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
             }
 
-            TextEdit {
+            // Mode toggle: structured fields vs. raw config text.
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: 0px;
+                TabButton {
+                    text: "Edit fields";
+                    selected: root.form-mode;
+                    clicked => { root.switch-mode(true); }
+                }
+                TabButton {
+                    text: "Config text";
+                    selected: !root.form-mode;
+                    clicked => { root.switch-mode(false); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            // ---- structured form view ----
+            if root.form-mode: ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-right: 6px;
+                    spacing: 6px;
+                    Text {
+                        text: "Interface";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #1b1b1b;
+                    }
+                    FormField {
+                        label: "Private key";
+                        placeholder: "base64 private key";
+                        value <=> root.f-private-key;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "Address";
+                        placeholder: "10.0.0.2/32, fd00::2/128";
+                        value <=> root.f-address;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "DNS";
+                        placeholder: "1.1.1.1, 8.8.8.8";
+                        value <=> root.f-dns;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "Listen port";
+                        placeholder: "optional";
+                        value <=> root.f-listen-port;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "MTU";
+                        placeholder: "optional";
+                        value <=> root.f-mtu;
+                        edited => { root.fields-changed(); }
+                    }
+                    Rectangle { height: 4px; }
+                    Text {
+                        text: "Peer";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #1b1b1b;
+                    }
+                    FormField {
+                        label: "Public key";
+                        placeholder: "peer's base64 public key";
+                        value <=> root.f-peer-public-key;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "Preshared key";
+                        placeholder: "optional";
+                        value <=> root.f-preshared-key;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "Allowed IPs";
+                        placeholder: "0.0.0.0/0, ::/0";
+                        value <=> root.f-allowed-ips;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "Endpoint";
+                        placeholder: "host:51820";
+                        value <=> root.f-endpoint;
+                        edited => { root.fields-changed(); }
+                    }
+                    FormField {
+                        label: "Persistent keepalive";
+                        placeholder: "optional, e.g. 25";
+                        value <=> root.f-keepalive;
+                        edited => { root.fields-changed(); }
+                    }
+                }
+            }
+
+            // ---- raw config text view ----
+            if !root.form-mode: TextEdit {
                 vertical-stretch: 1;
                 text <=> root.config-text;
                 edited => { root.config-changed(self.text); }

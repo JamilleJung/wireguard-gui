@@ -36,9 +36,12 @@ single native binary. No Electron, no web view.
 - ♻️ **Apply edits to a running tunnel live** (`wg syncconf`) without dropping peer sessions; **copy the running config** (`wg showconf`) or **save live state** (`wg-quick save`).
 - 📱 **Show QR** — display a tunnel as a QR code to scan into the WireGuard mobile app.
 - 📦 **Export** all tunnels to a `.zip`; **copy** public keys / config / log to the clipboard.
-- 📝 **Inline editor** with **config validation** (keys, addresses, endpoint, …) before saving.
+- 📝 **Inline editor** that toggles between a **form view** (labelled Interface/Peer
+  fields) and the **raw config text**, with **config validation** (keys, addresses,
+  endpoint, …) before saving.
 - ✏️ **Rename** / **Remove** tunnels; **Log** tab; **Start-on-boot** toggle.
-- 🗔 **System-tray icon** with per-tunnel activate/deactivate (where the desktop supports SNI).
+- 🗔 **System-tray icon** with per-tunnel activate/deactivate (where the desktop supports SNI);
+  **closing the window minimizes to the tray** so tunnels keep running.
 - 🔒 **Tiny, auditable privilege surface** (see below).
 
 ---
