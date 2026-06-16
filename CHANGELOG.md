@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-06-16
+
+### Fixed
+- **Form editor no longer drops config it can't represent.** Editing an existing
+  tunnel that has a second `[Peer]`, `PostUp`/`PreUp`/`PostDown`/`PreDown`,
+  `Table`, or other unmapped keys could silently strip them on Save. The form now
+  refuses to open for such configs (keeping them in raw-text mode, with a notice)
+  and never overwrites a config it can't faithfully round-trip.
+- **Closing the window no longer strands the app** when there is no system-tray
+  host (e.g. GNOME without the AppIndicator extension): with no tray to restore
+  from, closing the window now quits instead of hiding into nothing.
+- The live-status timer no longer overwrites the detail pane of a tunnel you just
+  selected with a stale background reading.
+- **Bulk file import** now validates each file and flags ones that run root
+  scripts, matching the single-import path.
+- Stricter config validation: endpoints require bracketed IPv6 and a valid host;
+  addresses/AllowedIPs are parsed as real IP/CIDR; tunnel-name sanitisation always
+  yields a helper-valid name (no stray leading symbol or trailing dot).
+- `install.sh` header check now also works when only `pkgconf` (not `pkg-config`)
+  is installed.
+- `wg-helper`'s `sync` verifies `wg-quick strip` before applying, so a strip
+  failure can't wipe peers off the live interface.
+- The release workflow fails if the `.deb` or checksums are missing, instead of
+  publishing a partial release.
+
 ## [1.3.0] - 2026-06-16
 
 ### Added
@@ -140,7 +165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.0...v1.1.1

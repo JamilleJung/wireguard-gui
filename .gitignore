@@ -2,3 +2,11 @@
 *.swp
 minisign.key
 *.minisig
+
+# Local, private developer notes — never publish.
+/DEV_CONTEXT.md
+
+# Safety net: never accidentally commit real WireGuard configs / keys.
+*.conf
+*.key
+!minisign.pub

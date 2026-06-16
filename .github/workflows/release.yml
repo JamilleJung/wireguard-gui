@@ -61,7 +61,7 @@ jobs:
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --no-strip || cargo deb
-          cp target/debian/*.deb . || true
+          cp target/debian/*.deb .   # mandatory: fail the release if none exists
 
       # ---------------- AppImage ----------------
       - name: Build AppImage
@@ -92,7 +92,13 @@ jobs:
       # ---------------- checksums ----------------
       - name: Generate checksums
         run: |
-          sha256sum *.tar.gz *.deb *.AppImage 2>/dev/null | tee SHA256SUMS
+          shopt -s nullglob
+          artifacts=( *.tar.gz *.deb *.AppImage )
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::error::no artifacts to checksum"; exit 1
+          fi
+          sha256sum "${artifacts[@]}" | tee SHA256SUMS
+          test -s SHA256SUMS
 
       # ---------------- sign the checksums (minisign) ----------------
       - name: Sign SHA256SUMS with minisign
