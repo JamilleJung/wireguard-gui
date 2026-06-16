@@ -49,6 +49,15 @@ single native binary. No Electron, no web view.
   install, what to set up, what survives a reboot, and when (only as a
   server/gateway) you need firewall and IP-forwarding changes.
 
+## Documentation
+
+- **[docs/TUTORIAL.md](docs/TUTORIAL.md)** - a step-by-step walkthrough from install
+  to your first tunnel: import a `.conf` or QR image, create one from scratch,
+  connect, show a QR for your phone, start-on-boot, edit safely, and troubleshooting.
+- **[docs/DISTROS.md](docs/DISTROS.md)** - per-distro install/setup/reboot/firewall.
+- **[docs/RELEASES.md](docs/RELEASES.md)** - detailed release history and how to
+  verify signed downloads.
+
 ---
 
 ## ✨ Features
