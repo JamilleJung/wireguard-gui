@@ -1,6 +1,6 @@
 # Contributing to wireguard-gui
 
-Thanks for taking the time to contribute! This is a small, friendly project —
+Thanks for taking the time to contribute! This is a small, friendly project -
 issues, ideas, and pull requests are all welcome.
 
 ## Getting set up
@@ -36,7 +36,7 @@ WGGUI_DEMO=1 cargo run --release
 
 ## Before you open a PR
 
-CI runs these and **will fail the build** if they don't pass — please run them
+CI runs these and **will fail the build** if they don't pass - please run them
 locally first:
 
 ```sh
@@ -55,7 +55,7 @@ Guidelines:
 - UI changes: please attach a screenshot.
 - Be mindful of the **Slint quirk on GNOME/Wayland**: setting `background` on a
   `Window` (or any ancestor of a text input) makes `LineEdit`/`TextEdit` render
-  blank here — don't reintroduce it on a window that contains text inputs.
+  blank here - don't reintroduce it on a window that contains text inputs.
 
 ## Commit messages
 
@@ -64,7 +64,7 @@ issues with `#123` where relevant.
 
 ## Reporting bugs / requesting features
 
-Use the issue templates — they prompt for the distro, package manager, and
+Use the issue templates - they prompt for the distro, package manager, and
 version, which makes problems much faster to reproduce.
 
 ## License

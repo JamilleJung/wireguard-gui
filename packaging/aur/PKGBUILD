@@ -1,0 +1,39 @@
+# Maintainer: jamillejung <izeystudio@gmail.com>
+pkgname=wireguard-gui
+pkgver=1.4.1
+pkgrel=1
+pkgdesc="A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client"
+arch=('x86_64')
+url="https://github.com/JamilleJung/wireguard-gui"
+license=('MIT')
+depends=('wireguard-tools' 'fontconfig' 'libxkbcommon' 'libglvnd' 'dbus' 'polkit')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # `updpkg --sums` (or `makepkg -g`) before publishing to the AUR
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo build --frozen --release
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/wireguard-gui "$pkgdir/usr/bin/wireguard-gui"
+    install -Dm755 packaging/wg-helper "$pkgdir/usr/lib/wireguard-gui/wg-helper"
+    install -Dm644 packaging/wireguard-gui.desktop "$pkgdir/usr/share/applications/wireguard-gui.desktop"
+    install -Dm644 packaging/wireguard-gui.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/wireguard-gui.svg"
+    install -Dm644 packaging/49-wireguard-gui.rules "$pkgdir/usr/share/polkit-1/rules.d/49-wireguard-gui.rules"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+# Privilege: this package installs the polkit rule, so an active local session
+# can run the helper without a password. (The polkit rule already allows both
+# the /usr/lib and /usr/local/lib helper paths.)
