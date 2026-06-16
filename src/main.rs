@@ -192,6 +192,34 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
+/// Path of the saved Easy/Advanced preference: $XDG_CONFIG_HOME (or ~/.config)
+/// /wireguard-gui/mode.
+fn mode_state_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("wireguard-gui").join("mode"))
+}
+
+/// Load the saved mode. New users default to Easy mode.
+fn load_easy() -> bool {
+    match mode_state_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(s) => s.trim() != "advanced",
+        None => true,
+    }
+}
+
+/// Persist the mode so the choice sticks across runs.
+fn save_easy(easy: bool) {
+    if let Some(p) = mode_state_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, if easy { "easy" } else { "advanced" });
+    }
+}
+
 /// Copy text to the system clipboard. Returns whether it succeeded.
 fn copy_to_clipboard(text: &str) -> bool {
     CLIPBOARD.with(|c| {
@@ -797,6 +825,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = MainWindow::new()?;
     refresh_list(&ui);
+
+    // ---- Easy mode (everyday actions only) — load + persist the preference ----
+    ui.set_easy_mode(load_easy());
+    {
+        let w = ui.as_weak();
+        ui.on_toggle_easy(move || {
+            if let Some(ui) = w.upgrade() {
+                let next = !ui.get_easy_mode();
+                ui.set_easy_mode(next);
+                save_easy(next);
+            }
+        });
+    }
 
     // ---- close to tray: hide instead of quitting (Quit is on the tray) ----
     // …but only if a tray actually exists to restore the window from. With no

@@ -342,7 +342,12 @@ export component MainWindow inherits Window {
     in-out property <int> active-tab: 0;
     in property <string> log-text: "";
 
+    // Easy mode hides expert actions (Export, Running cfg, Save live, new-from-
+    // scratch) for everyday users. Persisted by Rust.
+    in-out property <bool> easy-mode: true;
+
     // ---- callbacks into Rust ----
+    callback toggle-easy();
     callback select(int);
     callback activate(string);
     callback deactivate(string);
@@ -437,6 +442,14 @@ export component MainWindow inherits Window {
                                 clicked => { add-popup.show(); }
                             }
                         }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: root.easy-mode ? "Easy mode" : "Advanced mode";
+                                tooltip: "Easy mode hides expert tools — click to switch";
+                                clicked => { root.toggle-easy(); }
+                            }
+                        }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
@@ -448,6 +461,7 @@ export component MainWindow inherits Window {
                         }
                         VerticalLayout {
                             alignment: center;
+                            visible: !root.easy-mode;
                             IconButton {
                                 kind: "export";
                                 tooltip: "Export all tunnels to a zip";
@@ -479,6 +493,7 @@ export component MainWindow inherits Window {
                                 }
                                 MenuItem {
                                     text: "Add empty tunnel…";
+                                    visible: !root.easy-mode;
                                     chosen => { add-popup.close(); root.add-empty(); }
                                 }
                                 MenuItem {
@@ -603,12 +618,12 @@ export component MainWindow inherits Window {
                                 tooltip: "Show as a QR code to scan on a phone";
                                 clicked => { root.show-qr(root.detail.name); }
                             }
-                            if root.detail.active: PushButton {
+                            if root.detail.active && !root.easy-mode: PushButton {
                                 text: "Running cfg";
                                 tooltip: "Copy the live running config (wg showconf)";
                                 clicked => { root.show-running(root.detail.name); }
                             }
-                            if root.detail.active: PushButton {
+                            if root.detail.active && !root.easy-mode: PushButton {
                                 text: "Save live";
                                 tooltip: "Save the running state to disk (wg-quick save)";
                                 clicked => { root.persist-live(root.detail.name); }
