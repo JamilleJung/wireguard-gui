@@ -45,6 +45,9 @@ single native binary. No Electron, no web view.
   `wg`/`wg-quick` - it uses your distro's `wireguard-tools` (and helps install
   them). The `.deb` is the smoothest option on Debian/Ubuntu/Mint; the AppImage
   and tarball still need `wireguard-tools` present on the system.
+- **Per-distro guide:** see **[docs/DISTROS.md](docs/DISTROS.md)** for what to
+  install, what to set up, what survives a reboot, and when (only as a
+  server/gateway) you need firewall and IP-forwarding changes.
 
 ---
 
