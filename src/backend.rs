@@ -708,6 +708,35 @@ pub fn public_key_for_config(text: &str) -> String {
     String::new()
 }
 
+/// Generate a fresh preshared key via `wg genpsk` (no root).
+pub fn generate_psk() -> Result<String, String> {
+    let out = Command::new("wg")
+        .arg("genpsk")
+        .output()
+        .map_err(|e| format!("wg genpsk: {e}"))?;
+    if !out.status.success() {
+        return Err("wg genpsk failed".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Apply the saved config to a RUNNING tunnel without dropping sessions
+/// (`wg syncconf`). Only wg-level fields take effect; Address/DNS/MTU/Table
+/// changes still need a full reconnect.
+pub fn sync_running(name: &str) -> Result<(), String> {
+    helper(&["sync", name], None).map(|_| ())
+}
+
+/// The live running wg-level config (`wg showconf`).
+pub fn running_config(name: &str) -> Result<String, String> {
+    helper(&["showconf", name], None)
+}
+
+/// Save the live running state back to the `.conf` (`wg-quick save`).
+pub fn persist_live(name: &str) -> Result<(), String> {
+    helper(&["persist", name], None).map(|_| ())
+}
+
 /// All tunnel configs as (filename, contents), for export.
 pub fn read_all_configs() -> Vec<(String, String)> {
     list_tunnels()

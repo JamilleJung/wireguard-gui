@@ -118,6 +118,25 @@ case "$verb" in
         validate_name "${1:-}"
         systemctl is-enabled "wg-quick@$1" 2>/dev/null || true
         ;;
+    sync)
+        # Apply the on-disk config to the RUNNING interface without dropping
+        # peer sessions (wg-level changes only).
+        validate_name "${1:-}"
+        log "sync $1"
+        wg syncconf "$1" <(wg-quick strip "$1")
+        ;;
+    showconf)
+        # The live running wg-level config (no Address/DNS/MTU/Table).
+        validate_name "${1:-}"
+        wg showconf "$1" 2>/dev/null || true
+        ;;
+    persist)
+        # Save the live running state back to the .conf (wg-quick save).
+        validate_name "${1:-}"
+        backup_existing "$1"
+        log "persist $1"
+        wg-quick save "$1"
+        ;;
     log)
         # Recent activity: this app's audit entries + wg-quick service logs.
         echo "===== wireguard-gui activity ====="

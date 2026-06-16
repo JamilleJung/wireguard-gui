@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-16
+
+### Added
+- **Generate preshared key** (`wg genpsk`) in the editor — pairs with the
+  existing keypair generation.
+- **Apply edits to a running tunnel without dropping peer sessions** — saving an
+  active tunnel now uses `wg syncconf`; wg-quick-only fields (Address/DNS/MTU/
+  Table) still prompt to reconnect.
+- **Running cfg** — copy a live tunnel's running config (`wg showconf`).
+- **Save live** — write the running state back to the `.conf` (`wg-quick save`).
+
 ## [1.1.1] - 2026-06-16
 
 ### Added
@@ -109,7 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/JamilleJung/wireguard-gui/compare/v0.2.0...v1.0.0

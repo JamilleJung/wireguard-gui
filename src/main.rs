@@ -210,6 +210,45 @@ fn set_private_key(config: &str, key: &str) -> String {
     }
 }
 
+/// Replace (or insert) the `PresharedKey` line in a config with `key`.
+fn set_psk(config: &str, key: &str) -> String {
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in config.lines() {
+        let t = line.trim_start().to_ascii_lowercase();
+        if !replaced && t.starts_with("presharedkey") && line.contains('=') {
+            out.push_str(&format!("PresharedKey = {key}\n"));
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if replaced {
+        return out;
+    }
+    // Insert right after the first peer's PublicKey line, else append.
+    let mut result = String::new();
+    let mut inserted = false;
+    for line in out.lines() {
+        result.push_str(line);
+        result.push('\n');
+        if !inserted
+            && line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("publickey")
+        {
+            result.push_str(&format!("PresharedKey = {key}\n"));
+            inserted = true;
+        }
+    }
+    if !inserted {
+        result.push_str(&format!("PresharedKey = {key}\n"));
+    }
+    result
+}
+
 /// Render a string to a black-on-white QR-code Slint image.
 fn qr_image(text: &str) -> slint::Image {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
@@ -325,7 +364,23 @@ fn open_editor(
                     let _ = backend::delete(&orig);
                     set_status(&main, format!("Renamed {orig} → {name}"));
                 } else {
-                    set_status(&main, format!("Saved {name}"));
+                    // If the tunnel is up, apply the change live without dropping
+                    // peer sessions (wg syncconf). wg-quick-only fields
+                    // (Address/DNS/MTU/Table) still need a reconnect.
+                    let active = backend::list_tunnels()
+                        .iter()
+                        .any(|t| t.name == name && t.active);
+                    if active {
+                        match backend::sync_running(&name) {
+                            Ok(()) => set_status(&main, format!("Saved {name} (applied live)")),
+                            Err(_) => set_status(
+                                &main,
+                                format!("Saved {name} — reconnect to apply Address/DNS/MTU/routes"),
+                            ),
+                        }
+                    } else {
+                        set_status(&main, format!("Saved {name}"));
+                    }
                 }
                 refresh_list(&main);
                 select_by_name(&main, &name);
@@ -348,6 +403,23 @@ fn open_editor(
                     ed.set_warning("New keypair generated.".into());
                 }
                 Err(e) => ed.set_error(format!("Key generation failed: {e}").into()),
+            }
+        });
+    }
+
+    // Generate a preshared key for the peer.
+    {
+        let edw = ed.as_weak();
+        ed.on_generate_psk(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            match backend::generate_psk() {
+                Ok(psk) => {
+                    let updated = set_psk(&ed.get_config_text(), &psk);
+                    ed.set_config_text(updated.into());
+                    ed.set_error("".into());
+                    ed.set_warning("New preshared key generated.".into());
+                }
+                Err(e) => ed.set_error(format!("PSK generation failed: {e}").into()),
             }
         });
     }
@@ -745,6 +817,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = about.show();
         ABOUTWIN.with(|slot| *slot.borrow_mut() = Some(about));
     });
+
+    // ---- copy the live running config (wg showconf) ----
+    {
+        let w = ui.as_weak();
+        ui.on_show_running(move |name| {
+            let ui = w.unwrap();
+            match backend::running_config(&name) {
+                Ok(cfg) if !cfg.trim().is_empty() => {
+                    copy_to_clipboard(&cfg);
+                    set_status(&ui, format!("Copied {name}'s running config"));
+                }
+                Ok(_) => set_status(&ui, "No running config (is the tunnel up?)"),
+                Err(e) => set_status(&ui, format!("showconf failed: {e}")),
+            }
+        });
+    }
+
+    // ---- save the live running state to disk (wg-quick save) ----
+    {
+        let w = ui.as_weak();
+        ui.on_persist_live(move |name| {
+            let ui = w.unwrap();
+            match backend::persist_live(&name) {
+                Ok(()) => set_status(&ui, format!("Saved {name}'s live state to disk")),
+                Err(e) => set_status(&ui, format!("Save live failed: {e}")),
+            }
+            load_detail(&ui, &name);
+        });
+    }
 
     // ---- live polling on a BACKGROUND thread ----
     // All `wg`/`sudo` subprocess calls happen here, off the UI thread, so the
