@@ -26,6 +26,10 @@ export struct TunnelDetail {
     addresses: string,
     dns: string,
     peers: [PeerInfo],
+    // Live connection health + throughput (filled by the background poller).
+    health: string,
+    health-good: bool,
+    speed: string,
 }
 
 // ---- small reusable pieces -------------------------------------------------
@@ -552,6 +556,29 @@ export component MainWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        if root.detail.active && root.detail.health != "": HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Connection:";
+                                width: 132px;
+                                color: #6a6a6a;
+                                font-size: 13px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.detail.health;
+                                color: root.detail.health-good ? #2cbe4e : #b06a00;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        if root.detail.active && root.detail.speed != "": DetailRow {
+                            label: "Speed:";
+                            value: root.detail.speed;
                         }
 
                         DetailRow {

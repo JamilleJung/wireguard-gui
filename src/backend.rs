@@ -183,73 +183,18 @@ pub struct Detail {
     pub addresses: String,
     pub dns: String,
     pub peers: Vec<Peer>,
+    /// Live interface totals (summed across peers), for computing throughput.
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    /// Seconds since the most recent handshake (None if inactive / never).
+    pub handshake_age: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Demo mode (`WGGUI_DEMO=1`) shows polished fake tunnels for screenshots —
-/// no helper calls, no real `/etc/wireguard` access.
-fn demo_mode() -> bool {
-    std::env::var("WGGUI_DEMO")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn demo_tunnels() -> Vec<Tunnel> {
-    [
-        ("home-server", true),
-        ("work-vpn", false),
-        ("tokyo-relay", false),
-        ("us-east-1", false),
-    ]
-    .iter()
-    .map(|(n, a)| Tunnel {
-        name: n.to_string(),
-        active: *a,
-    })
-    .collect()
-}
-
-fn demo_detail(name: &str) -> Detail {
-    let active = name == "home-server";
-    Detail {
-        name: name.to_string(),
-        active,
-        autostart: active,
-        public_key: "Hk3pQ2vN8sLrYwZ1aFcJ4mD6tB9eU0xKgPiR7oVnQ4=".to_string(),
-        listen_port: if active {
-            "51820".into()
-        } else {
-            String::new()
-        },
-        addresses: "10.7.0.2/24, fd00:7::2/64".to_string(),
-        dns: "1.1.1.1, 1.0.0.1".to_string(),
-        peers: vec![Peer {
-            public_key: "T9bXm2Kp5LqWv8RcZ1hN6sJ3dY7uA0eFgB4iO+wQ5k=".to_string(),
-            preshared: true,
-            allowed_ips: "0.0.0.0/0, ::/0".to_string(),
-            endpoint: "vpn.example.com:51820".to_string(),
-            keepalive: "25".to_string(),
-            latest_handshake: if active {
-                "38 seconds ago".into()
-            } else {
-                String::new()
-            },
-            transfer: if active {
-                "1.24 GiB received, 318.66 MiB sent".into()
-            } else {
-                String::new()
-            },
-        }],
-    }
-}
-
 pub fn list_tunnels() -> Vec<Tunnel> {
-    if demo_mode() {
-        return demo_tunnels();
-    }
     let names = helper(&["list"], None).unwrap_or_default();
     let active: Vec<String> = helper(&["active"], None)
         .unwrap_or_default()
@@ -290,16 +235,6 @@ pub fn unique_name(base: &str) -> String {
 }
 
 pub fn read_config(name: &str) -> Result<String, String> {
-    if demo_mode() {
-        return Ok(format!(
-            "[Interface]\nPrivateKey = oMM7e2Kf4pQ1sLrYwZ1aFcJ4mD6tB9eU0xKgPiR7oV=\n\
-             Address = 10.7.0.2/24, fd00:7::2/64\nDNS = 1.1.1.1, 1.0.0.1\n\n\
-             [Peer]\nPublicKey = T9bXm2Kp5LqWv8RcZ1hN6sJ3dY7uA0eFgB4iO+wQ5k=\n\
-             PresharedKey = aBcDeF2Kf4pQ1sLrYwZ1aFcJ4mD6tB9eU0xKgPiR7oV=\n\
-             AllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = vpn.example.com:51820\n\
-             PersistentKeepalive = 25\n# tunnel: {name}\n"
-        ));
-    }
     helper(&["read", name], None)
 }
 
@@ -321,15 +256,6 @@ pub fn delete(name: &str) -> Result<(), String> {
 
 /// Recent WireGuard-related log lines (this app's audit log + wg-quick units).
 pub fn get_log() -> String {
-    if demo_mode() {
-        return "===== wireguard-gui activity =====\n\
-                2026-06-16T09:41:02 home  wireguard-gui: user=demo action=up home-server\n\
-                2026-06-16T09:41:02 home  wireguard-gui: user=demo action=save home-server\n\
-                2026-06-16T09:12:55 home  wireguard-gui: user=demo action=down work-vpn\n\
-                \n===== wg-quick (systemd) =====\n\
-                2026-06-16T09:41:02 home  systemd: Started WireGuard via wg-quick(8) for home-server.\n"
-            .to_string();
-    }
     match helper(&["log"], None) {
         Ok(s) if !s.trim().is_empty() => s,
         Ok(_) => "(no recent log entries)".to_string(),
@@ -340,9 +266,6 @@ pub fn get_log() -> String {
 /// Build the full detail view for a tunnel by merging its on-disk config with
 /// the live `wg show <name> dump` output.
 pub fn get_detail(name: &str) -> Detail {
-    if demo_mode() {
-        return demo_detail(name);
-    }
     let cfg = read_config(name).unwrap_or_default();
     let parsed = parse_config(&cfg);
     let dump = helper(&["dump", name], None).unwrap_or_default();
@@ -393,6 +316,32 @@ pub fn get_detail(name: &str) -> Detail {
         })
         .collect();
 
+    // Live interface totals + most-recent handshake age, for throughput/health.
+    let (rx_bytes, tx_bytes) = live
+        .as_ref()
+        .map(|l| {
+            l.peers
+                .iter()
+                .fold((0u64, 0u64), |(r, t), p| (r + p.rx, t + p.tx))
+        })
+        .unwrap_or((0, 0));
+    let handshake_age = live.as_ref().and_then(|l| {
+        let latest = l
+            .peers
+            .iter()
+            .map(|p| p.latest_handshake)
+            .max()
+            .unwrap_or(0);
+        if latest == 0 {
+            return None;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(latest);
+        Some(now.saturating_sub(latest))
+    });
+
     Detail {
         name: name.to_string(),
         active,
@@ -402,6 +351,9 @@ pub fn get_detail(name: &str) -> Detail {
         addresses: parsed.address.unwrap_or_default(),
         dns: parsed.dns.unwrap_or_default(),
         peers,
+        rx_bytes,
+        tx_bytes,
+        handshake_age,
     }
 }
 
@@ -575,7 +527,7 @@ fn fmt_handshake(epoch: u64) -> String {
     ago
 }
 
-fn fmt_bytes(b: u64) -> String {
+pub fn fmt_bytes(b: u64) -> String {
     const KIB: f64 = 1024.0;
     let b = b as f64;
     if b < KIB {

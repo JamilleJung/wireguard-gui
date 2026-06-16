@@ -41,6 +41,11 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
+      - name: Smoke test (binary starts & parses args)
+        run: |
+          ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
+          ./target/release/wireguard-gui --help >/dev/null
+
       - name: Shell lint the helper & installer
         run: |
           sudo apt-get install -y shellcheck

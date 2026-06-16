@@ -28,8 +28,14 @@ struct Live {
     name: Option<String>,
     detail: Option<backend::Detail>,
     actives: Vec<String>,
+    /// Live throughput for the selected tunnel, e.g. "down 1.2 MiB/s   up 340 KiB/s".
+    speed: String,
 }
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
+
+/// A short live summary for the tray tooltip (active tunnels + throughput),
+/// written by the background thread and read by the tray on demand.
+static TRAY_INFO: Mutex<String> = Mutex::new(String::new());
 
 thread_local! {
     // Keeps the currently-open editor window alive. Replaced (and the old one
@@ -72,15 +78,24 @@ impl ksni::Tray for Tray {
         true
     }
     fn tool_tip(&self) -> ksni::ToolTip {
-        let actives: Vec<String> = backend::list_tunnels()
-            .into_iter()
-            .filter(|t| t.active)
-            .map(|t| t.name)
-            .collect();
-        let description = if actives.is_empty() {
-            "No active tunnel".to_string()
-        } else {
-            format!("Active: {}", actives.join(", "))
+        // Live summary (active tunnels + throughput) kept fresh by the poll
+        // thread; falls back to a direct query if it hasn't run yet.
+        let description = {
+            let info = TRAY_INFO.lock().unwrap().clone();
+            if info.is_empty() {
+                let actives: Vec<String> = backend::list_tunnels()
+                    .into_iter()
+                    .filter(|t| t.active)
+                    .map(|t| t.name)
+                    .collect();
+                if actives.is_empty() {
+                    "No active tunnel".to_string()
+                } else {
+                    format!("Active: {}", actives.join(", "))
+                }
+            } else {
+                info
+            }
         };
         ksni::ToolTip {
             title: "WireGuard".into(),
@@ -722,7 +737,31 @@ fn open_editor(
     EDITOR.with(|slot| *slot.borrow_mut() = Some(ed));
 }
 
+/// Compact "seconds ago" → "12s" / "3m" / "2h".
+fn fmt_ago(s: u64) -> String {
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h", s / 3600)
+    }
+}
+
+/// Connection-health text + whether it's healthy, from the handshake age.
+fn health_str(active: bool, age: Option<u64>) -> (String, bool) {
+    if !active {
+        return (String::new(), false);
+    }
+    match age {
+        Some(s) if s < 180 => (format!("OK (last handshake {} ago)", fmt_ago(s)), true),
+        Some(s) => (format!("stale (last handshake {} ago)", fmt_ago(s)), false),
+        None => ("waiting for handshake…".into(), false),
+    }
+}
+
 fn to_slint_detail(d: backend::Detail) -> TunnelDetail {
+    let (health, health_good) = health_str(d.active, d.handshake_age);
     let peers: Vec<PeerInfo> = d
         .peers
         .into_iter()
@@ -745,6 +784,9 @@ fn to_slint_detail(d: backend::Detail) -> TunnelDetail {
         addresses: d.addresses.into(),
         dns: d.dns.into(),
         peers: ModelRc::new(VecModel::from(peers)),
+        health: health.into(),
+        health_good,
+        speed: SharedString::new(),
     }
 }
 
@@ -821,6 +863,30 @@ fn set_status(ui: &MainWindow, msg: impl Into<SharedString>) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Answer --version/--help without opening a window (useful in scripts).
+    if let Some(arg) = std::env::args().nth(1) {
+        match arg.as_str() {
+            "-V" | "--version" => {
+                println!("wireguard-gui {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "-h" | "--help" => {
+                println!(
+                    "wireguard-gui {} - a desktop GUI for managing WireGuard tunnels\n\n\
+                     Usage: wireguard-gui            launch the app\n       \
+                     wireguard-gui --version    print the version\n       \
+                     wireguard-gui --help       show this help",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return Ok(());
+            }
+            other => {
+                eprintln!("wireguard-gui: unknown argument '{other}' (try --help)");
+                std::process::exit(2);
+            }
+        }
+    }
+
     backend::init();
 
     let ui = MainWindow::new()?;
@@ -1193,24 +1259,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stutter) and drops the result into LIVE. A cheap UI-thread timer then
     // applies it with set_detail — a real property change, so Slint always
     // repaints (request_redraw alone can stall on Wayland).
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
-        let name = SELECTED.lock().unwrap().clone();
-        let tunnels = backend::list_tunnels();
-        let actives: Vec<String> = tunnels
-            .iter()
-            .filter(|t| t.active)
-            .map(|t| t.name.clone())
-            .collect();
-        let detail = name
-            .as_ref()
-            .filter(|n| tunnels.iter().any(|t| &t.name == *n))
-            .map(|n| backend::get_detail(n));
-        *LIVE.lock().unwrap() = Some(Live {
-            name,
-            detail,
-            actives,
-        });
+    std::thread::spawn(move || {
+        // Previous (name, rx, tx, when) sample for the selected tunnel, to derive
+        // a live throughput rate.
+        let mut prev: Option<(String, u64, u64, std::time::Instant)> = None;
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let name = SELECTED.lock().unwrap().clone();
+            let tunnels = backend::list_tunnels();
+            let actives: Vec<String> = tunnels
+                .iter()
+                .filter(|t| t.active)
+                .map(|t| t.name.clone())
+                .collect();
+            let detail = name
+                .as_ref()
+                .filter(|n| tunnels.iter().any(|t| &t.name == *n))
+                .map(|n| backend::get_detail(n));
+
+            // Throughput for the selected tunnel from successive samples.
+            let mut speed = String::new();
+            match (name.as_ref(), detail.as_ref()) {
+                (Some(n), Some(d)) if d.active => {
+                    let now = std::time::Instant::now();
+                    if let Some((pn, prx, ptx, pt)) = prev.as_ref() {
+                        if pn == n {
+                            let dt = now.duration_since(*pt).as_secs_f64();
+                            if dt >= 0.3 {
+                                let rrx = (d.rx_bytes.saturating_sub(*prx) as f64 / dt) as u64;
+                                let rtx = (d.tx_bytes.saturating_sub(*ptx) as f64 / dt) as u64;
+                                speed = format!(
+                                    "down {}/s   up {}/s",
+                                    backend::fmt_bytes(rrx),
+                                    backend::fmt_bytes(rtx)
+                                );
+                            }
+                        }
+                    }
+                    prev = Some((n.clone(), d.rx_bytes, d.tx_bytes, now));
+                }
+                _ => prev = None,
+            }
+
+            // Tray tooltip summary.
+            let tray = if actives.is_empty() {
+                "No active tunnel".to_string()
+            } else if speed.is_empty() {
+                format!("Active: {}", actives.join(", "))
+            } else {
+                format!("Active: {} · {}", actives.join(", "), speed)
+            };
+            *TRAY_INFO.lock().unwrap() = tray;
+
+            *LIVE.lock().unwrap() = Some(Live {
+                name,
+                detail,
+                actives,
+                speed,
+            });
+        }
     });
 
     let live_timer = slint::Timer::default();
@@ -1230,7 +1337,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let current = SELECTED.lock().unwrap().clone();
                 if let Some(d) = live.detail {
                     if live.name == current {
-                        ui.set_detail(to_slint_detail(d));
+                        let mut det = to_slint_detail(d);
+                        det.speed = live.speed.clone().into();
+                        ui.set_detail(det);
                         ui.set_has_selection(true);
                     }
                 }
