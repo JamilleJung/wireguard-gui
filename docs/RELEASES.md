@@ -77,7 +77,7 @@ version-aligned**: a given version number means the same capabilities and the
 same fixes in both. When you read a version below, the matching `wg-tui` release
 covers the same ground (with the obvious interface differences - menus and a tray
 on the GUI side, key bindings on the TUI side). The current version of both is
-**1.6.0**.
+**1.6.3**.
 
 ---
 

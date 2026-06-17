@@ -43,7 +43,9 @@ Hardening in `wg-helper`:
 - **Kill switch scope.** The helper can add/remove tunnel-scoped
   firewall rules for an active `wg-quick` tunnel, preferring **nftables**
   (`inet filter`) with an iptables/ip6tables fallback. The kill switch never
-  flushes user rules and cleans up on disable. It does not install a daemon
+  flushes user rules and cleans up on disable. When `$SSH_CONNECTION` is
+  set, it auto-allows established SSH return traffic to prevent accidental
+  session lock-out. It does not install a daemon
   or own the system firewall permanently.
 
 ### Privilege escalation backend

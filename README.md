@@ -77,7 +77,7 @@ client while staying close to the tools Linux WireGuard users already know.
 - Copies interface and peer public keys.
 - Toggles start-on-boot using systemd `wg-quick@<name>` when systemd is present.
 - Toggles a helper-managed kill switch for active tunnels using nftables
-  (preferred) or iptables/ip6tables.
+  (preferred) or iptables/ip6tables; auto-allows established SSH traffic.
 - Provides a tray menu on desktops with StatusNotifier/AppIndicator support.
 
 ### Editing and config
@@ -389,7 +389,6 @@ not log private keys.
 ## Roadmap
 
 - More distro packages where maintainers want them (COPR, official Alpine/Void).
--  (`ui/components/`).
 
 ## License
 
