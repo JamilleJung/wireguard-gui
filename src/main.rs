@@ -39,7 +39,7 @@ struct Live {
     name: Option<String>,
     detail: Option<backend::Detail>,
     actives: Vec<String>,
-    /// Live throughput for the selected tunnel, e.g. "down 1.2 MiB/s   up 340 KiB/s".
+    /// Live throughput for the selected tunnel, e.g. "↓ 1.2 MiB/s   ↑ 340 KiB/s".
     speed: String,
 }
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
@@ -1360,17 +1360,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Throughput for the selected tunnel from successive samples.
             let mut speed = String::new();
             match (name.as_ref(), detail.as_ref()) {
-                (Some(n), Some(d)) if d.active => {
+                (Some(n), Some(d)) => {
                     let now = std::time::Instant::now();
                     if let Some((pn, prx, ptx, pt)) = prev.as_ref()
                         && pn == n
                     {
                         let dt = now.duration_since(*pt).as_secs_f64();
-                        if dt >= 0.3 {
+                        if dt >= 0.5 {
                             let rrx = (d.rx_bytes.saturating_sub(*prx) as f64 / dt) as u64;
                             let rtx = (d.tx_bytes.saturating_sub(*ptx) as f64 / dt) as u64;
                             speed = format!(
-                                "down {}/s   up {}/s",
+                                "↓ {}/s   ↑ {}/s",
                                 backend::fmt_bytes(rrx),
                                 backend::fmt_bytes(rtx)
                             );
