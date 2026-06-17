@@ -947,7 +947,9 @@ export component EditWindow inherits Window {
     callback peer-next();
     callback peer-add();
     callback peer-remove();
+    callback create-preset(string);
     callback copy(string);
+    callback save-and-activate(string, string);
 
     // Force the light palette so the text inputs use dark-text-on-light fills —
     // which is what makes them visible on a white background. (No `min-height`
@@ -1027,6 +1029,40 @@ export component EditWindow inherits Window {
                     clicked => { root.copy(root.config-text); }
                 }
                 Rectangle { horizontal-stretch: 1; }
+            }
+
+            if root.is-new: Rectangle {
+                vertical-stretch: 0;
+                background: #f7fbff;
+                border-color: #d6e9fb;
+                border-width: 1px;
+                border-radius: 3px;
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    Text {
+                        text: "Preset:";
+                        width: 56px;
+                        color: #5a5a5a;
+                        vertical-alignment: center;
+                    }
+                    PushButton {
+                        text: "Interface only";
+                        tooltip: "Generate only an [Interface] section";
+                        clicked => { root.create-preset("interface"); }
+                    }
+                    PushButton {
+                        text: "Full tunnel";
+                        tooltip: "Default AllowedIPs route all traffic through the peer";
+                        clicked => { root.create-preset("full"); }
+                    }
+                    PushButton {
+                        text: "Split tunnel";
+                        tooltip: "Default AllowedIPs route only a private subnet";
+                        clicked => { root.create-preset("split"); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
             }
 
             // Mode toggle: structured fields vs. raw config text.
@@ -1190,9 +1226,14 @@ export component EditWindow inherits Window {
                     clicked => { root.cancel(); }
                 }
                 PushButton {
-                    text: "Save";
+                    text: root.is-new ? "Create" : "Save";
                     primary: true;
                     clicked => { root.save(root.tunnel-name, root.config-text); }
+                }
+                if root.is-new: PushButton {
+                    text: "Create & Activate";
+                    primary: true;
+                    clicked => { root.save-and-activate(root.tunnel-name, root.config-text); }
                 }
             }
         }

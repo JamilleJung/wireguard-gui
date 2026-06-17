@@ -58,7 +58,11 @@ fn name_ok(name: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    if !first.is_ascii_alphanumeric() || name.len() > 15 || name.contains("..") {
+    if !first.is_ascii_alphanumeric()
+        || name.len() > 15
+        || name.contains("..")
+        || name.to_ascii_lowercase().ends_with(".conf")
+    {
         return false;
     }
     chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
@@ -241,7 +245,6 @@ fn validate_config_text(text: &str) -> Result<(), String> {
     let mut section = "";
     let mut have_iface = false;
     let mut have_private = false;
-    let mut have_address = false;
     let mut peer_count = 0usize;
     let mut peer_pub = false;
     let mut peer_allowed = false;
@@ -294,12 +297,10 @@ fn validate_config_text(text: &str) -> Result<(), String> {
                     }
                     have_private = true;
                 }
-                "address" => {
-                    if value.is_empty() {
-                        return Err("[Interface] Address is empty".into());
-                    }
-                    have_address = true;
+                "address" if value.is_empty() => {
+                    return Err("[Interface] Address is empty".into());
                 }
+                "address" => {}
                 _ => {}
             },
             "peer" => match key.as_str() {
@@ -335,12 +336,6 @@ fn validate_config_text(text: &str) -> Result<(), String> {
     }
     if !have_private {
         return Err("[Interface] missing PrivateKey".into());
-    }
-    if !have_address {
-        return Err("[Interface] missing Address".into());
-    }
-    if peer_count == 0 {
-        return Err("missing [Peer]".into());
     }
     Ok(())
 }
@@ -733,6 +728,7 @@ mod tests {
             "name\\evil",
             "bad..name",
             "-bad",
+            "name.conf",
             "abcdefghijklmnop",
         ] {
             assert!(!name_ok(name), "{name}");
@@ -745,12 +741,13 @@ mod tests {
             "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
         );
         assert!(validate_config_text(&valid).is_ok());
+        assert!(validate_config_text(&format!("[Interface]\nPrivateKey = {KEY}\n")).is_ok());
         assert!(validate_config_text("[Interface]\n").is_err());
         assert!(
             validate_config_text(&format!(
                 "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/32\n"
             ))
-            .is_err()
+            .is_ok()
         );
     }
 

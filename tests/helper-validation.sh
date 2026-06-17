@@ -13,6 +13,7 @@ bad_names=(
     "name\\evil"
     "bad..name"
     "-bad"
+    "name.conf"
     "abcdefghijklmnop"
 )
 

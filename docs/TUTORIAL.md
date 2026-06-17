@@ -205,16 +205,21 @@ For building your own client config by hand. This is available in **Easy mode**
 because creating a first tunnel is a normal setup workflow.
 
 1. Click **Add Tunnel** -> **Create tunnel...**
-2. The editor opens already populated with a starter template **and a freshly
-   generated private key** - the public key shown live next to it is the one you
-   give to your server/peer.
-3. Fill in the rest (your `Address`, the peer's `PublicKey`, `AllowedIPs`,
+2. The editor opens already populated with a full-tunnel starter template **and
+   a freshly generated private key** - the public key shown live next to it is
+   the one you give to your server/peer.
+3. Pick a preset if the default is not what you want:
+   - **Interface only** - just an `[Interface]` section.
+   - **Full tunnel** - one peer with `AllowedIPs = 0.0.0.0/0, ::/0`.
+   - **Split tunnel** - one peer with a private subnet default.
+4. Fill in the rest (your `Address`, the peer's `PublicKey`, `AllowedIPs`,
    `Endpoint`, etc.). To regenerate keys at any time:
    - **Generate keypair** - inserts a new `PrivateKey` and updates the live public
      key.
    - **Generate PSK** - inserts a `PresharedKey` for the peer (you must have a
      `[Peer]` section first).
-4. Give the tunnel a name and click **Save**. The config is **validated** before
+5. Give the tunnel a name and click **Create**. Use **Create & Activate** only
+   when you want to bring it up immediately. The config is **validated** before
    it is written (see section 8).
 
 ---

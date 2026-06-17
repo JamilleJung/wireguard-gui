@@ -71,7 +71,8 @@ client while staying close to the tools Linux WireGuard users already know.
 - Shows live transfer totals and throughput.
 - Imports `.conf` files.
 - Imports QR-code images.
-- Creates a new tunnel from scratch with generated keys.
+- Creates a new tunnel from scratch with generated keys and Interface-only,
+  full-tunnel, or split-tunnel presets.
 - Shows a tunnel as a QR code for mobile import.
 - Copies interface and peer public keys.
 - Toggles start-on-boot using systemd `wg-quick@<name>` when systemd is present.
@@ -297,7 +298,13 @@ This is MIT open source. Fork it to hack on your own ideas.
 |---|---|
 | `ui/app.slint` | Slint layout, controls, editor, setup window |
 | `src/main.rs` | App startup, tray, UI callbacks, live polling |
-| `src/backend.rs` | Helper client, WireGuard orchestration, parsing, validation |
+| `src/ui_bridge/editor_form.rs` | Structured editor parsing/serialization |
+| `src/backend.rs` | Helper client, WireGuard/system operations, QR/export |
+| `src/config.rs` | WireGuard config parsing and validation |
+| `src/create.rs` | Easy Mode tunnel templates and defaults |
+| `src/clipboard.rs` | Single-field copy normalization |
+| `src/secrets.rs` | Secret redaction and script-hook detection |
+| `src/validation.rs` | Tunnel name validation and import-name sanitization |
 | `src/doctor.rs` | Read-only system checks and setup hints |
 | `src/bin/wg-helper.rs` | Privileged Rust helper and fixed verb surface |
 | `install.sh` | Distro-aware source installer |
@@ -371,6 +378,8 @@ not log private keys.
 - The structured editor handles the common Interface/Peer fields for multiple
   peers; configs with hooks, `Table`, `SaveConfig`, or unknown directives stay
   in raw text.
+- The create flow is an editor-style review window with presets, not a
+  multi-page provisioning wizard.
 - The tray icon depends on desktop StatusNotifier/AppIndicator support.
 - AppImage privileged actions need a system helper for the smooth path.
 - The kill switch is intentionally helper-managed firewall state, not a daemon

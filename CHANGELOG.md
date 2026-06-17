@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules for active tunnels.
 - Multi-peer structured editor support for common Interface/Peer fields.
 - aarch64 Linux release tarballs and Alpine/Void packaging templates.
-- Easy Mode can create a tunnel from scratch.
+- Easy Mode can create a tunnel from scratch with Interface-only, full-tunnel,
+  and split-tunnel presets.
 
 ### Changed
 - Reframed project docs and package metadata around the small native Linux

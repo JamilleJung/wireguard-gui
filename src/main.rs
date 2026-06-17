@@ -2,14 +2,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod clipboard;
+mod config;
+mod create;
 mod doctor;
+mod secrets;
+mod ui_bridge;
+mod validation;
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use ui_bridge::editor_form::{
+    Fields, PeerFields, config_to_fields, fields_to_config, form_representable,
+};
 
 slint::include_modules!();
 
@@ -251,16 +261,6 @@ fn copy_to_clipboard(text: &str) -> bool {
     })
 }
 
-/// Normalize single-field copy payloads. Raw configs/logs intentionally do not
-/// use this because their newlines are meaningful.
-fn normalize_copy_value(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Replace (or insert) the `PrivateKey` line in a config with `key`.
 fn set_private_key(config: &str, key: &str) -> String {
     let mut out = String::new();
@@ -328,187 +328,6 @@ fn set_psk(config: &str, key: &str) -> String {
         result.push_str(&format!("PresharedKey = {key}\n"));
     }
     result
-}
-
-/// The structured peer fields shown in the form editor.
-#[derive(Clone, Default)]
-struct PeerFields {
-    peer_public_key: String,
-    preshared_key: String,
-    allowed_ips: String,
-    endpoint: String,
-    keepalive: String,
-}
-
-/// The structured fields shown in the form editor (Interface + N peers).
-#[derive(Clone, Default)]
-struct Fields {
-    private_key: String,
-    address: String,
-    dns: String,
-    listen_port: String,
-    mtu: String,
-    peers: Vec<PeerFields>,
-}
-
-impl Fields {
-    fn ensure_peer(&mut self) {
-        if self.peers.is_empty() {
-            self.peers.push(PeerFields::default());
-        }
-    }
-}
-
-/// Value to the right of the first `=` on a `key = value` line, trimmed.
-fn kv_value(line: &str) -> String {
-    line.split_once('=')
-        .map(|(_, v)| v)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// The lowercased key to the left of the first `=`, so keys are matched
-/// *exactly* (a directive like `PrivateKeyFile`/`AddressExtra` is not a prefix
-/// match for `PrivateKey`/`Address`). `None` for a line with no `=`.
-fn line_key(line: &str) -> Option<String> {
-    line.split_once('=')
-        .map(|(k, _)| k.trim().to_ascii_lowercase())
-}
-
-/// Whether the form view can faithfully represent this config. The form maps a
-/// fixed set of Interface/Peer keys; scripts, routing directives, unknown keys,
-/// and unknown sections would be silently dropped on a round-trip, so such
-/// configs must stay in raw-text mode.
-fn form_representable(cfg: &str) -> bool {
-    let mut peers = 0;
-    let mut section = "";
-    for line in cfg.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        let lower = t.to_ascii_lowercase();
-        if lower.starts_with('[') {
-            if lower.starts_with("[peer]") {
-                peers += 1;
-                section = "peer";
-            } else if lower.starts_with("[interface]") {
-                section = "interface";
-            } else {
-                return false;
-            }
-            continue;
-        }
-        // Match the exact key (before `=`); an unknown key the form can't map
-        // means we must stay in raw-text mode.
-        let Some(key) = line_key(t) else {
-            return false;
-        };
-        let mapped = match section {
-            "interface" => matches!(
-                key.as_str(),
-                "privatekey" | "address" | "dns" | "listenport" | "mtu"
-            ),
-            "peer" => matches!(
-                key.as_str(),
-                "publickey" | "presharedkey" | "allowedips" | "endpoint" | "persistentkeepalive"
-            ),
-            _ => false,
-        };
-        if !mapped {
-            return false;
-        }
-    }
-    peers > 0
-}
-
-/// Parse a raw config into the structured form fields.
-fn config_to_fields(cfg: &str) -> Fields {
-    let mut f = Fields::default();
-    let mut section = "";
-    let mut peer_idx: Option<usize> = None;
-    for line in cfg.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        let lower = t.to_ascii_lowercase();
-        if lower.starts_with('[') {
-            section = if lower.starts_with("[interface]") {
-                peer_idx = None;
-                "interface"
-            } else if lower.starts_with("[peer]") {
-                f.peers.push(PeerFields::default());
-                peer_idx = Some(f.peers.len() - 1);
-                "peer"
-            } else {
-                peer_idx = None;
-                "other"
-            };
-            continue;
-        }
-        // Match keys exactly (before `=`) so e.g. `PrivateKeyFile` isn't picked
-        // up as `PrivateKey`.
-        let Some(key) = line_key(t) else {
-            continue;
-        };
-        match section {
-            "interface" => match key.as_str() {
-                "privatekey" => f.private_key = kv_value(t),
-                "address" => f.address = kv_value(t),
-                "dns" => f.dns = kv_value(t),
-                "listenport" => f.listen_port = kv_value(t),
-                "mtu" => f.mtu = kv_value(t),
-                _ => {}
-            },
-            "peer" => {
-                let Some(idx) = peer_idx else { continue };
-                let Some(peer) = f.peers.get_mut(idx) else {
-                    continue;
-                };
-                match key.as_str() {
-                    "publickey" => peer.peer_public_key = kv_value(t),
-                    "presharedkey" => peer.preshared_key = kv_value(t),
-                    "allowedips" => peer.allowed_ips = kv_value(t),
-                    "endpoint" => peer.endpoint = kv_value(t),
-                    "persistentkeepalive" => peer.keepalive = kv_value(t),
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-    f.ensure_peer();
-    f
-}
-
-/// Build a raw config from the structured form fields (omitting empty ones).
-fn fields_to_config(f: &Fields) -> String {
-    let mut s = String::from("[Interface]\n");
-    let push = |s: &mut String, k: &str, v: &str| {
-        if !v.trim().is_empty() {
-            s.push_str(&format!("{k} = {}\n", v.trim()));
-        }
-    };
-    push(&mut s, "PrivateKey", &f.private_key);
-    push(&mut s, "Address", &f.address);
-    push(&mut s, "DNS", &f.dns);
-    push(&mut s, "ListenPort", &f.listen_port);
-    push(&mut s, "MTU", &f.mtu);
-    let mut peers = f.peers.clone();
-    if peers.is_empty() {
-        peers.push(PeerFields::default());
-    }
-    for peer in peers {
-        s.push_str("\n[Peer]\n");
-        push(&mut s, "PublicKey", &peer.peer_public_key);
-        push(&mut s, "PresharedKey", &peer.preshared_key);
-        push(&mut s, "AllowedIPs", &peer.allowed_ips);
-        push(&mut s, "Endpoint", &peer.endpoint);
-        push(&mut s, "PersistentKeepalive", &peer.keepalive);
-    }
-    s
 }
 
 /// Push parsed fields into the editor's form properties.
@@ -759,6 +578,36 @@ fn open_editor(
         });
     }
 
+    // Create presets for Easy Mode. Each preset regenerates a keypair, then keeps
+    // the explicit review/save step in the editor.
+    {
+        let edw = ed.as_weak();
+        ed.on_create_preset(move |preset| {
+            let Some(ed) = edw.upgrade() else { return };
+            let kind = match preset.as_str() {
+                "interface" => create::TunnelTemplateKind::InterfaceOnly,
+                "split" => create::TunnelTemplateKind::ClientSplitTunnel,
+                _ => create::TunnelTemplateKind::ClientFullTunnel,
+            };
+            let (private_key, public_key) = match backend::generate_keypair() {
+                Ok(keys) => keys,
+                Err(e) => {
+                    ed.set_error(format!("Key generation failed: {e}").into());
+                    return;
+                }
+            };
+            let cfg = create::generate_template(kind, &private_key);
+            ed.set_config_text(cfg.clone().into());
+            ed.set_public_key(public_key.into());
+            apply_fields(&ed, &config_to_fields(&cfg), 0);
+            ed.set_form_mode(form_representable(&cfg));
+            ed.set_error("".into());
+            ed.set_warning(
+                format!("{} preset loaded. Review before creating.", kind.label()).into(),
+            );
+        });
+    }
+
     // Copy (public key / config) to the clipboard.
     ed.on_copy(move |t| {
         copy_to_clipboard(&t);
@@ -774,30 +623,35 @@ fn open_editor(
         });
     }
 
-    // Save: validate, write, handle rename, then close + refresh the main view.
-    {
+    // Save: validate, write, handle rename, optionally activate, then close +
+    // refresh the main view.
+    let save_handler = Rc::new({
         let edw = ed.as_weak();
         let mainw = main.as_weak();
-        let orig = orig_name;
-        ed.on_save(move |name, text| {
+        let orig = Rc::new(orig_name);
+        move |name: SharedString, text: SharedString, activate_after: bool| {
             let Some(ed) = edw.upgrade() else { return };
             ed.set_error("".into());
-            let name = backend::sanitize_name(name.trim());
-            if name.is_empty() {
-                ed.set_error("Tunnel name is required.".into());
+            let name = name.to_string();
+            let name = name.trim();
+            if let Err(e) = backend::validate_tunnel_name(name) {
+                ed.set_error(e.into());
                 return;
             }
+            let name = name.to_string();
+            let text = text.to_string();
             if let Err(e) = backend::validate_config(&text) {
                 ed.set_error(e.into());
                 return;
             }
-            let renaming = !orig.is_empty() && orig != name;
-            if (renaming || orig.is_empty()) && backend::tunnel_exists(&name) {
+            let orig_name = orig.as_str();
+            let renaming = !orig_name.is_empty() && orig_name != name;
+            if (renaming || orig_name.is_empty()) && backend::tunnel_exists(&name) {
                 ed.set_error(format!("A tunnel named “{name}” already exists.").into());
                 return;
             }
             let save_result = if renaming {
-                backend::rename_config(&orig, &name, &text)
+                backend::rename_config(orig_name, &name, &text)
             } else {
                 backend::save_config(&name, &text)
             };
@@ -809,7 +663,14 @@ fn open_editor(
             }
             if let Some(main) = mainw.upgrade() {
                 if renaming {
-                    set_status(&main, format!("Renamed {orig} → {name}"));
+                    set_status(&main, format!("Renamed {orig_name} → {name}"));
+                } else if activate_after {
+                    match backend::activate(&name) {
+                        Ok(()) => set_status(&main, format!("Created and activated {name}")),
+                        Err(e) => {
+                            set_status(&main, format!("Created {name}, but activation failed: {e}"))
+                        }
+                    }
                 } else {
                     // If the tunnel is up, apply the change live without dropping
                     // peer sessions (wg syncconf). wg-quick-only fields
@@ -826,14 +687,29 @@ fn open_editor(
                             ),
                         }
                     } else {
-                        set_status(&main, format!("Saved {name}"));
+                        set_status(
+                            &main,
+                            if orig_name.is_empty() {
+                                format!("Created {name}")
+                            } else {
+                                format!("Saved {name}")
+                            },
+                        );
                     }
                 }
                 refresh_list(&main);
                 select_by_name(&main, &name);
             }
             let _ = ed.hide();
-        });
+        }
+    });
+    {
+        let save_handler = save_handler.clone();
+        ed.on_save(move |name, text| save_handler(name, text, false));
+    }
+    {
+        let save_handler = save_handler.clone();
+        ed.on_save_and_activate(move |name, text| save_handler(name, text, true));
     }
 
     // Generate keypair: insert a fresh PrivateKey, show the public key.
@@ -1222,8 +1098,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Pre-generate a keypair so a new tunnel opens ready, like the
             // WireGuard for Windows "Create new tunnel" dialog.
             let text = match backend::generate_keypair() {
-                Ok((priv_k, _)) => new_tunnel_template(&priv_k),
-                Err(_) => TEMPLATE.to_string(),
+                Ok((priv_k, _)) => {
+                    create::generate_template(create::TunnelTemplateKind::ClientFullTunnel, &priv_k)
+                }
+                Err(_) => create::generate_template(
+                    create::TunnelTemplateKind::ClientFullTunnel,
+                    create::FALLBACK_PRIVATE_KEY,
+                ),
             };
             open_editor(&ui, true, String::new(), String::new(), text);
         });
@@ -1377,7 +1258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let w = ui.as_weak();
         ui.on_copy_value(move |text| {
             let ui = w.unwrap();
-            let value = normalize_copy_value(&text);
+            let value = clipboard::normalize_single_field_copy_value(&text);
             if value.is_empty() {
                 return;
             }
@@ -1719,120 +1600,5 @@ fn select_by_name(ui: &MainWindow, name: &str) {
             load_detail(ui, name);
             return;
         }
-    }
-}
-
-const TEMPLATE: &str = "[Interface]
-PrivateKey = <your private key>
-Address = 10.0.0.2/24
-DNS = 1.1.1.1
-
-[Peer]
-PublicKey = <server public key>
-AllowedIPs = 0.0.0.0/0
-Endpoint = server.example.com:51820
-PersistentKeepalive = 25
-";
-
-/// A fresh-tunnel template pre-filled with a real generated private key.
-fn new_tunnel_template(private_key: &str) -> String {
-    format!(
-        "[Interface]\nPrivateKey = {private_key}\nAddress = 10.0.0.2/24\nDNS = 1.1.1.1\n\n\
-         [Peer]\nPublicKey = <server public key>\nAllowedIPs = 0.0.0.0/0\n\
-         Endpoint = server.example.com:51820\nPersistentKeepalive = 25\n"
-    )
-}
-
-#[cfg(test)]
-mod form_tests {
-    use super::*;
-
-    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
-
-    fn single_peer() -> String {
-        format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com:51820\n"
-        )
-    }
-
-    #[test]
-    fn representable_simple_config() {
-        assert!(form_representable(&single_peer()));
-    }
-
-    #[test]
-    fn representable_multi_peer_config() {
-        let two = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
-             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n\n\
-             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 10.1.0.0/24\n"
-        );
-        assert!(form_representable(&two));
-        let fields = config_to_fields(&two);
-        assert_eq!(fields.peers.len(), 2);
-        assert_eq!(fields.peers[1].allowed_ips, "10.1.0.0/24");
-        let rebuilt = fields_to_config(&fields);
-        let reparsed = config_to_fields(&rebuilt);
-        assert_eq!(reparsed.peers.len(), 2);
-        assert_eq!(reparsed.peers[1].allowed_ips, "10.1.0.0/24");
-    }
-
-    #[test]
-    fn not_representable_when_scripts_or_unknown_routing_fields() {
-        // PostUp runs as root and is not a form field.
-        let scripted = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPostUp = iptables -A FORWARD -i %i -j ACCEPT\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
-        );
-        assert!(!form_representable(&scripted));
-        // Table is also unmapped.
-        let table = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nTable = off\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
-        );
-        assert!(!form_representable(&table));
-    }
-
-    #[test]
-    fn fields_roundtrip_preserves_mapped_values() {
-        let f = config_to_fields(&single_peer());
-        assert_eq!(f.private_key, KEY);
-        assert_eq!(f.address, "10.0.0.2/24");
-        assert_eq!(f.peers.len(), 1);
-        assert_eq!(f.peers[0].peer_public_key, KEY);
-        assert_eq!(f.peers[0].allowed_ips, "0.0.0.0/0");
-        assert_eq!(f.peers[0].endpoint, "vpn.example.com:51820");
-        // Rebuilt config is itself representable and re-parses to the same fields.
-        let rebuilt = fields_to_config(&f);
-        assert!(form_representable(&rebuilt));
-        let f2 = config_to_fields(&rebuilt);
-        assert_eq!(f2.private_key, f.private_key);
-        assert_eq!(f2.peers[0].endpoint, f.peers[0].endpoint);
-        assert_eq!(f2.peers[0].allowed_ips, f.peers[0].allowed_ips);
-    }
-
-    #[test]
-    fn unknown_prefix_keys_are_not_mapped() {
-        // Keys that merely *start with* a mapped key must not be treated as
-        // representable, nor scooped up by config_to_fields.
-        let cfg = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPrivateKeyFile = /tmp/x\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpointBackup = other:1\n"
-        );
-        assert!(!form_representable(&cfg)); // PrivateKeyFile/EndpointBackup are unknown
-        let f = config_to_fields(&cfg);
-        assert_eq!(f.private_key, KEY); // exact PrivateKey, not PrivateKeyFile
-        assert_eq!(f.peers[0].endpoint, ""); // EndpointBackup must not become Endpoint
-    }
-
-    #[test]
-    fn copy_value_normalization_trims_accidental_whitespace() {
-        assert_eq!(normalize_copy_value(" abc "), "abc");
-        assert_eq!(normalize_copy_value("\nabc\n"), "abc");
-        assert_eq!(normalize_copy_value("abc\n"), "abc");
-        assert_eq!(normalize_copy_value("  abc\n  "), "abc");
-        assert_eq!(normalize_copy_value("abc\r\n"), "abc");
-    }
-
-    #[test]
-    fn copy_value_normalization_joins_display_wrapped_fields() {
-        assert_eq!(normalize_copy_value("  one\n  two  \n"), "one two");
     }
 }

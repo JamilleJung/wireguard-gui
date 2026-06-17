@@ -120,8 +120,9 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
   helper-managed iptables/ip6tables rules.
 - The structured editor now supports multiple peers for common Interface/Peer
   fields while keeping hooks, routing directives, and unknown keys in raw text.
-- Easy Mode can now create a tunnel from scratch instead of forcing users into
-  Advanced Mode for first-run setup.
+- Easy Mode can now create a tunnel from scratch with Interface-only,
+  full-tunnel, and split-tunnel presets instead of forcing users into Advanced
+  Mode for first-run setup.
 - Copy buttons now normalize single-field payloads separately from raw
   config/log copying, fixing accidental whitespace/newline copy artifacts.
 - Release automation now builds portable x86_64 and aarch64 Linux tarballs.
