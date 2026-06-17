@@ -31,7 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GUI: `DetailRow` copy area uses clickable text + ⧉ icon instead of large
   "Copy" button; fixed text centering regression.
 - GUI: `StatusDot` component extracted to `ui/components/statusdot.slint`.
-- TUI: `popup_area` helper moved to `src/ui/helpers.rs`.
 - Log limits increased to 1000 lines (was 300/200).
 
 ### Fixed
