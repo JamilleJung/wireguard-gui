@@ -316,7 +316,10 @@ pub fn get_detail(name: &str) -> Detail {
     let dump = helper(&["dump", name], None).unwrap_or_default();
     let live = parse_dump(&dump);
 
-    let active = !dump.trim().is_empty();
+    // Active: use the active interfaces list (fast, reliable), fall back to dump.
+    let active = helper(&["active"], None)
+        .map(|out| out.split_whitespace().any(|iface| iface == name))
+        .unwrap_or(!dump.trim().is_empty());
 
     // Interface public key: prefer the live value, else derive from privkey.
     let public_key = live

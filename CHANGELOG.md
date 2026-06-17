@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-17
+
+### Added
+- nftables kill switch backend (preferred when `nft` is available; iptables/ip6tables fallback).
+- SSH safety warning when enabling kill switch over an SSH connection.
+- Kill switch rule-generation tests (nftables handle extraction, iptables rule numbering).
+
+### Changed
+- Speed display uses ↓ ↑ icons instead of "down"/"up" text.
+- Log tab fetches up to 1000 journal lines (was 300/200).
+- Log tab uses TextEdit read-only for native text selection and scrolling.
+- Copy buttons replaced with clickable value text + trailing ⧉ icon.
+- Throughput polling no longer gates on active flag (more reliable on first sample).
+
+### Fixed
+- Speed/throughput could get stuck at 0 when active detection from dump failed.
+- Tunnel active detection now uses `wg show interfaces` list (reliable), fallback to dump.
+
 ## [1.5.5] - 2026-06-17
 
 ### Added

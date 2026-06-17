@@ -202,7 +202,7 @@ component IconButton inherits Rectangle {
     }
 }
 
-// A "label : value" line, like the WireGuard for Windows detail grid.
+// A "label : value" line. Clicking the value or the trailing icon copies it.
 component DetailRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
@@ -218,19 +218,34 @@ component DetailRow inherits HorizontalLayout {
         horizontal-alignment: right;
         vertical-alignment: top;
     }
-    Text {
+    if root.copyable: HorizontalLayout {
+        spacing: 2px;
+        horizontal-stretch: 1;
+        TouchArea {
+            horizontal-stretch: 1;
+            clicked => { root.copy(root.copy-value); }
+            Text {
+                text: root.value;
+                color: #1b1b1b;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+        }
+        Text {
+            text: "⧉";
+            font-size: 12px;
+            color: #aaa;
+            vertical-alignment: center;
+            width: 16px;
+            horizontal-alignment: center;
+        }
+    }
+    if !root.copyable: Text {
         text: root.value;
         color: #1b1b1b;
         font-size: 13px;
         horizontal-stretch: 1;
         wrap: word-wrap;
-    }
-    if root.copyable: VerticalLayout {
-        alignment: start;
-        PushButton {
-            text: "Copy";
-            clicked => { root.copy(root.copy-value); }
-        }
     }
 }
 
@@ -815,14 +830,14 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 ScrollView {
                     vertical-stretch: 1;
-                    Text {
+                    horizontal-stretch: 1;
+                    TextEdit {
                         x: 12px;
                         y: 10px;
                         text: root.log-text;
                         font-family: "monospace";
                         font-size: 12px;
-                        color: #1b1b1b;
-                        wrap: no-wrap;
+                        read-only: true;
                     }
                 }
                 Rectangle {
@@ -843,7 +858,7 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             PushButton {
-                                text: "Copy";
+                                text: "Copy log";
                                 clicked => { root.copy-raw(root.log-text); }
                             }
                         }
