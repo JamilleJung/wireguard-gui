@@ -72,13 +72,13 @@ fn wg_helper_override_allowed(p: &str) -> bool {
 /// or the in-tree copy used during `cargo run`.
 fn helper_path() -> &'static str {
     HELPER.get_or_init(|| {
-        if let Ok(p) = std::env::var("WG_HELPER") {
-            if wg_helper_override_allowed(&p) {
-                return p;
-            }
-            // Unsafe override in a release build — ignore it and fall back to the
-            // trusted installed paths rather than running an attacker's script.
+        if let Ok(p) = std::env::var("WG_HELPER")
+            && wg_helper_override_allowed(&p)
+        {
+            return p;
         }
+        // Unsafe override in a release build — ignore it and fall back to the
+        // trusted installed paths rather than running an attacker's script.
         let candidates = [
             "/usr/local/lib/wireguard-gui/wg-helper",
             "/usr/lib/wireguard-gui/wg-helper",
@@ -95,10 +95,9 @@ fn helper_path() -> &'static str {
         if let Some(adj) = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("wg-helper")))
+            && adj.is_file()
         {
-            if adj.is_file() {
-                return adj.to_string_lossy().into_owned();
-            }
+            return adj.to_string_lossy().into_owned();
         }
         // dev fallback: a helper built from src/bin/wg-helper.rs.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -555,7 +554,8 @@ fn fmt_handshake(epoch: u64) -> String {
         .map(|d| d.as_secs())
         .unwrap_or(epoch);
     let secs = now.saturating_sub(epoch);
-    let ago = match secs {
+
+    match secs {
         0 => "now".to_string(),
         1 => "1 second ago".to_string(),
         s if s < 60 => format!("{s} seconds ago"),
@@ -564,8 +564,7 @@ fn fmt_handshake(epoch: u64) -> String {
         s if s < 7200 => "1 hour ago".to_string(),
         s if s < 86400 => format!("{} hours ago", s / 3600),
         s => format!("{} days ago", s / 86400),
-    };
-    ago
+    }
 }
 
 pub fn fmt_bytes(b: u64) -> String {
@@ -675,7 +674,9 @@ pub fn validate_config(text: &str) -> Result<(), String> {
     match cfg.private_key.as_deref() {
         None | Some("") => return Err("[Interface] is missing PrivateKey.".into()),
         Some(k) if !is_wg_key(k) => {
-            return Err("PrivateKey is not a valid WireGuard key (expected 44-char base64).".into())
+            return Err(
+                "PrivateKey is not a valid WireGuard key (expected 44-char base64).".into(),
+            );
         }
         _ => {}
     }
@@ -691,10 +692,11 @@ pub fn validate_config(text: &str) -> Result<(), String> {
         }
     }
 
-    if let Some(port) = cfg.listen_port.as_deref() {
-        if !port.is_empty() && port.parse::<u32>().map(|p| p > 65535).unwrap_or(true) {
-            return Err(format!("ListenPort “{port}” is not a valid port."));
-        }
+    if let Some(port) = cfg.listen_port.as_deref()
+        && !port.is_empty()
+        && port.parse::<u32>().map(|p| p > 65535).unwrap_or(true)
+    {
+        return Err(format!("ListenPort “{port}” is not a valid port."));
     }
 
     if cfg.peers.is_empty() {
@@ -759,14 +761,14 @@ pub fn public_key_for_config(text: &str) -> String {
         if line.starts_with('#') {
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            if k.trim().eq_ignore_ascii_case("privatekey") {
-                let key = v.trim();
-                if is_wg_key(key) {
-                    return pubkey_of(key).unwrap_or_default();
-                }
-                return String::new();
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim().eq_ignore_ascii_case("privatekey")
+        {
+            let key = v.trim();
+            if is_wg_key(key) {
+                return pubkey_of(key).unwrap_or_default();
             }
+            return String::new();
         }
     }
     String::new()
@@ -1016,9 +1018,11 @@ mod tests {
             "[Interface]\nAddress = 10.0.0.2/24\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
         ))
         .is_err());
-        assert!(validate_config(&format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n"
-        ))
-        .is_err());
+        assert!(
+            validate_config(&format!(
+                "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n"
+            ))
+            .is_err()
+        );
     }
 }

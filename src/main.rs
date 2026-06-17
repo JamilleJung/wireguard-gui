@@ -5,8 +5,8 @@ mod backend;
 mod doctor;
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -249,6 +249,16 @@ fn copy_to_clipboard(text: &str) -> bool {
             .map(|cb| cb.set_text(text.to_string()).is_ok())
             .unwrap_or(false)
     })
+}
+
+/// Normalize single-field copy payloads. Raw configs/logs intentionally do not
+/// use this because their newlines are meaningful.
+fn normalize_copy_value(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Replace (or insert) the `PrivateKey` line in a config with `key`.
@@ -1002,10 +1012,10 @@ fn set_status(ui: &MainWindow, msg: impl Into<SharedString>) {
     // Auto-dismiss after a few seconds (clear only if it hasn't been replaced).
     let w = ui.as_weak();
     slint::Timer::single_shot(Duration::from_secs(4), move || {
-        if let Some(ui) = w.upgrade() {
-            if ui.get_status() == msg {
-                ui.set_status(SharedString::new());
-            }
+        if let Some(ui) = w.upgrade()
+            && ui.get_status() == msg
+        {
+            ui.set_status(SharedString::new());
         }
     });
 }
@@ -1075,9 +1085,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_handle = tray_service.handle();
     tray_service.spawn();
     // Refresh the tray's tooltip/status periodically so it tracks live state.
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(3));
-        tray_handle.update(|_| {});
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            tray_handle.update(|_| {});
+        }
     });
 
     // ---- select ----
@@ -1360,10 +1372,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ---- copy text to the clipboard ----
+    // ---- copy single-field values to the clipboard ----
     {
         let w = ui.as_weak();
-        ui.on_copy_text(move |text| {
+        ui.on_copy_value(move |text| {
+            let ui = w.unwrap();
+            let value = normalize_copy_value(&text);
+            if value.is_empty() {
+                return;
+            }
+            if copy_to_clipboard(&value) {
+                set_status(&ui, "Copied value to clipboard");
+            } else {
+                set_status(&ui, "Couldn't access the clipboard");
+            }
+        });
+    }
+
+    // ---- copy raw multiline payloads (logs/configs) to the clipboard ----
+    {
+        let w = ui.as_weak();
+        ui.on_copy_raw(move |text| {
             let ui = w.unwrap();
             if text.is_empty() {
                 return;
@@ -1452,18 +1481,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match (name.as_ref(), detail.as_ref()) {
                 (Some(n), Some(d)) if d.active => {
                     let now = std::time::Instant::now();
-                    if let Some((pn, prx, ptx, pt)) = prev.as_ref() {
-                        if pn == n {
-                            let dt = now.duration_since(*pt).as_secs_f64();
-                            if dt >= 0.3 {
-                                let rrx = (d.rx_bytes.saturating_sub(*prx) as f64 / dt) as u64;
-                                let rtx = (d.tx_bytes.saturating_sub(*ptx) as f64 / dt) as u64;
-                                speed = format!(
-                                    "down {}/s   up {}/s",
-                                    backend::fmt_bytes(rrx),
-                                    backend::fmt_bytes(rtx)
-                                );
-                            }
+                    if let Some((pn, prx, ptx, pt)) = prev.as_ref()
+                        && pn == n
+                    {
+                        let dt = now.duration_since(*pt).as_secs_f64();
+                        if dt >= 0.3 {
+                            let rrx = (d.rx_bytes.saturating_sub(*prx) as f64 / dt) as u64;
+                            let rtx = (d.tx_bytes.saturating_sub(*ptx) as f64 / dt) as u64;
+                            speed = format!(
+                                "down {}/s   up {}/s",
+                                backend::fmt_bytes(rrx),
+                                backend::fmt_bytes(rtx)
+                            );
                         }
                     }
                     prev = Some((n.clone(), d.rx_bytes, d.tx_bytes, now));
@@ -1505,13 +1534,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // so a payload computed for a previously-selected tunnel can't
                 // overwrite a selection the user just changed.
                 let current = SELECTED.lock().unwrap().clone();
-                if let Some(d) = live.detail {
-                    if live.name == current {
-                        let mut det = to_slint_detail(d);
-                        det.speed = live.speed.clone().into();
-                        ui.set_detail(det);
-                        ui.set_has_selection(true);
-                    }
+                if let Some(d) = live.detail
+                    && live.name == current
+                {
+                    let mut det = to_slint_detail(d);
+                    det.speed = live.speed.clone().into();
+                    ui.set_detail(det);
+                    ui.set_has_selection(true);
                 }
                 let model = ui.get_tunnels();
                 for i in 0..model.row_count() {
@@ -1559,10 +1588,10 @@ fn build_checks(report: &doctor::Report) -> ModelRc<CheckItem> {
 fn commands_text(report: &doctor::Report) -> String {
     let mut s = String::new();
     for c in &report.checks {
-        if !matches!(c.status, doctor::Status::Ok) {
-            if let Some(fix) = &c.fix {
-                s.push_str(&format!("# {}\n{}\n\n", c.name, fix));
-            }
+        if !matches!(c.status, doctor::Status::Ok)
+            && let Some(fix) = &c.fix
+        {
+            s.push_str(&format!("# {}\n{}\n\n", c.name, fix));
         }
     }
     if s.is_empty() {
@@ -1629,15 +1658,15 @@ fn show_setup_wizard(main: &MainWindow) {
             // resolvconf provider for DNS) and create /etc/wireguard. Never
             // installs the helper or touches configs.
             let mut steps: Vec<String> = Vec::new();
-            if !(doctor::which("wg") && doctor::which("wg-quick")) {
-                if let Some(c) = doctor::install_tools_command() {
-                    steps.push(c);
-                }
+            if !(doctor::which("wg") && doctor::which("wg-quick"))
+                && let Some(c) = doctor::install_tools_command()
+            {
+                steps.push(c);
             }
-            if !doctor::dns_ok() {
-                if let Some(c) = doctor::install_resolvconf_command() {
-                    steps.push(c);
-                }
+            if !doctor::dns_ok()
+                && let Some(c) = doctor::install_resolvconf_command()
+            {
+                steps.push(c);
             }
             if !std::path::Path::new("/etc/wireguard").is_dir() {
                 steps.push("install -d -m 700 /etc/wireguard".to_string());
@@ -1683,12 +1712,12 @@ fn show_setup_wizard(main: &MainWindow) {
 fn select_by_name(ui: &MainWindow, name: &str) {
     let model = ui.get_tunnels();
     for i in 0..model.row_count() {
-        if let Some(row) = model.row_data(i) {
-            if row.name == name {
-                ui.set_selected_index(i as i32);
-                load_detail(ui, name);
-                return;
-            }
+        if let Some(row) = model.row_data(i)
+            && row.name == name
+        {
+            ui.set_selected_index(i as i32);
+            load_detail(ui, name);
+            return;
         }
     }
 }
@@ -1721,7 +1750,9 @@ mod form_tests {
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
 
     fn single_peer() -> String {
-        format!("[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com:51820\n")
+        format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com:51820\n"
+        )
     }
 
     #[test]
@@ -1789,5 +1820,19 @@ mod form_tests {
         let f = config_to_fields(&cfg);
         assert_eq!(f.private_key, KEY); // exact PrivateKey, not PrivateKeyFile
         assert_eq!(f.peers[0].endpoint, ""); // EndpointBackup must not become Endpoint
+    }
+
+    #[test]
+    fn copy_value_normalization_trims_accidental_whitespace() {
+        assert_eq!(normalize_copy_value(" abc "), "abc");
+        assert_eq!(normalize_copy_value("\nabc\n"), "abc");
+        assert_eq!(normalize_copy_value("abc\n"), "abc");
+        assert_eq!(normalize_copy_value("  abc\n  "), "abc");
+        assert_eq!(normalize_copy_value("abc\r\n"), "abc");
+    }
+
+    #[test]
+    fn copy_value_normalization_joins_display_wrapped_fields() {
+        assert_eq!(normalize_copy_value("  one\n  two  \n"), "one two");
     }
 }

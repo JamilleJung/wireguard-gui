@@ -6,7 +6,7 @@ first tunnel in, connecting, reading the live status, putting a tunnel on your
 phone, and the small print (start-on-boot, editing, renaming, exporting,
 troubleshooting). No prior WireGuard experience is assumed.
 
-Tested against version 1.5.4.
+Tested against version 1.5.5.
 
 ---
 
@@ -162,11 +162,11 @@ remembered across runs (saved to `~/.config/wireguard-gui/mode`).
 
 | | Easy mode (default) | Advanced mode adds |
 |---|---|---|
-| Available | Activate/Deactivate, Add (Import .conf / Import QR), Edit, Remove, Show QR, Start on boot | Add empty tunnel (new from scratch), Generate keypair/PSK in the editor, Running cfg (copy live config), Save live, Export all to zip |
+| Available | Activate/Deactivate, Add (Import .conf / Import QR / Create tunnel), Edit, Remove, Show QR, Start on boot | Generate keypair/PSK in the editor, Running cfg (copy live config), Save live, Export all to zip |
 
 With **no tunnels yet**, the app shows a friendly "No tunnels yet" empty state
-with **Import .conf** and **Import QR image** buttons (plus **New tunnel** in
-Advanced mode) rather than a blank pane.
+with **Import .conf**, **Import QR image**, and **New tunnel** buttons rather
+than a blank pane.
 
 ---
 
@@ -201,10 +201,10 @@ have a screenshot or photo of it.
 
 ### (c) Create a new tunnel from scratch and generate keys
 
-For building your own client config by hand. (This is **Advanced mode** - switch
-with the toggle next to Edit if you do not see it.)
+For building your own client config by hand. This is available in **Easy mode**
+because creating a first tunnel is a normal setup workflow.
 
-1. Click **Add Tunnel** -> **Add empty tunnel...**
+1. Click **Add Tunnel** -> **Create tunnel...**
 2. The editor opens already populated with a starter template **and a freshly
    generated private key** - the public key shown live next to it is the one you
    give to your server/peer.
@@ -348,7 +348,7 @@ file name is `wireguard-tunnels.zip`).
 
 | Control | Where | What it does | Mode |
 |---------|-------|--------------|------|
-| **Add Tunnel** (dropdown) | Top toolbar | Menu: *Import from file...*, *Import from QR code...*, *Add empty tunnel...* (Advanced), *About...* | All |
+| **Add Tunnel** (dropdown) | Top toolbar | Menu: *Import from file...*, *Import from QR code...*, *Create tunnel...*, *About...* | All |
 | Tunnel list | Left pane | Click to select; live green/grey active dot | All |
 | **Activate / Deactivate** | Interface card | `wg-quick up` / `down` for the selected tunnel | All |
 | **Show QR** | Detail pane | Display the tunnel as a QR code for the mobile app | All |
@@ -451,7 +451,7 @@ not set up. Re-create it:
 ```
 
 If the installer reported "sudoers validation failed" or said a present
-`openresolv` was missing, update to **1.5.4** - that release puts `/usr/sbin` and
+`openresolv` was missing, update to **1.5.5** - that release puts `/usr/sbin` and
 `/sbin` on `PATH` after the root re-exec so it can find `visudo` and the
 `resolvconf` probe. The hint when the drop-in is skipped is to re-run
 `./install.sh --polkit`.

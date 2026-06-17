@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-06-17
+
 ### Added
 - Rust `wg-helper` binary with the same fixed verb contract as the previous
   helper.
@@ -13,11 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules for active tunnels.
 - Multi-peer structured editor support for common Interface/Peer fields.
 - aarch64 Linux release tarballs and Alpine/Void packaging templates.
+- Easy Mode can create a tunnel from scratch.
 
 ### Changed
 - Reframed project docs and package metadata around the small native Linux
   WireGuard client model: plain `/etc/wireguard` configs, `wg`/`wg-quick`, no
   NetworkManager layer, and no mandatory runtime core.
+- Copy buttons now use stable trailing actions and separate normalized
+  single-field payloads from raw config/log copy payloads.
 
 ### Security
 - The helper now performs a second, privileged-boundary config shape check before
@@ -28,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now runs negative helper-name validation tests.
 - CI now runs installer sanity checks for helper paths, sudoers validation, and
   non-root build handoff.
+
+### Fixed
+- Copying public keys, addresses, DNS, endpoints, and allowed IPs no longer
+  carries accidental leading/trailing whitespace or display newlines.
 
 ## [1.5.4] - 2026-06-17
 

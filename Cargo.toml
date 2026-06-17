@@ -1,7 +1,7 @@
 [package]
 name = "wireguard-gui"
-version = "1.5.4"
-edition = "2021"
+version = "1.5.5"
+edition = "2024"
 description = "A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick."
 license = "MIT"
 repository = "https://github.com/JamilleJung/wireguard-gui"

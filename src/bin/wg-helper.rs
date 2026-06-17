@@ -363,10 +363,10 @@ fn list() -> Result<(), String> {
         if path.extension().and_then(|s| s.to_str()) != Some("conf") {
             continue;
         }
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if name_ok(stem) {
-                names.push(stem.to_string());
-            }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && name_ok(stem)
+        {
+            names.push(stem.to_string());
         }
     }
     names.sort();
@@ -746,10 +746,12 @@ mod tests {
         );
         assert!(validate_config_text(&valid).is_ok());
         assert!(validate_config_text("[Interface]\n").is_err());
-        assert!(validate_config_text(&format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/32\n"
-        ))
-        .is_err());
+        assert!(
+            validate_config_text(&format!(
+                "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/32\n"
+            ))
+            .is_err()
+        );
     }
 
     #[test]

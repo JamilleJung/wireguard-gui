@@ -77,7 +77,7 @@ version-aligned**: a given version number means the same capabilities and the
 same fixes in both. When you read a version below, the matching `wg-tui` release
 covers the same ground (with the obvious interface differences - menus and a tray
 on the GUI side, key bindings on the TUI side). The current version of both is
-**1.5.4**.
+**1.5.5**.
 
 ---
 
@@ -98,7 +98,7 @@ released, the code has to pass:
 - Rust helper unit tests and negative helper tests that prove traversal-style tunnel names are rejected
   before any filesystem access.
 
-**Tag-triggered release.** Pushing a version tag (for example `v1.5.4`) kicks off
+**Tag-triggered release.** Pushing a version tag (for example `v1.5.5`) kicks off
 the release workflow, which runs the same smoke and shell validation, builds the
 `.deb`, the AppImage and the portable tarball, generates `SHA256SUMS`, signs it with minisign to produce
 `SHA256SUMS.minisig`, attaches `minisign.pub`, and publishes a GitHub Release.
@@ -110,7 +110,7 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
 
 ## Version history
 
-### Next - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
+### 1.5.5 - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
 
 **Highlights**
 
@@ -120,6 +120,10 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
   helper-managed iptables/ip6tables rules.
 - The structured editor now supports multiple peers for common Interface/Peer
   fields while keeping hooks, routing directives, and unknown keys in raw text.
+- Easy Mode can now create a tunnel from scratch instead of forcing users into
+  Advanced Mode for first-run setup.
+- Copy buttons now normalize single-field payloads separately from raw
+  config/log copying, fixing accidental whitespace/newline copy artifacts.
 - Release automation now builds portable x86_64 and aarch64 Linux tarballs.
 - Alpine APKBUILD and Void template packaging starts are included for
   maintainers.
@@ -433,5 +437,5 @@ feature set and the same fixes in both apps, differing only where the interface
 itself differs (windows, menus and a tray icon here; key bindings and the
 `wg-tui doctor`/`setup` subcommands there). When one app releases a version, the
 other releases the matching version. Tags are `v<version>` (for example
-`v1.5.4`), and the changelog ([CHANGELOG.md](../CHANGELOG.md)) is the
+`v1.5.5`), and the changelog ([CHANGELOG.md](../CHANGELOG.md)) is the
 authoritative per-version record.

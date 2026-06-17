@@ -122,7 +122,7 @@ component PushButton inherits Rectangle {
     }
 }
 
-// A small square icon button. kind = "delete" (✕) or "export" (download).
+// A small square icon button. kind = "delete", "new", or "export".
 component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <string> kind: "delete";
@@ -152,6 +152,17 @@ component IconButton inherits Rectangle {
         commands: "M 1 1 L 10 10 M 10 1 L 1 10";
     }
     // export: a download arrow into a tray
+    if root.kind == "new": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 13px;
+        height: 13px;
+        viewbox-width: 13;
+        viewbox-height: 13;
+        stroke: root.enabled ? #2f7d32 : #bcbcbc;
+        stroke-width: 1.5px;
+        commands: "M 6.5 1.5 L 6.5 11.5 M 1.5 6.5 L 11.5 6.5";
+    }
     if root.kind == "export": Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -195,8 +206,9 @@ component IconButton inherits Rectangle {
 component DetailRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
+    in property <string> copy-value: root.value;
     in property <bool> copyable: false;
-    callback copy();
+    callback copy(string);
     spacing: 8px;
     Text {
         text: root.label;
@@ -217,7 +229,7 @@ component DetailRow inherits HorizontalLayout {
         alignment: start;
         PushButton {
             text: "Copy";
-            clicked => { root.copy(); }
+            clicked => { root.copy(root.copy-value); }
         }
     }
 }
@@ -354,8 +366,8 @@ export component MainWindow inherits Window {
     in-out property <int> active-tab: 0;
     in property <string> log-text: "";
 
-    // Easy mode hides expert actions (Export, Running cfg, Save live, new-from-
-    // scratch) for everyday users. Persisted by Rust.
+    // Easy mode hides expert/raw runtime actions. Creating a tunnel stays
+    // available because it is a normal first-run workflow.
     in-out property <bool> easy-mode: true;
 
     // ---- callbacks into Rust ----
@@ -373,7 +385,8 @@ export component MainWindow inherits Window {
     callback show-qr(string);
     callback set-autostart(string, bool);
     callback set-killswitch(string, bool);
-    callback copy-text(string);
+    callback copy-value(string);
+    callback copy-raw(string);
     callback show-about();
     callback persist-live(string);
     callback show-running(string);
@@ -459,6 +472,15 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             IconButton {
+                                kind: "new";
+                                enabled: true;
+                                tooltip: "Create a new tunnel";
+                                clicked => { root.add-empty(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
                                 enabled: root.has-selection;
                                 tooltip: "Remove the selected tunnel";
                                 clicked => { root.delete-tunnel(root.detail.name); }
@@ -497,8 +519,7 @@ export component MainWindow inherits Window {
                                     chosen => { add-popup.close(); root.import-qr(); }
                                 }
                                 MenuItem {
-                                    text: "Add empty tunnel…";
-                                    visible: !root.easy-mode;
+                                    text: "Create tunnel…";
                                     chosen => { add-popup.close(); root.add-empty(); }
                                 }
                                 MenuItem {
@@ -552,7 +573,7 @@ export component MainWindow inherits Window {
                         text: "Import QR image";
                         clicked => { root.import-qr(); }
                     }
-                    if !root.easy-mode: PushButton {
+                    PushButton {
                         text: "New tunnel";
                         clicked => { root.add-empty(); }
                     }
@@ -621,19 +642,25 @@ export component MainWindow inherits Window {
                             label: "Public key:";
                             value: root.detail.public-key;
                             copyable: true;
-                            copy => { root.copy-text(root.detail.public-key); }
+                            copy => { root.copy-value(root.detail.public-key); }
                         }
                         if root.detail.listen-port != "": DetailRow {
                             label: "Listen port:";
                             value: root.detail.listen-port;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.listen-port); }
                         }
                         if root.detail.addresses != "": DetailRow {
                             label: "Addresses:";
                             value: root.detail.addresses;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.addresses); }
                         }
                         if root.detail.dns != "": DetailRow {
                             label: "DNS servers:";
                             value: root.detail.dns;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.dns); }
                         }
 
                         // Start-on-boot toggle (wg-quick@<name> systemd unit).
@@ -714,7 +741,7 @@ export component MainWindow inherits Window {
                             label: "Public key:";
                             value: p.public-key;
                             copyable: true;
-                            copy => { root.copy-text(p.public-key); }
+                            copy => { root.copy-value(p.public-key); }
                         }
                         if p.preshared: DetailRow {
                             label: "Preshared key:";
@@ -723,10 +750,14 @@ export component MainWindow inherits Window {
                         if p.allowed-ips != "": DetailRow {
                             label: "Allowed IPs:";
                             value: p.allowed-ips;
+                            copyable: true;
+                            copy => { root.copy-value(p.allowed-ips); }
                         }
                         if p.endpoint != "": DetailRow {
                             label: "Endpoint:";
                             value: p.endpoint;
+                            copyable: true;
+                            copy => { root.copy-value(p.endpoint); }
                         }
                         if p.keepalive != "": DetailRow {
                             label: "Persistent keepalive:";
@@ -813,7 +844,7 @@ export component MainWindow inherits Window {
                             alignment: center;
                             PushButton {
                                 text: "Copy";
-                                clicked => { root.copy-text(root.log-text); }
+                                clicked => { root.copy-raw(root.log-text); }
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }

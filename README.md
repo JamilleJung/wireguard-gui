@@ -71,6 +71,7 @@ client while staying close to the tools Linux WireGuard users already know.
 - Shows live transfer totals and throughput.
 - Imports `.conf` files.
 - Imports QR-code images.
+- Creates a new tunnel from scratch with generated keys.
 - Shows a tunnel as a QR code for mobile import.
 - Copies interface and peer public keys.
 - Toggles start-on-boot using systemd `wg-quick@<name>` when systemd is present.
@@ -98,7 +99,8 @@ client while staying close to the tools Linux WireGuard users already know.
 - Applies compatible changes to an active tunnel with `wg syncconf`.
 - Saves live running state back to disk with `wg-quick save`.
 - Shows recent helper and `wg-quick@*` journal entries in a Log tab.
-- Offers Easy mode for everyday actions and Advanced mode for raw operations.
+- Offers Easy mode for everyday actions, including tunnel creation, and
+  Advanced mode for raw/runtime operations.
 - Remembers the Easy/Advanced preference under the user config directory.
 
 ### Setup checks
