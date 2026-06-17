@@ -615,11 +615,41 @@ fn fwmark(name: &str) -> Result<String, String> {
     let mark = out.trim();
     if mark.is_empty() || mark == "off" {
         Err(format!(
-            "kill switch needs an active wg-quick tunnel with fwmark: {name}"
+            "kill switch needs an active wg-quick tunnel with FwMark set: {name}"
         ))
     } else {
         Ok(mark.to_string())
     }
+}
+
+/// Ensure the tunnel config has FwMark set; add it if missing.
+fn ensure_tunnel_has_fwmark(name: &str) -> Result<(), String> {
+    let cfg = read_config(name).map_err(|_| "couldn't read tunnel config")?;
+    // If FwMark is already set, we're done.
+    if cfg.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("fwmark") || lower.starts_with("fwmark =")
+    }) {
+        return Ok(());
+    }
+    // Add FwMark = 51820 (a common choice; uses the listening port as a hint).
+    let mut new_cfg = cfg.clone();
+    if !new_cfg.ends_with('\n') {
+        new_cfg.push('\n');
+    }
+    new_cfg.push_str("FwMark = 51820\n");
+    
+    // Save the updated config.
+    backup_existing(name)?;
+    atomic_write(&conf_path(name), &new_cfg)?;
+    log_action(&format!("added FwMark to {name}"));
+    
+    // Reactivate the tunnel if it was active.
+    if interface_active(name) {
+        command_output("wg-quick", &["down", name], None, Duration::from_secs(30))?;
+        command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
+    }
+    Ok(())
 }
 
 fn kill_comment(name: &str) -> String {
@@ -665,10 +695,13 @@ fn killswitch_status(name: &str) -> Result<(), String> {
 }
 
 fn killswitch_enable(name: &str) -> Result<(), String> {
+    // Ensure the tunnel config has FwMark; add it if missing and activate.
+    ensure_tunnel_has_fwmark(name)?;
+    
     let mark = fwmark(name)?;
     let comment = kill_comment(name);
-    if !have_tool("iptables") {
-        return Err("kill switch needs iptables".into());
+    if !have_tool("iptables") && !have_tool("ip6tables") {
+        return Err("kill switch needs iptables or ip6tables".into());
     }
     for tool_name in ["iptables", "ip6tables"] {
         if !have_tool(tool_name) || iptables_has_comment(tool_name, &comment) {
@@ -689,18 +722,20 @@ fn killswitch_disable(name: &str) -> Result<(), String> {
         if !have_tool(tool_name) {
             continue;
         }
-        let Ok(out) = command_output(tool_name, &["-S", "OUTPUT"], None, Duration::from_secs(5))
-        else {
+        // Verify tunnel is active to get fwmark; if not active, rule shouldn't exist anyway.
+        let Ok(mark) = fwmark(name) else {
             continue;
         };
-        for line in out.lines().filter(|line| line.contains(&comment)) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 3 || parts[0] != "-A" || parts[1] != "OUTPUT" {
-                continue;
-            }
+        // Reconstruct the exact rule to delete (matching what killswitch_enable creates).
+        let rule = iptables_rule_args(name, &mark, &comment);
+        // Try to delete all instances of this rule (in case multiple were added).
+        loop {
             let mut args = vec!["-D", "OUTPUT"];
-            args.extend(parts.into_iter().skip(2));
-            let _ = command_output(tool_name, &args, None, Duration::from_secs(10));
+            args.extend(rule.iter().copied());
+            match command_output(tool_name, &args, None, Duration::from_secs(10)) {
+                Ok(_) => {} // Rule was deleted; try again to remove duplicates
+                Err(_) => break, // No more rules to delete
+            }
         }
     }
     log_action(&format!("killswitch-disable {name}"));
