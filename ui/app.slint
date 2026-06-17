@@ -1,4 +1,6 @@
 import { ListView, ScrollView, LineEdit, TextEdit, Palette, CheckBox } from "std-widgets.slint";
+import { StatusDot } from "components/statusdot.slint";
+
 
 // ---- data shared with the Rust backend ------------------------------------
 
@@ -42,13 +44,7 @@ export struct TunnelDetail {
 
 // ---- small reusable pieces -------------------------------------------------
 
-component StatusDot inherits Rectangle {
-    in property <bool> on;
-    width: 11px;
-    height: 11px;
-    border-radius: 5.5px;
-    background: on ? #2cbe4e : #b9b9b9;
-}
+
 
 // A Windows-style push button. Icons are drawn (vector) so they render
 // regardless of the system font.
