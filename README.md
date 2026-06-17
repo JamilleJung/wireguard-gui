@@ -358,8 +358,7 @@ not log private keys.
 - The helper prompts every time: run `./install.sh` or `./install.sh --polkit`
   so the installed helper path is authorized.
 - The helper is missing: install the `.deb` or run `./install.sh`.
-- Kill switch fails: the tunnel must be active and the system needs iptables or
-  ip6tables available.
+- Kill switch fails: the tunnel must be active and the system needs nftables, iptables, or ip6tables available.
 - Start-on-boot is unavailable: the system does not provide `systemctl`.
 - The Log tab is empty: `journalctl` is missing or the system is not using
   journald.
@@ -388,10 +387,11 @@ not log private keys.
 
 ## Roadmap
 
-- nftables backend for kill switch on systems that do not ship iptables.
 - More helper and installer tests, including firewall rule dry-run coverage.
-- More distro packages where maintainers want them.
-- Better docs and screenshots for multi-peer editing and firewall behavior.
+- SSH-auto-detect for kill switch (auto-allowlist when connected via SSH).
+- More distro packages where maintainers want them (COPR, official Alpine/Void).
+- GUI component split for improved hackability (`ui/components/`).
+- Improved screenshots covering multi-peer editing and kill switch workflows.
 
 ## License
 
