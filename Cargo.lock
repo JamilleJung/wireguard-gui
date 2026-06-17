@@ -6127,7 +6127,7 @@ dependencies = [
 
 [[package]]
 name = "wireguard-gui"
-version = "1.6.1"
+version = "1.6.3"
 dependencies = [
  "arboard",
  "image",

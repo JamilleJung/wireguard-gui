@@ -719,12 +719,11 @@ fn killswitch_flush_nft(name: &str) {
     };
     let mut handles: Vec<u64> = Vec::new();
     for line in out.lines() {
-        if line.contains(&comment) {
-            if let Some(handle_str) = line.rsplit("handle ").next() {
-                if let Ok(h) = handle_str.trim().parse::<u64>() {
-                    handles.push(h);
-                }
-            }
+        if line.contains(&comment)
+            && let Some(handle_str) = line.rsplit("handle ").next()
+            && let Ok(h) = handle_str.trim().parse::<u64>()
+        {
+            handles.push(h);
         }
     }
     handles.sort_unstable_by(|a, b| b.cmp(a));
@@ -1109,12 +1108,11 @@ mod tests {
         let comment = "wg-helper-killswitch:wg0";
         let mut handles: Vec<u64> = Vec::new();
         for line in nft_out.lines() {
-            if line.contains(comment) {
-                if let Some(handle_str) = line.rsplit("handle ").next() {
-                    if let Ok(h) = handle_str.trim().parse::<u64>() {
-                        handles.push(h);
-                    }
-                }
+            if line.contains(comment)
+                && let Some(handle_str) = line.rsplit("handle ").next()
+                && let Ok(h) = handle_str.trim().parse::<u64>()
+            {
+                handles.push(h);
             }
         }
         assert_eq!(handles, vec![12, 13, 14]);
@@ -1127,12 +1125,11 @@ mod tests {
         let comment = "wg-helper-killswitch:wg0";
         let mut handles: Vec<u64> = Vec::new();
         for line in nft_out.lines() {
-            if line.contains(comment) {
-                if let Some(handle_str) = line.rsplit("handle ").next() {
-                    if let Ok(h) = handle_str.trim().parse::<u64>() {
-                        handles.push(h);
-                    }
-                }
+            if line.contains(comment)
+                && let Some(handle_str) = line.rsplit("handle ").next()
+                && let Ok(h) = handle_str.trim().parse::<u64>()
+            {
+                handles.push(h);
             }
         }
         assert!(handles.is_empty());

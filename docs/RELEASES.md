@@ -77,7 +77,7 @@ version-aligned**: a given version number means the same capabilities and the
 same fixes in both. When you read a version below, the matching `wg-tui` release
 covers the same ground (with the obvious interface differences - menus and a tray
 on the GUI side, key bindings on the TUI side). The current version of both is
-**1.6.0**.
+**1.6.3**.
 
 ---
 
@@ -118,6 +118,20 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
 - **Log tab** — `TextEdit` (read-only) for native text selection and scrolling; journal limits raised to 1000 lines.
 - **Speed display** — uses ↓ ↑ icons instead of "down"/"up"; throughput calculation is more robust (no longer gated on active flag).
 - **More tests** — kill switch rule generation tests: nftables handle extraction and iptables rule numbering.
+
+## 1.6.3 (2026-06-18) — Clippy clean, QR fix, docs sync
+
+- Zero clippy warnings across all targets (`-D warnings` enforced).
+- Terminal QR simplified to half-block only (auto-detect caused false "too large").
+- All markdown documentation audited and synchronized.
+
+## 1.6.2 (2026-06-18) — SSH allowlist, 92 tests, copy/log UX
+
+- **SSH auto-allowlist.** Kill switch now auto-allows established SSH traffic when `$SSH_CONNECTION` is set.
+- **Copy UX.** Click the value text or ⧉ icon to copy — no more large "Copy" button.
+- **Log tab.** 1000 journal lines, `TextEdit` read-only for text selection and scrolling.
+- **Speed fix.** Reliable active detection via `wg show interfaces`; ↓ ↑ icons.
+- **92 tests** across both repos (helper + main).
 
 ## 1.5.5 - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
 
