@@ -1,0 +1,35 @@
+# Maintainer: downstream packager <packager@example.invalid>
+pkgname=wireguard-gui
+pkgver=1.5.5
+pkgrel=0
+pkgdesc="Native Linux GUI for plain WireGuard tunnels"
+url="https://github.com/JamilleJung/wireguard-gui"
+arch="x86_64 aarch64"
+license="MIT"
+depends="wireguard-tools polkit fontconfig libxkbcommon mesa-gl mesa-egl dbus-libs"
+makedepends="cargo rust build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-dev dbus-dev"
+source="$pkgname-$pkgver.tar.gz::https://github.com/JamilleJung/wireguard-gui/archive/refs/tags/v$pkgver.tar.gz"
+builddir="$srcdir/$pkgname-$pkgver"
+options="net"
+
+build() {
+	cargo build --release --locked
+}
+
+check() {
+	cargo test --locked
+}
+
+package() {
+	install -Dm755 target/release/wireguard-gui "$pkgdir/usr/bin/wireguard-gui"
+	install -Dm755 target/release/wg-helper "$pkgdir/usr/lib/wireguard-gui/wg-helper"
+	install -Dm644 packaging/49-wireguard-gui.rules \
+		"$pkgdir/usr/share/polkit-1/rules.d/49-wireguard-gui.rules"
+	install -Dm644 packaging/wireguard-gui.desktop \
+		"$pkgdir/usr/share/applications/wireguard-gui.desktop"
+	install -Dm644 packaging/wireguard-gui.svg \
+		"$pkgdir/usr/share/icons/hicolor/scalable/apps/wireguard-gui.svg"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/wireguard-gui/LICENSE"
+}
+
+sha512sums="SKIP"

@@ -1,0 +1,23 @@
+# Template file for 'wireguard-gui'
+pkgname=wireguard-gui
+version=1.5.5
+revision=1
+build_style=cargo
+hostmakedepends="pkg-config"
+makedepends="fontconfig-devel libxkbcommon-devel MesaLib-devel dbus-devel"
+depends="wireguard-tools polkit fontconfig libxkbcommon libglvnd dbus"
+short_desc="Native Linux GUI for plain WireGuard tunnels"
+maintainer="downstream packager <packager@example.invalid>"
+license="MIT"
+homepage="https://github.com/JamilleJung/wireguard-gui"
+distfiles="https://github.com/JamilleJung/wireguard-gui/archive/refs/tags/v${version}.tar.gz"
+checksum=@CHECKSUM@
+
+do_install() {
+	vbin target/release/wireguard-gui
+	vinstall target/release/wg-helper 755 usr/lib/wireguard-gui wg-helper
+	vinstall packaging/49-wireguard-gui.rules 644 usr/share/polkit-1/rules.d
+	vinstall packaging/wireguard-gui.desktop 644 usr/share/applications
+	vinstall packaging/wireguard-gui.svg 644 usr/share/icons/hicolor/scalable/apps
+	vlicense LICENSE
+}

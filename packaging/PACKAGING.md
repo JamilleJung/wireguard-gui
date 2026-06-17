@@ -38,6 +38,19 @@ Already produced by the release workflow via `cargo deb`
 (`[package.metadata.deb]` in `Cargo.toml`). Install with
 `sudo apt install ./wireguard-gui_*_amd64.deb` — it sets up the polkit rule.
 
+## Alpine — `apk/APKBUILD`
+
+Template for Alpine maintainers. It builds both native binaries from source and
+installs `wireguard-gui`, `wg-helper`, the desktop file/icon, and the polkit
+rule. Replace `sha512sums="SKIP"` with the real release tarball checksum before
+submitting to an Alpine repository.
+
+## Void Linux — `void/template`
+
+Template for Void maintainers. It uses Void's Cargo build style and installs the
+same native files as the other distro packages. Replace `checksum=@CHECKSUM@`
+with the real release tarball checksum before submitting.
+
 ## Flatpak — `flatpak/…yaml` (EXPERIMENTAL, not recommended)
 
 A WireGuard manager is a **privileged system tool**: it needs root, `/etc/wireguard`

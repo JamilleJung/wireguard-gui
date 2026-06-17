@@ -1,8 +1,8 @@
 # Maintainer: jamillejung <izeystudio@gmail.com>
 pkgname=wireguard-gui
-pkgver=1.5.4
+pkgver=1.5.5
 pkgrel=1
-pkgdesc="A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client"
+pkgdesc="A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick"
 arch=('x86_64')
 url="https://github.com/JamilleJung/wireguard-gui"
 license=('MIT')
@@ -26,7 +26,7 @@ build() {
 package() {
     cd "$pkgname-$pkgver"
     install -Dm755 target/release/wireguard-gui "$pkgdir/usr/bin/wireguard-gui"
-    install -Dm755 packaging/wg-helper "$pkgdir/usr/lib/wireguard-gui/wg-helper"
+    install -Dm755 target/release/wg-helper "$pkgdir/usr/lib/wireguard-gui/wg-helper"
     install -Dm644 packaging/wireguard-gui.desktop "$pkgdir/usr/share/applications/wireguard-gui.desktop"
     install -Dm644 packaging/wireguard-gui.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/wireguard-gui.svg"
     install -Dm644 packaging/49-wireguard-gui.rules "$pkgdir/usr/share/polkit-1/rules.d/49-wireguard-gui.rules"

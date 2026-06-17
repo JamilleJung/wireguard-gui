@@ -306,7 +306,7 @@ build_app
 say "Installing into $PREFIX"
 as_root install -d "$LIBDIR" "$ICON_DIR" "$PREFIX/bin" "$PREFIX/share/applications"
 as_root install -m755 "$HERE/target/release/wireguard-gui" "$BIN"
-as_root install -m755 "$HERE/packaging/wg-helper" "$HELPER"
+as_root install -m755 "$HERE/target/release/wg-helper" "$HELPER"
 as_root install -m644 "$HERE/packaging/wireguard-gui.desktop" "$DESKTOP"
 [ -f "$HERE/packaging/wireguard-gui.svg" ] && \
     as_root install -m644 "$HERE/packaging/wireguard-gui.svg" "$ICON_DIR/wireguard-gui.svg" || true

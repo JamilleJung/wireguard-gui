@@ -17,11 +17,9 @@ Build prerequisites (the installer handles these automatically): a Rust
 toolchain, `pkg-config`, a C compiler, and the dev headers for `fontconfig` +
 `libxkbcommon`. See the per-distro table in the [README](README.md).
 
-Tip: develop against fake data without touching real tunnels:
-
-```sh
-WGGUI_DEMO=1 cargo run --release
-```
+`cargo run --release` talks to real tunnels. If you want to test changes
+without touching production configs, work in a throwaway VM or use a local test
+`/etc/wireguard` setup.
 
 ## Project layout
 
@@ -30,7 +28,7 @@ WGGUI_DEMO=1 cargo run --release
 | `ui/app.slint` | The entire UI (Slint markup). |
 | `src/backend.rs` | Privilege handling, `wg` orchestration, config parse + validation. |
 | `src/main.rs` | Wires UI callbacks to the backend. |
-| `packaging/wg-helper` | The single privileged entry point (audited shell script). |
+| `src/bin/wg-helper.rs` | The single privileged entry point (audited Rust helper). |
 | `packaging/49-wireguard-gui.rules` | polkit rule (optional auth backend). |
 | `install.sh` | Universal build + install. |
 
@@ -42,16 +40,21 @@ locally first:
 ```sh
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
+cargo test
 cargo build --release
-bash -n install.sh        # and shellcheck packaging/wg-helper if you have it
+bash -n install.sh
+shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+bash tests/helper-validation.sh target/release/wg-helper
+bash tests/installer-sanity.sh
 ```
 
 Guidelines:
 
 - Keep the diff focused; match the surrounding style.
-- If you touch `wg-helper`, preserve the safety properties: fixed paths, strict
-  name validation (no path traversal), atomic writes, backups before
-  overwrite/delete, and the audit log. Add a line to `CHANGELOG.md`.
+- If you touch `src/bin/wg-helper.rs`, preserve the safety properties: fixed
+  paths, strict name validation (no path traversal), argv-based command
+  execution, atomic writes, backups before overwrite/delete, and the audit log.
+  Add a line to `CHANGELOG.md`.
 - UI changes: please attach a screenshot.
 - Be mindful of the **Slint quirk on GNOME/Wayland**: setting `background` on a
   `Window` (or any ancestor of a text input) makes `LineEdit`/`TextEdit` render

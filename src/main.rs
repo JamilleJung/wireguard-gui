@@ -2,14 +2,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod clipboard;
+mod config;
+mod create;
 mod doctor;
+mod secrets;
+mod ui_bridge;
+mod validation;
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::rc::Rc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use ui_bridge::editor_form::{
+    Fields, PeerFields, config_to_fields, fields_to_config, form_representable,
+};
 
 slint::include_modules!();
 
@@ -320,183 +330,81 @@ fn set_psk(config: &str, key: &str) -> String {
     result
 }
 
-/// The structured fields shown in the form editor (Interface + a single Peer).
-#[derive(Default)]
-struct Fields {
-    private_key: String,
-    address: String,
-    dns: String,
-    listen_port: String,
-    mtu: String,
-    peer_public_key: String,
-    preshared_key: String,
-    allowed_ips: String,
-    endpoint: String,
-    keepalive: String,
-}
-
-/// Value to the right of the first `=` on a `key = value` line, trimmed.
-fn kv_value(line: &str) -> String {
-    line.split_once('=')
-        .map(|(_, v)| v)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// The lowercased key to the left of the first `=`, so keys are matched
-/// *exactly* (a directive like `PrivateKeyFile`/`AddressExtra` is not a prefix
-/// match for `PrivateKey`/`Address`). `None` for a line with no `=`.
-fn line_key(line: &str) -> Option<String> {
-    line.split_once('=')
-        .map(|(k, _)| k.trim().to_ascii_lowercase())
-}
-
-/// Whether the form view can faithfully represent this config. The form maps a
-/// single peer and a fixed set of keys; anything else (a second [Peer],
-/// PostUp/PreUp/Table/SaveConfig/…, or an unknown section) would be silently
-/// dropped on a round-trip, so such configs must stay in raw-text mode.
-fn form_representable(cfg: &str) -> bool {
-    let mut peers = 0;
-    let mut section = "";
-    for line in cfg.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        let lower = t.to_ascii_lowercase();
-        if lower.starts_with('[') {
-            if lower.starts_with("[peer]") {
-                peers += 1;
-                section = "peer";
-            } else if lower.starts_with("[interface]") {
-                section = "interface";
-            } else {
-                return false;
-            }
-            continue;
-        }
-        // Match the exact key (before `=`); an unknown key the form can't map
-        // means we must stay in raw-text mode.
-        let Some(key) = line_key(t) else {
-            return false;
-        };
-        let mapped = match section {
-            "interface" => matches!(
-                key.as_str(),
-                "privatekey" | "address" | "dns" | "listenport" | "mtu"
-            ),
-            "peer" => matches!(
-                key.as_str(),
-                "publickey" | "presharedkey" | "allowedips" | "endpoint" | "persistentkeepalive"
-            ),
-            _ => false,
-        };
-        if !mapped {
-            return false;
-        }
-    }
-    peers <= 1
-}
-
-/// Parse a raw config into the structured form fields (first peer only).
-fn config_to_fields(cfg: &str) -> Fields {
-    let mut f = Fields::default();
-    let mut section = "";
-    for line in cfg.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        let lower = t.to_ascii_lowercase();
-        if lower.starts_with('[') {
-            section = if lower.starts_with("[interface]") {
-                "interface"
-            } else if lower.starts_with("[peer]") {
-                "peer"
-            } else {
-                "other"
-            };
-            continue;
-        }
-        // Match keys exactly (before `=`) so e.g. `PrivateKeyFile` isn't picked
-        // up as `PrivateKey`.
-        let Some(key) = line_key(t) else {
-            continue;
-        };
-        match section {
-            "interface" => match key.as_str() {
-                "privatekey" => f.private_key = kv_value(t),
-                "address" => f.address = kv_value(t),
-                "dns" => f.dns = kv_value(t),
-                "listenport" => f.listen_port = kv_value(t),
-                "mtu" => f.mtu = kv_value(t),
-                _ => {}
-            },
-            // Only the first peer is mapped to the form.
-            "peer" => match key.as_str() {
-                "publickey" if f.peer_public_key.is_empty() => f.peer_public_key = kv_value(t),
-                "presharedkey" if f.preshared_key.is_empty() => f.preshared_key = kv_value(t),
-                "allowedips" if f.allowed_ips.is_empty() => f.allowed_ips = kv_value(t),
-                "endpoint" if f.endpoint.is_empty() => f.endpoint = kv_value(t),
-                "persistentkeepalive" if f.keepalive.is_empty() => f.keepalive = kv_value(t),
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-    f
-}
-
-/// Build a raw config from the structured form fields (omitting empty ones).
-fn fields_to_config(f: &Fields) -> String {
-    let mut s = String::from("[Interface]\n");
-    let push = |s: &mut String, k: &str, v: &str| {
-        if !v.trim().is_empty() {
-            s.push_str(&format!("{k} = {}\n", v.trim()));
-        }
-    };
-    push(&mut s, "PrivateKey", &f.private_key);
-    push(&mut s, "Address", &f.address);
-    push(&mut s, "DNS", &f.dns);
-    push(&mut s, "ListenPort", &f.listen_port);
-    push(&mut s, "MTU", &f.mtu);
-    s.push_str("\n[Peer]\n");
-    push(&mut s, "PublicKey", &f.peer_public_key);
-    push(&mut s, "PresharedKey", &f.preshared_key);
-    push(&mut s, "AllowedIPs", &f.allowed_ips);
-    push(&mut s, "Endpoint", &f.endpoint);
-    push(&mut s, "PersistentKeepalive", &f.keepalive);
-    s
-}
-
 /// Push parsed fields into the editor's form properties.
-fn apply_fields(ed: &EditWindow, f: &Fields) {
+fn apply_fields(ed: &EditWindow, f: &Fields, requested_peer: usize) {
+    let mut f = f.clone();
+    f.ensure_peer();
+    let idx = requested_peer.min(f.peers.len() - 1);
+    let peer = &f.peers[idx];
     ed.set_f_private_key(f.private_key.clone().into());
     ed.set_f_address(f.address.clone().into());
     ed.set_f_dns(f.dns.clone().into());
     ed.set_f_listen_port(f.listen_port.clone().into());
     ed.set_f_mtu(f.mtu.clone().into());
-    ed.set_f_peer_public_key(f.peer_public_key.clone().into());
-    ed.set_f_preshared_key(f.preshared_key.clone().into());
-    ed.set_f_allowed_ips(f.allowed_ips.clone().into());
-    ed.set_f_endpoint(f.endpoint.clone().into());
-    ed.set_f_keepalive(f.keepalive.clone().into());
+    ed.set_peer_index(idx as i32);
+    ed.set_peer_count(f.peers.len() as i32);
+    ed.set_peer_label(format!("{} of {}", idx + 1, f.peers.len()).into());
+    ed.set_f_peer_public_key(peer.peer_public_key.clone().into());
+    ed.set_f_preshared_key(peer.preshared_key.clone().into());
+    ed.set_f_allowed_ips(peer.allowed_ips.clone().into());
+    ed.set_f_endpoint(peer.endpoint.clone().into());
+    ed.set_f_keepalive(peer.keepalive.clone().into());
 }
 
-/// Read the editor's form properties back into a `Fields`.
+/// Read the editor's form properties back into `Fields`, preserving peers that
+/// are not currently visible in the form.
 fn read_fields(ed: &EditWindow) -> Fields {
+    let mut f = config_to_fields(&ed.get_config_text());
+    f.ensure_peer();
+    f.private_key = ed.get_f_private_key().to_string();
+    f.address = ed.get_f_address().to_string();
+    f.dns = ed.get_f_dns().to_string();
+    f.listen_port = ed.get_f_listen_port().to_string();
+    f.mtu = ed.get_f_mtu().to_string();
+    let idx = (ed.get_peer_index().max(0) as usize).min(f.peers.len() - 1);
+    f.peers[idx] = PeerFields {
+        peer_public_key: ed.get_f_peer_public_key().to_string(),
+        preshared_key: ed.get_f_preshared_key().to_string(),
+        allowed_ips: ed.get_f_allowed_ips().to_string(),
+        endpoint: ed.get_f_endpoint().to_string(),
+        keepalive: ed.get_f_keepalive().to_string(),
+    };
+    f
+}
+
+fn commit_form_to_config(ed: &EditWindow) -> Option<String> {
+    if !form_representable(&ed.get_config_text()) {
+        return None;
+    }
+    let cfg = fields_to_config(&read_fields(ed));
+    ed.set_public_key(backend::public_key_for_config(&cfg).into());
+    ed.set_config_text(cfg.clone().into());
+    Some(cfg)
+}
+
+fn switch_editor_peer(ed: &EditWindow, requested_peer: usize) {
+    let Some(cfg) = commit_form_to_config(ed) else {
+        return;
+    };
+    let fields = config_to_fields(&cfg);
+    apply_fields(ed, &fields, requested_peer);
+}
+
+#[allow(dead_code)]
+fn single_peer_fields(ed: &EditWindow) -> Fields {
     Fields {
         private_key: ed.get_f_private_key().to_string(),
         address: ed.get_f_address().to_string(),
         dns: ed.get_f_dns().to_string(),
         listen_port: ed.get_f_listen_port().to_string(),
         mtu: ed.get_f_mtu().to_string(),
-        peer_public_key: ed.get_f_peer_public_key().to_string(),
-        preshared_key: ed.get_f_preshared_key().to_string(),
-        allowed_ips: ed.get_f_allowed_ips().to_string(),
-        endpoint: ed.get_f_endpoint().to_string(),
-        keepalive: ed.get_f_keepalive().to_string(),
+        peers: vec![PeerFields {
+            peer_public_key: ed.get_f_peer_public_key().to_string(),
+            preshared_key: ed.get_f_preshared_key().to_string(),
+            allowed_ips: ed.get_f_allowed_ips().to_string(),
+            endpoint: ed.get_f_endpoint().to_string(),
+            keepalive: ed.get_f_keepalive().to_string(),
+        }],
     }
 }
 
@@ -561,10 +469,10 @@ fn open_editor(
     // New tunnels open in the structured form; existing ones in raw-text mode
     // (so a hand-tuned config is never silently rewritten on open). Either way,
     // populate the form fields from the starting config.
-    apply_fields(&ed, &config_to_fields(&text));
+    apply_fields(&ed, &config_to_fields(&text), 0);
     // New tunnels open in the form; existing ones in raw text. Never open the
-    // form for a config the form can't represent (multi-peer / scripts / Table),
-    // or saving would silently drop those parts.
+    // form for a config the form can't represent (scripts / Table / unknown
+    // keys), or saving would silently drop those parts.
     ed.set_form_mode(is_new && form_representable(&text));
 
     // Live-update the public key as the config is edited.
@@ -583,13 +491,7 @@ fn open_editor(
         let edw = ed.as_weak();
         ed.on_fields_changed(move || {
             if let Some(ed) = edw.upgrade() {
-                // Never clobber a config the form can't represent.
-                if !form_representable(&ed.get_config_text()) {
-                    return;
-                }
-                let cfg = fields_to_config(&read_fields(&ed));
-                ed.set_public_key(backend::public_key_for_config(&cfg).into());
-                ed.set_config_text(cfg.into());
+                let _ = commit_form_to_config(&ed);
             }
         });
     }
@@ -601,24 +503,108 @@ fn open_editor(
         ed.on_switch_mode(move |to_form| {
             let Some(ed) = edw.upgrade() else { return };
             if to_form {
-                // Refuse to enter the form for configs it can't represent —
+                // Refuse to enter the form for configs it can't represent -
                 // keep raw text so nothing is dropped, and say why.
                 if !form_representable(&ed.get_config_text()) {
                     ed.set_warning(
-                        "This config has parts the form can't show (extra peers, \
-                         PostUp/Table, …). Edit it as Config text."
+                        "This config has parts the form can't show (PostUp/Table, \
+                         unknown keys, ...). Edit it as Config text."
                             .into(),
                     );
                     ed.set_form_mode(false);
                     return;
                 }
-                apply_fields(&ed, &config_to_fields(&ed.get_config_text()));
+                let idx = ed.get_peer_index().max(0) as usize;
+                apply_fields(&ed, &config_to_fields(&ed.get_config_text()), idx);
             } else {
-                let cfg = fields_to_config(&read_fields(&ed));
-                ed.set_public_key(backend::public_key_for_config(&cfg).into());
-                ed.set_config_text(cfg.into());
+                let _ = commit_form_to_config(&ed);
             }
             ed.set_form_mode(to_form);
+        });
+    }
+
+    // Multi-peer form navigation. The raw config remains the source of truth;
+    // each navigation commits the current peer first so peer edits are not lost.
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_prev(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            let idx = ed.get_peer_index().max(0) as usize;
+            switch_editor_peer(&ed, idx.saturating_sub(1));
+        });
+    }
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_next(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            let idx = ed.get_peer_index().max(0) as usize;
+            switch_editor_peer(&ed, idx + 1);
+        });
+    }
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_add(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            if !form_representable(&ed.get_config_text()) {
+                return;
+            }
+            let mut fields = read_fields(&ed);
+            fields.peers.push(PeerFields::default());
+            let idx = fields.peers.len() - 1;
+            let cfg = fields_to_config(&fields);
+            ed.set_public_key(backend::public_key_for_config(&cfg).into());
+            ed.set_config_text(cfg.into());
+            apply_fields(&ed, &fields, idx);
+        });
+    }
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_remove(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            if !form_representable(&ed.get_config_text()) {
+                return;
+            }
+            let mut fields = read_fields(&ed);
+            if fields.peers.len() <= 1 {
+                return;
+            }
+            let idx = (ed.get_peer_index().max(0) as usize).min(fields.peers.len() - 1);
+            fields.peers.remove(idx);
+            let next = idx.min(fields.peers.len() - 1);
+            let cfg = fields_to_config(&fields);
+            ed.set_public_key(backend::public_key_for_config(&cfg).into());
+            ed.set_config_text(cfg.into());
+            apply_fields(&ed, &fields, next);
+        });
+    }
+
+    // Create presets for Easy Mode. Each preset regenerates a keypair, then keeps
+    // the explicit review/save step in the editor.
+    {
+        let edw = ed.as_weak();
+        ed.on_create_preset(move |preset| {
+            let Some(ed) = edw.upgrade() else { return };
+            let kind = match preset.as_str() {
+                "interface" => create::TunnelTemplateKind::InterfaceOnly,
+                "split" => create::TunnelTemplateKind::ClientSplitTunnel,
+                _ => create::TunnelTemplateKind::ClientFullTunnel,
+            };
+            let (private_key, public_key) = match backend::generate_keypair() {
+                Ok(keys) => keys,
+                Err(e) => {
+                    ed.set_error(format!("Key generation failed: {e}").into());
+                    return;
+                }
+            };
+            let cfg = create::generate_template(kind, &private_key);
+            ed.set_config_text(cfg.clone().into());
+            ed.set_public_key(public_key.into());
+            apply_fields(&ed, &config_to_fields(&cfg), 0);
+            ed.set_form_mode(form_representable(&cfg));
+            ed.set_error("".into());
+            ed.set_warning(
+                format!("{} preset loaded. Review before creating.", kind.label()).into(),
+            );
         });
     }
 
@@ -637,37 +623,54 @@ fn open_editor(
         });
     }
 
-    // Save: validate, write, handle rename, then close + refresh the main view.
-    {
+    // Save: validate, write, handle rename, optionally activate, then close +
+    // refresh the main view.
+    let save_handler = Rc::new({
         let edw = ed.as_weak();
         let mainw = main.as_weak();
-        let orig = orig_name;
-        ed.on_save(move |name, text| {
+        let orig = Rc::new(orig_name);
+        move |name: SharedString, text: SharedString, activate_after: bool| {
             let Some(ed) = edw.upgrade() else { return };
             ed.set_error("".into());
-            let name = backend::sanitize_name(name.trim());
-            if name.is_empty() {
-                ed.set_error("Tunnel name is required.".into());
+            let name = name.to_string();
+            let name = name.trim();
+            if let Err(e) = backend::validate_tunnel_name(name) {
+                ed.set_error(e.into());
                 return;
             }
+            let name = name.to_string();
+            let text = text.to_string();
             if let Err(e) = backend::validate_config(&text) {
                 ed.set_error(e.into());
                 return;
             }
-            let renaming = !orig.is_empty() && orig != name;
-            if (renaming || orig.is_empty()) && backend::tunnel_exists(&name) {
+            let orig_name = orig.as_str();
+            let renaming = !orig_name.is_empty() && orig_name != name;
+            if (renaming || orig_name.is_empty()) && backend::tunnel_exists(&name) {
                 ed.set_error(format!("A tunnel named “{name}” already exists.").into());
                 return;
             }
-            if let Err(e) = backend::save_config(&name, &text) {
-                ed.set_error(format!("Save failed: {e}").into());
+            let save_result = if renaming {
+                backend::rename_config(orig_name, &name, &text)
+            } else {
+                backend::save_config(&name, &text)
+            };
+            if let Err(e) = save_result {
+                ed.set_error(
+                    format!("{} failed: {e}", if renaming { "Rename" } else { "Save" }).into(),
+                );
                 return;
             }
             if let Some(main) = mainw.upgrade() {
                 if renaming {
-                    let _ = backend::deactivate(&orig);
-                    let _ = backend::delete(&orig);
-                    set_status(&main, format!("Renamed {orig} → {name}"));
+                    set_status(&main, format!("Renamed {orig_name} → {name}"));
+                } else if activate_after {
+                    match backend::activate(&name) {
+                        Ok(()) => set_status(&main, format!("Created and activated {name}")),
+                        Err(e) => {
+                            set_status(&main, format!("Created {name}, but activation failed: {e}"))
+                        }
+                    }
                 } else {
                     // If the tunnel is up, apply the change live without dropping
                     // peer sessions (wg syncconf). wg-quick-only fields
@@ -684,14 +687,29 @@ fn open_editor(
                             ),
                         }
                     } else {
-                        set_status(&main, format!("Saved {name}"));
+                        set_status(
+                            &main,
+                            if orig_name.is_empty() {
+                                format!("Created {name}")
+                            } else {
+                                format!("Saved {name}")
+                            },
+                        );
                     }
                 }
                 refresh_list(&main);
                 select_by_name(&main, &name);
             }
             let _ = ed.hide();
-        });
+        }
+    });
+    {
+        let save_handler = save_handler.clone();
+        ed.on_save(move |name, text| save_handler(name, text, false));
+    }
+    {
+        let save_handler = save_handler.clone();
+        ed.on_save_and_activate(move |name, text| save_handler(name, text, true));
     }
 
     // Generate keypair: insert a fresh PrivateKey, show the public key.
@@ -702,7 +720,8 @@ fn open_editor(
             match backend::generate_keypair() {
                 Ok((priv_k, pub_k)) => {
                     let updated = set_private_key(&ed.get_config_text(), &priv_k);
-                    apply_fields(&ed, &config_to_fields(&updated));
+                    let idx = ed.get_peer_index().max(0) as usize;
+                    apply_fields(&ed, &config_to_fields(&updated), idx);
                     ed.set_config_text(updated.into());
                     ed.set_public_key(pub_k.clone().into());
                     ed.set_error("".into());
@@ -725,8 +744,19 @@ fn open_editor(
             }
             match backend::generate_psk() {
                 Ok(psk) => {
-                    let updated = set_psk(&ed.get_config_text(), &psk);
-                    apply_fields(&ed, &config_to_fields(&updated));
+                    let idx = ed.get_peer_index().max(0) as usize;
+                    let updated = if ed.get_form_mode() && form_representable(&ed.get_config_text())
+                    {
+                        let mut fields = read_fields(&ed);
+                        fields.ensure_peer();
+                        let peer_idx = idx.min(fields.peers.len() - 1);
+                        fields.peers[peer_idx].preshared_key = psk;
+                        let cfg = fields_to_config(&fields);
+                        apply_fields(&ed, &fields, peer_idx);
+                        cfg
+                    } else {
+                        set_psk(&ed.get_config_text(), &psk)
+                    };
                     ed.set_config_text(updated.into());
                     ed.set_error("".into());
                     ed.set_warning("New preshared key generated.".into());
@@ -782,6 +812,7 @@ fn to_slint_detail(d: backend::Detail) -> TunnelDetail {
         name: d.name.into(),
         active: d.active,
         autostart: d.autostart,
+        killswitch: d.killswitch,
         public_key: d.public_key.into(),
         listen_port: d.listen_port.into(),
         addresses: d.addresses.into(),
@@ -857,10 +888,10 @@ fn set_status(ui: &MainWindow, msg: impl Into<SharedString>) {
     // Auto-dismiss after a few seconds (clear only if it hasn't been replaced).
     let w = ui.as_weak();
     slint::Timer::single_shot(Duration::from_secs(4), move || {
-        if let Some(ui) = w.upgrade() {
-            if ui.get_status() == msg {
-                ui.set_status(SharedString::new());
-            }
+        if let Some(ui) = w.upgrade()
+            && ui.get_status() == msg
+        {
+            ui.set_status(SharedString::new());
         }
     });
 }
@@ -930,9 +961,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_handle = tray_service.handle();
     tray_service.spawn();
     // Refresh the tray's tooltip/status periodically so it tracks live state.
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(3));
-        tray_handle.update(|_| {});
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            tray_handle.update(|_| {});
+        }
     });
 
     // ---- select ----
@@ -1065,8 +1098,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Pre-generate a keypair so a new tunnel opens ready, like the
             // WireGuard for Windows "Create new tunnel" dialog.
             let text = match backend::generate_keypair() {
-                Ok((priv_k, _)) => new_tunnel_template(&priv_k),
-                Err(_) => TEMPLATE.to_string(),
+                Ok((priv_k, _)) => {
+                    create::generate_template(create::TunnelTemplateKind::ClientFullTunnel, &priv_k)
+                }
+                Err(_) => create::generate_template(
+                    create::TunnelTemplateKind::ClientFullTunnel,
+                    create::FALLBACK_PRIVATE_KEY,
+                ),
             };
             open_editor(&ui, true, String::new(), String::new(), text);
         });
@@ -1196,10 +1234,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ---- copy text to the clipboard ----
+    // ---- toggle helper-managed firewall kill switch ----
     {
         let w = ui.as_weak();
-        ui.on_copy_text(move |text| {
+        ui.on_set_killswitch(move |name, on| {
+            let ui = w.unwrap();
+            match backend::set_killswitch(&name, on) {
+                Ok(()) => set_status(
+                    &ui,
+                    format!(
+                        "{} kill switch for {name}",
+                        if on { "Enabled" } else { "Disabled" }
+                    ),
+                ),
+                Err(e) => set_status(&ui, format!("Kill switch change failed: {e}")),
+            }
+            load_detail(&ui, &name);
+        });
+    }
+
+    // ---- copy single-field values to the clipboard ----
+    {
+        let w = ui.as_weak();
+        ui.on_copy_value(move |text| {
+            let ui = w.unwrap();
+            let value = clipboard::normalize_single_field_copy_value(&text);
+            if value.is_empty() {
+                return;
+            }
+            if copy_to_clipboard(&value) {
+                set_status(&ui, "Copied value to clipboard");
+            } else {
+                set_status(&ui, "Couldn't access the clipboard");
+            }
+        });
+    }
+
+    // ---- copy raw multiline payloads (logs/configs) to the clipboard ----
+    {
+        let w = ui.as_weak();
+        ui.on_copy_raw(move |text| {
             let ui = w.unwrap();
             if text.is_empty() {
                 return;
@@ -1288,18 +1362,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match (name.as_ref(), detail.as_ref()) {
                 (Some(n), Some(d)) if d.active => {
                     let now = std::time::Instant::now();
-                    if let Some((pn, prx, ptx, pt)) = prev.as_ref() {
-                        if pn == n {
-                            let dt = now.duration_since(*pt).as_secs_f64();
-                            if dt >= 0.3 {
-                                let rrx = (d.rx_bytes.saturating_sub(*prx) as f64 / dt) as u64;
-                                let rtx = (d.tx_bytes.saturating_sub(*ptx) as f64 / dt) as u64;
-                                speed = format!(
-                                    "down {}/s   up {}/s",
-                                    backend::fmt_bytes(rrx),
-                                    backend::fmt_bytes(rtx)
-                                );
-                            }
+                    if let Some((pn, prx, ptx, pt)) = prev.as_ref()
+                        && pn == n
+                    {
+                        let dt = now.duration_since(*pt).as_secs_f64();
+                        if dt >= 0.3 {
+                            let rrx = (d.rx_bytes.saturating_sub(*prx) as f64 / dt) as u64;
+                            let rtx = (d.tx_bytes.saturating_sub(*ptx) as f64 / dt) as u64;
+                            speed = format!(
+                                "down {}/s   up {}/s",
+                                backend::fmt_bytes(rrx),
+                                backend::fmt_bytes(rtx)
+                            );
                         }
                     }
                     prev = Some((n.clone(), d.rx_bytes, d.tx_bytes, now));
@@ -1341,13 +1415,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // so a payload computed for a previously-selected tunnel can't
                 // overwrite a selection the user just changed.
                 let current = SELECTED.lock().unwrap().clone();
-                if let Some(d) = live.detail {
-                    if live.name == current {
-                        let mut det = to_slint_detail(d);
-                        det.speed = live.speed.clone().into();
-                        ui.set_detail(det);
-                        ui.set_has_selection(true);
-                    }
+                if let Some(d) = live.detail
+                    && live.name == current
+                {
+                    let mut det = to_slint_detail(d);
+                    det.speed = live.speed.clone().into();
+                    ui.set_detail(det);
+                    ui.set_has_selection(true);
                 }
                 let model = ui.get_tunnels();
                 for i in 0..model.row_count() {
@@ -1395,10 +1469,10 @@ fn build_checks(report: &doctor::Report) -> ModelRc<CheckItem> {
 fn commands_text(report: &doctor::Report) -> String {
     let mut s = String::new();
     for c in &report.checks {
-        if !matches!(c.status, doctor::Status::Ok) {
-            if let Some(fix) = &c.fix {
-                s.push_str(&format!("# {}\n{}\n\n", c.name, fix));
-            }
+        if !matches!(c.status, doctor::Status::Ok)
+            && let Some(fix) = &c.fix
+        {
+            s.push_str(&format!("# {}\n{}\n\n", c.name, fix));
         }
     }
     if s.is_empty() {
@@ -1465,15 +1539,15 @@ fn show_setup_wizard(main: &MainWindow) {
             // resolvconf provider for DNS) and create /etc/wireguard. Never
             // installs the helper or touches configs.
             let mut steps: Vec<String> = Vec::new();
-            if !(doctor::which("wg") && doctor::which("wg-quick")) {
-                if let Some(c) = doctor::install_tools_command() {
-                    steps.push(c);
-                }
+            if !(doctor::which("wg") && doctor::which("wg-quick"))
+                && let Some(c) = doctor::install_tools_command()
+            {
+                steps.push(c);
             }
-            if !doctor::dns_ok() {
-                if let Some(c) = doctor::install_resolvconf_command() {
-                    steps.push(c);
-                }
+            if !doctor::dns_ok()
+                && let Some(c) = doctor::install_resolvconf_command()
+            {
+                steps.push(c);
             }
             if !std::path::Path::new("/etc/wireguard").is_dir() {
                 steps.push("install -d -m 700 /etc/wireguard".to_string());
@@ -1519,100 +1593,12 @@ fn show_setup_wizard(main: &MainWindow) {
 fn select_by_name(ui: &MainWindow, name: &str) {
     let model = ui.get_tunnels();
     for i in 0..model.row_count() {
-        if let Some(row) = model.row_data(i) {
-            if row.name == name {
-                ui.set_selected_index(i as i32);
-                load_detail(ui, name);
-                return;
-            }
+        if let Some(row) = model.row_data(i)
+            && row.name == name
+        {
+            ui.set_selected_index(i as i32);
+            load_detail(ui, name);
+            return;
         }
-    }
-}
-
-const TEMPLATE: &str = "[Interface]
-PrivateKey = <your private key>
-Address = 10.0.0.2/24
-DNS = 1.1.1.1
-
-[Peer]
-PublicKey = <server public key>
-AllowedIPs = 0.0.0.0/0
-Endpoint = server.example.com:51820
-PersistentKeepalive = 25
-";
-
-/// A fresh-tunnel template pre-filled with a real generated private key.
-fn new_tunnel_template(private_key: &str) -> String {
-    format!(
-        "[Interface]\nPrivateKey = {private_key}\nAddress = 10.0.0.2/24\nDNS = 1.1.1.1\n\n\
-         [Peer]\nPublicKey = <server public key>\nAllowedIPs = 0.0.0.0/0\n\
-         Endpoint = server.example.com:51820\nPersistentKeepalive = 25\n"
-    )
-}
-
-#[cfg(test)]
-mod form_tests {
-    use super::*;
-
-    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
-
-    fn single_peer() -> String {
-        format!("[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com:51820\n")
-    }
-
-    #[test]
-    fn representable_simple_config() {
-        assert!(form_representable(&single_peer()));
-    }
-
-    #[test]
-    fn not_representable_when_multi_peer_or_scripts() {
-        // Two peers — the form maps only one.
-        let two = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
-             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n\n\
-             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 10.1.0.0/24\n"
-        );
-        assert!(!form_representable(&two));
-        // PostUp runs as root and is not a form field.
-        let scripted = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPostUp = iptables -A FORWARD -i %i -j ACCEPT\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
-        );
-        assert!(!form_representable(&scripted));
-        // Table is also unmapped.
-        let table = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nTable = off\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
-        );
-        assert!(!form_representable(&table));
-    }
-
-    #[test]
-    fn fields_roundtrip_preserves_mapped_values() {
-        let f = config_to_fields(&single_peer());
-        assert_eq!(f.private_key, KEY);
-        assert_eq!(f.address, "10.0.0.2/24");
-        assert_eq!(f.peer_public_key, KEY);
-        assert_eq!(f.allowed_ips, "0.0.0.0/0");
-        assert_eq!(f.endpoint, "vpn.example.com:51820");
-        // Rebuilt config is itself representable and re-parses to the same fields.
-        let rebuilt = fields_to_config(&f);
-        assert!(form_representable(&rebuilt));
-        let f2 = config_to_fields(&rebuilt);
-        assert_eq!(f2.private_key, f.private_key);
-        assert_eq!(f2.endpoint, f.endpoint);
-        assert_eq!(f2.allowed_ips, f.allowed_ips);
-    }
-
-    #[test]
-    fn unknown_prefix_keys_are_not_mapped() {
-        // Keys that merely *start with* a mapped key must not be treated as
-        // representable, nor scooped up by config_to_fields.
-        let cfg = format!(
-            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPrivateKeyFile = /tmp/x\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nEndpointBackup = other:1\n"
-        );
-        assert!(!form_representable(&cfg)); // PrivateKeyFile/EndpointBackup are unknown
-        let f = config_to_fields(&cfg);
-        assert_eq!(f.private_key, KEY); // exact PrivateKey, not PrivateKeyFile
-        assert_eq!(f.endpoint, ""); // EndpointBackup must not become Endpoint
     }
 }

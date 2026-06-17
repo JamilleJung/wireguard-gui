@@ -28,6 +28,7 @@ export struct TunnelDetail {
     name: string,
     active: bool,
     autostart: bool,
+    killswitch: bool,
     public-key: string,
     listen-port: string,
     addresses: string,
@@ -121,7 +122,7 @@ component PushButton inherits Rectangle {
     }
 }
 
-// A small square icon button. kind = "delete" (✕) or "export" (download).
+// A small square icon button. kind = "delete", "new", or "export".
 component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <string> kind: "delete";
@@ -151,6 +152,17 @@ component IconButton inherits Rectangle {
         commands: "M 1 1 L 10 10 M 10 1 L 1 10";
     }
     // export: a download arrow into a tray
+    if root.kind == "new": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 13px;
+        height: 13px;
+        viewbox-width: 13;
+        viewbox-height: 13;
+        stroke: root.enabled ? #2f7d32 : #bcbcbc;
+        stroke-width: 1.5px;
+        commands: "M 6.5 1.5 L 6.5 11.5 M 1.5 6.5 L 11.5 6.5";
+    }
     if root.kind == "export": Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -194,8 +206,9 @@ component IconButton inherits Rectangle {
 component DetailRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
+    in property <string> copy-value: root.value;
     in property <bool> copyable: false;
-    callback copy();
+    callback copy(string);
     spacing: 8px;
     Text {
         text: root.label;
@@ -216,7 +229,7 @@ component DetailRow inherits HorizontalLayout {
         alignment: start;
         PushButton {
             text: "Copy";
-            clicked => { root.copy(); }
+            clicked => { root.copy(root.copy-value); }
         }
     }
 }
@@ -353,8 +366,8 @@ export component MainWindow inherits Window {
     in-out property <int> active-tab: 0;
     in property <string> log-text: "";
 
-    // Easy mode hides expert actions (Export, Running cfg, Save live, new-from-
-    // scratch) for everyday users. Persisted by Rust.
+    // Easy mode hides expert/raw runtime actions. Creating a tunnel stays
+    // available because it is a normal first-run workflow.
     in-out property <bool> easy-mode: true;
 
     // ---- callbacks into Rust ----
@@ -371,7 +384,9 @@ export component MainWindow inherits Window {
     callback import-qr();
     callback show-qr(string);
     callback set-autostart(string, bool);
-    callback copy-text(string);
+    callback set-killswitch(string, bool);
+    callback copy-value(string);
+    callback copy-raw(string);
     callback show-about();
     callback persist-live(string);
     callback show-running(string);
@@ -457,6 +472,15 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             IconButton {
+                                kind: "new";
+                                enabled: true;
+                                tooltip: "Create a new tunnel";
+                                clicked => { root.add-empty(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
                                 enabled: root.has-selection;
                                 tooltip: "Remove the selected tunnel";
                                 clicked => { root.delete-tunnel(root.detail.name); }
@@ -495,8 +519,7 @@ export component MainWindow inherits Window {
                                     chosen => { add-popup.close(); root.import-qr(); }
                                 }
                                 MenuItem {
-                                    text: "Add empty tunnel…";
-                                    visible: !root.easy-mode;
+                                    text: "Create tunnel…";
                                     chosen => { add-popup.close(); root.add-empty(); }
                                 }
                                 MenuItem {
@@ -550,7 +573,7 @@ export component MainWindow inherits Window {
                         text: "Import QR image";
                         clicked => { root.import-qr(); }
                     }
-                    if !root.easy-mode: PushButton {
+                    PushButton {
                         text: "New tunnel";
                         clicked => { root.add-empty(); }
                     }
@@ -619,19 +642,25 @@ export component MainWindow inherits Window {
                             label: "Public key:";
                             value: root.detail.public-key;
                             copyable: true;
-                            copy => { root.copy-text(root.detail.public-key); }
+                            copy => { root.copy-value(root.detail.public-key); }
                         }
                         if root.detail.listen-port != "": DetailRow {
                             label: "Listen port:";
                             value: root.detail.listen-port;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.listen-port); }
                         }
                         if root.detail.addresses != "": DetailRow {
                             label: "Addresses:";
                             value: root.detail.addresses;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.addresses); }
                         }
                         if root.detail.dns != "": DetailRow {
                             label: "DNS servers:";
                             value: root.detail.dns;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.dns); }
                         }
 
                         // Start-on-boot toggle (wg-quick@<name> systemd unit).
@@ -644,6 +673,26 @@ export component MainWindow inherits Window {
                                 toggled => {
                                     root.set-autostart(root.detail.name, self.checked);
                                 }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        if !root.easy-mode: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: ""; width: 132px; }
+                            CheckBox {
+                                text: "Kill switch";
+                                checked: root.detail.killswitch;
+                                enabled: root.detail.active;
+                                toggled => {
+                                    root.set-killswitch(root.detail.name, self.checked);
+                                }
+                            }
+                            Text {
+                                text: root.detail.active ? "blocks non-local traffic outside this tunnel" : "requires an active tunnel";
+                                color: #6a6a6a;
+                                font-size: 12px;
+                                vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
@@ -692,7 +741,7 @@ export component MainWindow inherits Window {
                             label: "Public key:";
                             value: p.public-key;
                             copyable: true;
-                            copy => { root.copy-text(p.public-key); }
+                            copy => { root.copy-value(p.public-key); }
                         }
                         if p.preshared: DetailRow {
                             label: "Preshared key:";
@@ -701,10 +750,14 @@ export component MainWindow inherits Window {
                         if p.allowed-ips != "": DetailRow {
                             label: "Allowed IPs:";
                             value: p.allowed-ips;
+                            copyable: true;
+                            copy => { root.copy-value(p.allowed-ips); }
                         }
                         if p.endpoint != "": DetailRow {
                             label: "Endpoint:";
                             value: p.endpoint;
+                            copyable: true;
+                            copy => { root.copy-value(p.endpoint); }
                         }
                         if p.keepalive != "": DetailRow {
                             label: "Persistent keepalive:";
@@ -791,7 +844,7 @@ export component MainWindow inherits Window {
                             alignment: center;
                             PushButton {
                                 text: "Copy";
-                                clicked => { root.copy-text(root.log-text); }
+                                clicked => { root.copy-raw(root.log-text); }
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -866,9 +919,12 @@ export component EditWindow inherits Window {
     in property <string> warning: "";
     in property <string> public-key: "";
 
-    // Form view: structured fields (single peer). `form-mode` toggles between
-    // the form and the raw config text.
+    // Form view: structured fields. `form-mode` toggles between the form and
+    // the raw config text; peer-index/peer-count drive multi-peer navigation.
     in-out property <bool> form-mode: false;
+    in-out property <int> peer-index: 0;
+    in property <int> peer-count: 1;
+    in property <string> peer-label: "1 of 1";
     in-out property <string> f-private-key;
     in-out property <string> f-address;
     in-out property <string> f-dns;
@@ -887,7 +943,13 @@ export component EditWindow inherits Window {
     callback config-changed(string);
     callback fields-changed();
     callback switch-mode(bool);
+    callback peer-prev();
+    callback peer-next();
+    callback peer-add();
+    callback peer-remove();
+    callback create-preset(string);
     callback copy(string);
+    callback save-and-activate(string, string);
 
     // Force the light palette so the text inputs use dark-text-on-light fills —
     // which is what makes them visible on a white background. (No `min-height`
@@ -969,6 +1031,40 @@ export component EditWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
             }
 
+            if root.is-new: Rectangle {
+                vertical-stretch: 0;
+                background: #f7fbff;
+                border-color: #d6e9fb;
+                border-width: 1px;
+                border-radius: 3px;
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    Text {
+                        text: "Preset:";
+                        width: 56px;
+                        color: #5a5a5a;
+                        vertical-alignment: center;
+                    }
+                    PushButton {
+                        text: "Interface only";
+                        tooltip: "Generate only an [Interface] section";
+                        clicked => { root.create-preset("interface"); }
+                    }
+                    PushButton {
+                        text: "Full tunnel";
+                        tooltip: "Default AllowedIPs route all traffic through the peer";
+                        clicked => { root.create-preset("full"); }
+                    }
+                    PushButton {
+                        text: "Split tunnel";
+                        tooltip: "Default AllowedIPs route only a private subnet";
+                        clicked => { root.create-preset("split"); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+
             // Mode toggle: structured fields vs. raw config text.
             HorizontalLayout {
                 vertical-stretch: 0;
@@ -1029,11 +1125,41 @@ export component EditWindow inherits Window {
                         edited => { root.fields-changed(); }
                     }
                     Rectangle { height: 4px; }
-                    Text {
-                        text: "Peer";
-                        font-size: 13px;
-                        font-weight: 700;
-                        color: #1b1b1b;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Peer";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: #1b1b1b;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.peer-label;
+                            color: #6a6a6a;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        PushButton {
+                            text: "Prev";
+                            enabled: root.peer-index > 0;
+                            clicked => { root.peer-prev(); }
+                        }
+                        PushButton {
+                            text: "Next";
+                            enabled: root.peer-index + 1 < root.peer-count;
+                            clicked => { root.peer-next(); }
+                        }
+                        PushButton {
+                            text: "Add peer";
+                            clicked => { root.peer-add(); }
+                        }
+                        PushButton {
+                            text: "Remove";
+                            enabled: root.peer-count > 1;
+                            clicked => { root.peer-remove(); }
+                        }
                     }
                     FormField {
                         label: "Public key";
@@ -1100,9 +1226,14 @@ export component EditWindow inherits Window {
                     clicked => { root.cancel(); }
                 }
                 PushButton {
-                    text: "Save";
+                    text: root.is-new ? "Create" : "Save";
                     primary: true;
                     clicked => { root.save(root.tunnel-name, root.config-text); }
+                }
+                if root.is-new: PushButton {
+                    text: "Create & Activate";
+                    primary: true;
+                    clicked => { root.save-and-activate(root.tunnel-name, root.config-text); }
                 }
             }
         }
@@ -1173,7 +1304,7 @@ export component AboutWindow inherits Window {
         alignment: start;
 
         Text {
-            text: "🐉 WireGuard GUI";
+            text: "WireGuard GUI";
             font-size: 22px;
             font-weight: 800;
             color: #1b1b1b;
@@ -1186,7 +1317,7 @@ export component AboutWindow inherits Window {
             horizontal-alignment: center;
         }
         Text {
-            text: "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client.";
+            text: "A native Linux GUI for plain WireGuard configs, wg, wg-quick, and a small privileged helper.";
             color: #444444;
             font-size: 13px;
             wrap: word-wrap;
