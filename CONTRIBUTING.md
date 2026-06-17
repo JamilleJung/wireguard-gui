@@ -17,11 +17,9 @@ Build prerequisites (the installer handles these automatically): a Rust
 toolchain, `pkg-config`, a C compiler, and the dev headers for `fontconfig` +
 `libxkbcommon`. See the per-distro table in the [README](README.md).
 
-Tip: develop against fake data without touching real tunnels:
-
-```sh
-WGGUI_DEMO=1 cargo run --release
-```
+`cargo run --release` talks to real tunnels. If you want to test changes
+without touching production configs, work in a throwaway VM or use a local test
+`/etc/wireguard` setup.
 
 ## Project layout
 
@@ -42,6 +40,7 @@ locally first:
 ```sh
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
+cargo test
 cargo build --release
 bash -n install.sh        # and shellcheck packaging/wg-helper if you have it
 ```

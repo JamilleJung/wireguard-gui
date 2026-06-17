@@ -90,6 +90,7 @@ released, the code has to pass:
 
 - `cargo fmt --check` - formatting is enforced, not suggested.
 - `cargo clippy` - lint warnings are treated as failures.
+- `cargo test` - unit tests run on every push and pull request.
 - a release **build** of the binary.
 - a **smoke test** that `wireguard-gui --version` and `--help` start and exit
   cleanly without opening a window.

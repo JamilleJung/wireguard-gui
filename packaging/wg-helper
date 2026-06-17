@@ -126,8 +126,43 @@ case "$verb" in
         validate_name "${1:-}"
         backup_existing "$1"
         T 30 wg-quick down "$1" 2>/dev/null || true
+        if have_systemctl && systemctl is-enabled "wg-quick@$1" >/dev/null 2>&1; then
+            systemctl disable "wg-quick@$1" >/dev/null 2>&1 || true
+        fi
         rm -f "${WG_DIR}/$1.conf"
         log "delete $1"
+        ;;
+    rename)
+        validate_name "${1:-}"
+        validate_name "${2:-}"
+        [ "$1" != "$2" ] || die "source and destination names must differ"
+        src="${WG_DIR}/$1.conf"
+        dst="${WG_DIR}/$2.conf"
+        [ -f "$src" ] || die "no such tunnel: $1"
+        [ ! -e "$dst" ] || die "target already exists: $2"
+        current="$(T 5 wg show interfaces 2>/dev/null || true)"
+        case " $current " in
+            *" $1 "*) T 30 wg-quick down "$1" || die "rename requires the active tunnel to stop: $1" ;;
+        esac
+        backup_existing "$1"
+        if have_systemctl && systemctl is-enabled "wg-quick@$1" >/dev/null 2>&1; then
+            systemctl disable "wg-quick@$1" >/dev/null 2>&1 || true
+            enabled=1
+        else
+            enabled=0
+        fi
+        umask 077
+        tmp="${WG_DIR}/.$2.conf.tmp.$$"
+        trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
+        cat > "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$dst"
+        trap - EXIT
+        if [ "$enabled" -eq 1 ] && have_systemctl; then
+            systemctl enable "wg-quick@$2" >/dev/null 2>&1 || true
+        fi
+        rm -f "$src"
+        log "rename $1 -> $2"
         ;;
     enable)
         validate_name "${1:-}"

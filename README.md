@@ -1,17 +1,14 @@
 <div align="center">
 
-# 🐉 wireguard-gui
+# wireguard-gui
 
-**A native Linux GUI for managing WireGuard tunnels - modelled on the WireGuard for Windows client.**
+A native Linux desktop client for WireGuard.
 
-Tunnel list on the left, an Interface/Peer detail pane on the right, one-click
-Activate/Deactivate, import from `.conf`, an inline editor with config
-validation, and live handshake/transfer status.
+Built with Rust + Slint. No Electron, no WebView, no NetworkManager. It works
+with plain `/etc/wireguard/*.conf` tunnels through `wg` and `wg-quick`, and
+keeps privileged operations behind a small auditable helper.
 
-Written in **Rust** with the [Slint](https://slint.dev) toolkit - compiles to a
-single native binary. No Electron, no web view.
-
-![screenshot](docs/screenshot.png)
+![Screenshot of the active tunnel view](docs/screenshot.png)
 
 [![CI](https://github.com/JamilleJung/wireguard-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/JamilleJung/wireguard-gui/actions/workflows/ci.yml)
 [![Releases](https://img.shields.io/badge/Releases-latest-2ea44f)](https://github.com/JamilleJung/wireguard-gui/releases/latest)
@@ -21,81 +18,88 @@ single native binary. No Electron, no web view.
 
 </div>
 
-> **Prefer the terminal?** **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)**
-> is the same tool as a keyboard-driven TUI - ideal over SSH and on headless servers.
+> Prefer the terminal? The sibling **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)**
+> is the same project philosophy in a keyboard-driven TUI.
 
----
+## Design philosophy
 
-## ℹ️ Good to know
+This project is intentionally small.
 
-- **It drives `wg-quick`, not NetworkManager.** Tunnels are plain `.conf` files in
-  `/etc/wireguard`, brought up with `wg-quick up`/`down` - the standard WireGuard
-  path. NetworkManager is deliberately bypassed (it has historically mangled
-  `[Peer]` sections; see *The story behind it* below).
-- **Start-on-boot needs systemd** - it toggles the `wg-quick@<name>` unit. On
-  non-systemd systems (OpenRC, runit, …) that one feature is unavailable;
-  everything else works.
-- **A QR code - and an exported `.zip` - contains the tunnel's _private key_.**
-  Only show a QR when it's safe for someone to photograph your screen, and keep
-  exports somewhere safe.
-- **First run is guided.** If `wireguard-tools` or the helper isn't set up yet,
-  a friendly Setup wizard explains what's missing and can fix it for you (with
-  your confirmation) - no reading the README required.
-- **It does not bundle WireGuard itself.** No kernel modules, no vendored
-  `wg`/`wg-quick` - it uses your distro's `wireguard-tools` (and helps install
-  them). The `.deb` is the smoothest option on Debian/Ubuntu/Mint; the AppImage
-  and tarball still need `wireguard-tools` present on the system.
-- **Per-distro guide:** see **[docs/DISTROS.md](docs/DISTROS.md)** for what to
-  install, what to set up, what survives a reboot, and when (only as a
-  server/gateway) you need firewall and IP-forwarding changes.
+It does not try to become a WireGuard platform, daemon, or configuration
+database. It stays close to the Linux WireGuard workflow: plain `.conf` files in
+`/etc/wireguard`, `wg`, `wg-quick`, `wg show`, `wg showconf`, `wg syncconf`,
+`wg-quick save`, and systemd `wg-quick@<name>` units where available.
 
-## Documentation
+The GUI and TUI are separate first-class tools. Install the one you want. Hack
+the one you want. They share code where useful, but there is no mandatory
+runtime core or hidden platform layer.
 
-- **[docs/TUTORIAL.md](docs/TUTORIAL.md)** - a step-by-step walkthrough from install
-  to your first tunnel: import a `.conf` or QR image, create one from scratch,
-  connect, show a QR for your phone, start-on-boot, edit safely, and troubleshooting.
-- **[docs/DISTROS.md](docs/DISTROS.md)** - per-distro install/setup/reboot/firewall.
-- **[docs/RELEASES.md](docs/RELEASES.md)** - detailed release history and how to
-  verify signed downloads.
+The goal is a native client that is easy to use, easy to inspect, and easy to
+fork.
 
----
+## Why this exists
 
-## ✨ Features
+Linux already ships the primitives needed to manage WireGuard well. The missing
+piece for many desktop users is a small native client that presents those
+primitives clearly without routing everything through NetworkManager.
 
-- 📜 **Tunnel list** of everything under `/etc/wireguard`, with a live green/grey active dot.
-- 🔌 **Activate / Deactivate** with one click (`wg-quick up` / `down`).
-- 🧾 **Interface card** - status, public key, listen port, addresses, DNS.
-- 🛰️ **Peer card(s)** - public key, preshared-key indicator, allowed IPs, endpoint,
-  persistent keepalive, **latest handshake** and **transfer**, polled live every second.
-- 📥 **Import** one or many `.conf` files (single imports open an editor so you can
-  **name the tunnel yourself**; bulk imports auto-deduplicate), or **import from a QR-code image**.
-- 🔑 **Generate keypairs and preshared keys** (`wg genkey`/`genpsk`); new tunnels open with a fresh private key and a live public-key field.
-- ♻️ **Apply edits to a running tunnel live** (`wg syncconf`) without dropping peer sessions; **copy the running config** (`wg showconf`) or **save live state** (`wg-quick save`).
-- 📱 **Show QR** - display a tunnel as a QR code to scan into the WireGuard mobile app.
-- 📦 **Export** all tunnels to a `.zip`; **copy** public keys / config / log to the clipboard.
-- 📝 **Inline editor** that toggles between a **form view** (labelled Interface/Peer
-  fields) and the **raw config text**, with **config validation** (keys, addresses,
-  endpoint, …) before saving.
-- ✏️ **Rename** / **Remove** tunnels; **Log** tab; **Start-on-boot** toggle.
-- 🗔 **System-tray icon** with per-tunnel activate/deactivate (where the desktop supports SNI);
-  **closing the window minimizes to the tray** so tunnels keep running.
-- 🟢 **Easy mode** (default) for everyday users - hides expert tools (Export,
-  Running cfg, Save live, new-from-scratch); one click switches to **Advanced**.
-- 🔒 **Tiny, auditable privilege surface** (see below).
+`wireguard-gui` keeps the Linux-native workflow and gives it a desktop face:
+plain configs, a live tunnel list, detail panes, safe editing, and a small
+privilege boundary. NetworkManager was the original spark, not the whole
+philosophy.
 
----
+## What it does
 
-## 📸 Screenshots
+- Lists tunnels from `/etc/wireguard`.
+- Shows active/inactive status and live handshake/transfer details.
+- Activates and deactivates tunnels with `wg-quick up` / `wg-quick down`.
+- Imports `.conf` files and QR images.
+- Creates new tunnels with a generated keypair.
+- Supports raw config editing and a structured single-peer form.
+- Validates before save, writes atomically, and keeps backups before overwrite.
+- Renames and removes tunnels with helper-backed privilege checks.
+- Shows a tunnel as QR, copies public keys, copies configs, and exports all
+  tunnels to a zip.
+- Uses `wg showconf`, `wg syncconf`, and `wg-quick save` for live state.
+- Toggles start-on-boot with systemd `wg-quick@<name>` when systemd is present.
+- Shows recent activity in a log tab.
+- Runs a first-run Setup wizard when critical prerequisites are missing; it
+  checks WireGuard tools, the helper, helper authorization, `/etc/wireguard`,
+  systemd, journald, and DNS support.
+- Offers Easy / Advanced mode and a tray icon where the desktop supports it.
+
+## What it deliberately does not do
+
+- No NetworkManager layer.
+- No Electron or WebView.
+- No mandatory daemon or background service.
+- No hidden config database.
+- No bundled WireGuard kernel module or `wg` binaries.
+- No root UI.
+
+## Screenshot
 
 | Tunnel detail (active) | Inactive tunnel |
 |:---:|:---:|
 | ![active](docs/screenshot.png) | ![inactive](docs/screenshot-inactive.png) |
-| **Config editor (keypair)** | **Show QR for mobile** |
+| **Config editor** | **Show QR** |
 | ![editor](docs/screenshot-editor.png) | ![qr](docs/screenshot-qr.png) |
 
----
+## Install
 
-## 🚀 Install (one command)
+### Prebuilt packages
+
+The release page normally includes:
+
+- `wireguard-gui_*_amd64.deb`
+- `wireguard-gui-*-x86_64-linux.tar.gz`
+- `wireguard-gui-*-x86_64.AppImage` when the AppImage job succeeds
+- `SHA256SUMS`, `SHA256SUMS.minisig` when signing is configured, and `minisign.pub`
+
+On Debian / Ubuntu / Mint, the `.deb` is the simplest path because it installs
+the helper and sets up the polkit rule.
+
+### From source
 
 ```sh
 git clone https://github.com/JamilleJung/wireguard-gui.git
@@ -103,161 +107,160 @@ cd wireguard-gui
 ./install.sh
 ```
 
-That's it. The installer:
+`install.sh` detects your package manager, installs build dependencies and
+`wireguard-tools`, builds the release binary, installs the helper and desktop
+files, and configures passwordless helper access for the active local user.
 
-1. **Detects your distro's package manager** and **auto-installs every missing
-   dependency** - C toolchain, `pkg-config`, the libraries Slint needs
-   (`fontconfig`, `libxkbcommon`), an OpenGL runtime, and **`wireguard-tools`** itself.
-2. **Installs Rust automatically** (via [rustup](https://rustup.rs)) if `cargo` isn't already present.
-3. **Builds** the release binary.
-4. **Installs** the binary, the privileged helper, a `.desktop` launcher and icon.
-5. Adds a **`sudoers` drop-in** so the app never needs your password at runtime
-   (falls back to `pkexec` if that step is skipped).
+Supported package managers:
 
-Then launch **WireGuard** from your application menu, or run `wireguard-gui`.
+| Distro family | Package manager |
+|---|---|
+| Debian / Ubuntu / Mint | `apt` |
+| Fedora / RHEL / Rocky | `dnf` / `yum` |
+| Arch / Manjaro / EndeavourOS | `pacman` |
+| openSUSE | `zypper` |
+| Alpine | `apk` |
+| Void | `xbps-install` |
+| Solus | `eopkg` |
 
-> Prefer a single line?
-> ```sh
-> git clone https://github.com/JamilleJung/wireguard-gui.git && cd wireguard-gui && ./install.sh
-> ```
-
-### ✅ Tested package managers
-
-| Distro family            | Package manager | Auto-installed deps |
-|--------------------------|-----------------|---------------------|
-| Debian / Ubuntu / Mint   | `apt`           | ✅ |
-| Fedora / RHEL / Rocky    | `dnf` / `yum`   | ✅ |
-| Arch / Manjaro / EndeavourOS | `pacman`    | ✅ |
-| openSUSE                 | `zypper`        | ✅ |
-| Alpine                   | `apk`           | ✅ |
-| Void                     | `xbps`          | ✅ |
-| Solus                    | `eopkg`         | ✅ |
-
-On an unrecognised distro the installer tells you exactly which packages to add
-manually, then still builds and installs.
-
-### Uninstall
+Uninstall:
 
 ```sh
 ./install.sh uninstall
 ```
 
-### Auth backend: sudoers (default) or polkit
+Auth backend choice:
 
 ```sh
-./install.sh            # sudoers drop-in (light & fast - the default)
-./install.sh --polkit   # polkit rule instead (cleaner desktop integration)
+./install.sh           # sudoers drop-in (default)
+./install.sh --polkit  # polkit rule instead
 ```
 
-Both make privileged tunnel control passwordless for your active local session.
-`sudoers` is simplest; `polkit` is the more "native desktop app" path (and is
-what the `.deb` uses automatically).
+## Verify releases
 
----
-
-## 📦 Download prebuilt (no compiler needed)
-
-Every tagged release on the [**Releases**](https://github.com/JamilleJung/wireguard-gui/releases)
-page ships these, built by GitHub Actions:
-
-| Artifact | For |
-|----------|-----|
-| `wireguard-gui_*_amd64.deb` | Debian/Ubuntu - `sudo apt install ./wireguard-gui_*_amd64.deb` (sets up the polkit rule automatically) |
-| `wireguard-gui-*-x86_64.AppImage` | Any distro - `chmod +x *.AppImage && ./*.AppImage` |
-| `wireguard-gui-*-x86_64-linux.tar.gz` | Portable binary bundle + `install.sh` |
-| `SHA256SUMS` | Checksums for everything above |
-
-Verify your download - checksums, and a minisign signature over them:
+Use the checksum file and minisign signature from the release page:
 
 ```sh
-# 1) checksums
 sha256sum -c SHA256SUMS --ignore-missing
-
-# 2) signature (needs `minisign`; public key also ships as minisign.pub)
 minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
 ```
 
-> The `.deb` is the smoothest prebuilt option (desktop integration + passwordless
-> polkit). The AppImage is fully portable; for passwordless privileged actions it
-> still benefits from a system helper (run `install.sh` once, or use the `.deb`).
+## Usage
 
----
+Launch `wireguard-gui` from the application menu or from a terminal.
 
-## 🛠️ Manual build (for developers)
+The main window is split into a tunnel list on the left and an interface / peer
+detail view on the right. The bottom bar switches between Easy and Advanced
+mode. The Add Tunnel menu handles file import, QR import, new tunnel creation,
+and About. The Log tab shows recent journal entries and helper activity.
 
-Requirements: a Rust toolchain (`cargo`), `wireguard-tools`, and the dev headers
-for `fontconfig` + `libxkbcommon` (see the table your distro uses below).
+## Security model
+
+The GUI runs as a normal user. Privileged operations go through one small shell
+helper, `packaging/wg-helper`, which is installed as
+`/usr/local/lib/wireguard-gui/wg-helper` or `/usr/lib/wireguard-gui/wg-helper`
+when packaged.
+
+The helper exposes fixed verbs only:
+
+`list`, `read`, `dump`, `up`, `down`, `save`, `rename`, `delete`, `enable`,
+`disable`, `is-enabled`, `sync`, `showconf`, `persist`, and `log`.
+
+Hardening in the helper:
+
+- Fixed `PATH` and fixed `/etc/wireguard` path.
+- Tunnel names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`.
+- No path traversal, no caller-controlled root destination, no shell eval of
+  user input.
+- Atomic config writes with backups before overwrite, delete, or rename.
+- Audit log entries via `logger` / journald.
+- Start-on-boot changes are kept separate from file writes.
+
+Authorization is passwordless sudoers by default, or a polkit rule with
+`--polkit`. If neither is set up, the app falls back to `pkexec`.
+
+QR export and zip export contain the private key. Treat them like the config
+file itself.
+
+## Hacking on it
+
+This repo is MIT licensed. Fork it and change it.
+
+### Codebase map
+
+| Path | Purpose |
+|---|---|
+| `ui/app.slint` | All Slint UI layout and bindings |
+| `src/main.rs` | App startup and UI wiring |
+| `src/backend.rs` | WireGuard orchestration, validation, helper client |
+| `src/doctor.rs` | Read-only setup checks |
+| `packaging/wg-helper` | Privileged helper |
+| `install.sh` | Distro-aware installer |
+| `packaging/` | Desktop entries, icon, packaging metadata |
+| `.github/workflows/` | CI and release automation |
+
+### Build and test
 
 ```sh
-cargo build --release       # → target/release/wireguard-gui
-cargo run --release         # run straight from source
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release
 ```
 
-In dev mode the app uses the in-tree `packaging/wg-helper`. For passwordless
-operation either run `./install.sh`, point a `sudoers` drop-in at the helper, or
-let it fall back to `pkexec`. Override the helper path with
-`WG_HELPER=/path/to/wg-helper`.
+### Run from source
 
-<details>
-<summary>Dependency package names per distro</summary>
+```sh
+cargo run --release
+```
 
-| Distro | Packages |
-|--------|----------|
-| Debian/Ubuntu | `build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 libdbus-1-dev wireguard-tools` |
-| Fedora/RHEL | `gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel mesa-libGL mesa-libEGL dbus-devel wireguard-tools` |
-| Arch | `base-devel fontconfig libxkbcommon libglvnd dbus wireguard-tools` |
-| openSUSE | `gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel Mesa-libGL1 Mesa-libEGL1 dbus-1-devel wireguard-tools` |
-| Alpine | `build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-gl mesa-egl dbus-dev wireguard-tools` |
+In development, the binary looks for the in-tree helper first. You can point it
+at a local helper with `WG_HELPER=/path/to/wg-helper`. In release builds that
+override is only honored for a root-owned, non-world-writable file when
+`WG_ALLOW_UNSAFE_HELPER=1` is set.
 
-</details>
+### Add a feature safely
 
----
+If you touch privileged behavior, keep the helper verb-based, validate names
+before filesystem access, and keep writes atomic. If you touch the UI, keep the
+normal-user flow intact and surface failures plainly.
 
-## 🖥️ Usage
+## Troubleshooting
 
-1. Launch **WireGuard** (app menu) or `wireguard-gui`.
-2. Pick a tunnel on the left to see its Interface/Peer details and live status;
-   toggle **Start on boot**, **Show QR**, or **Copy** the public key.
-3. **Activate / Deactivate** with the button in the Interface card (or from the
-   tray icon, per tunnel).
-4. **Add Tunnel ▾** → *Import from file…* / *Import from QR code…* /
-   *Add empty tunnel…* (a keypair is generated for you) / *About…*.
-5. **Edit** opens the editor (rename, **Generate keypair**, **Copy config**,
-   validate-on-Save). The **✕** removes a tunnel; the **⤓** exports all to a zip.
-6. The **Log** tab shows recent activity (`journalctl -t wireguard-gui` + `wg-quick`).
+- `wg-quick` fails with `resolvconf: command not found`: install a resolvconf
+  provider such as `openresolv`, or use a system with `systemd-resolved`.
+- The helper keeps prompting: run `./install.sh` or `./install.sh --polkit`
+  so the helper path is authorized.
+- Start-on-boot is unavailable: your system does not have `systemctl`.
+- The tray icon does not appear: your desktop needs a StatusNotifier / App
+  Indicator host.
+- QR export or zip export contains secrets: that is expected. Treat the output
+  like the tunnel config itself.
+- No window, or invisible text inputs: use the packaged build or the default
+  `fluent-light` style; this project does not ship a dark WebView stack.
 
----
+## Known limitations
 
-## 🔐 How privilege works
+- Start-on-boot is systemd-only.
+- Prebuilt binaries are x86_64 only.
+- The GUI is desktop-session dependent; it is not designed for SSH-only use.
+- The tray icon depends on desktop support for StatusNotifier / AppIndicator.
+- QR and zip exports include private keys.
+- The helper remains a shell script for now; the privileged surface is small,
+  but not yet Rust.
 
-The app runs as your normal user. Everything that needs root - reading
-`/etc/wireguard`, `wg show`, `wg-quick up/down` - is funnelled through a single,
-auditable shell script, **`wg-helper`**, which validates every tunnel name and
-exposes only a fixed set of verbs (`list`, `read`, `dump`, `up`, `down`, `save`,
-`delete`, …).
+## Roadmap
 
-`install.sh` whitelists **only that script** (via a `sudoers` drop-in, or a
-`polkit` rule with `--polkit` / the `.deb`), so the GUI never needs your password
-at runtime and the privileged surface stays tiny. If neither is set up, the app
-falls back to `pkexec` (which prompts).
+- Rust helper for the privileged operations.
+- Better multi-peer editor support.
+- More packaged architectures where the release workflow supports them.
+- Additional tests around rename and import edge cases.
 
-**Hardening built into `wg-helper`:**
+## License
 
-- **Fixed paths** - `WG_DIR` is hard-coded to `/etc/wireguard`; nothing comes from
-  the caller's environment.
-- **No path traversal** - tunnel names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`
-  and may never be `.`/`..` or contain `..`, so the target path can't escape the
-  config directory. (Verified: `read ../../etc/passwd` is rejected.)
-- **Atomic writes** - `save` writes to a temp file and `rename()`s it into place,
-  so a crash mid-write can't leave a truncated config.
-- **Backups before destruction** - every `save` (overwrite) and **`delete`** first
-  copies the current config to `/etc/wireguard/.backup/<name>.conf.<timestamp>`
-  (mode `600`). The delete button is deliberately reversible.
-- **Audit log** - `save`/`delete`/`up`/`down`/`enable`/`disable` and every backup
-  are logged to the system journal:
-  ```sh
-  journalctl -t wireguard-gui
-  ```
+MIT. WireGuard is a registered trademark of Jason A. Donenfeld. This project is
+an independent, unofficial client and is not affiliated with or endorsed by the
+WireGuard project.
 
 ---
 

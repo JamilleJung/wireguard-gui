@@ -659,14 +659,19 @@ fn open_editor(
                 ed.set_error(format!("A tunnel named “{name}” already exists.").into());
                 return;
             }
-            if let Err(e) = backend::save_config(&name, &text) {
-                ed.set_error(format!("Save failed: {e}").into());
+            let save_result = if renaming {
+                backend::rename_config(&orig, &name, &text)
+            } else {
+                backend::save_config(&name, &text)
+            };
+            if let Err(e) = save_result {
+                ed.set_error(
+                    format!("{} failed: {e}", if renaming { "Rename" } else { "Save" }).into(),
+                );
                 return;
             }
             if let Some(main) = mainw.upgrade() {
                 if renaming {
-                    let _ = backend::deactivate(&orig);
-                    let _ = backend::delete(&orig);
                     set_status(&main, format!("Renamed {orig} → {name}"));
                 } else {
                     // If the tunnel is up, apply the change live without dropping

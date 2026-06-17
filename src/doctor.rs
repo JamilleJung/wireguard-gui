@@ -259,16 +259,18 @@ pub fn installed_helper_path() -> Option<String> {
 }
 
 /// Whether passwordless helper authorization is set up (root/sudoers/polkit).
-fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>) {
+/// Returns `(status, detail, fix, critical)`.
+fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>, bool) {
     let Some(h) = helper else {
         return (
-            Status::Unknown,
+            Status::Missing,
             "install the helper first".to_string(),
-            None,
+            Some("./install.sh   (or install the .deb / AUR / COPR package)".to_string()),
+            true,
         );
     };
     if unsafe { libc::geteuid() } == 0 {
-        return (Status::Ok, "running as root".to_string(), None);
+        return (Status::Ok, "running as root".to_string(), None, false);
     }
     let sudo_ok = Command::new("sudo")
         .args(["-n", h, "list"])
@@ -278,8 +280,14 @@ fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>) {
         .map(|s| s.success())
         .unwrap_or(false);
     if sudo_ok {
-        return (Status::Ok, "passwordless (sudoers)".to_string(), None);
+        return (
+            Status::Ok,
+            "passwordless (sudoers)".to_string(),
+            None,
+            false,
+        );
     }
+    let pkexec = which("pkexec");
     let polkit = [
         "/etc/polkit-1/rules.d/49-wireguard-tui.rules",
         "/etc/polkit-1/rules.d/49-wireguard-gui.rules",
@@ -288,17 +296,28 @@ fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>) {
     ]
     .iter()
     .any(|p| PathBuf::from(p).exists());
-    if polkit {
+    if polkit && pkexec {
+        (Status::Ok, "passwordless (polkit)".to_string(), None, false)
+    } else if polkit {
         (
-            Status::Warning,
-            "polkit (asks for your password)".to_string(),
-            None,
+            Status::Missing,
+            "polkit rule is installed, but pkexec is missing".to_string(),
+            Some("install the `polkit` package (for `pkexec`) or set up sudoers".to_string()),
+            true,
         )
-    } else {
+    } else if pkexec {
         (
             Status::Warning,
             "not set up - pkexec will prompt each time".to_string(),
             Some("./install.sh   (sets up passwordless sudoers)".to_string()),
+            false,
+        )
+    } else {
+        (
+            Status::Missing,
+            "no passwordless sudo and pkexec is missing".to_string(),
+            Some("./install.sh   (or install the .deb / AUR / COPR package)".to_string()),
+            true,
         )
     }
 }
@@ -313,11 +332,20 @@ pub fn critical_blockers() -> Vec<String> {
             install_tools_hint()
         ));
     }
-    if installed_helper_path().is_none() {
+    let helper = installed_helper_path();
+    if helper.is_none() {
         v.push(
             "the privileged helper is not installed - run ./install.sh or install the package"
                 .to_string(),
         );
+    } else {
+        let (_, detail, fix, critical) = helper_auth(&helper);
+        if critical {
+            v.push(format!(
+                "helper authorization is missing - {}",
+                fix.unwrap_or(detail)
+            ));
+        }
     }
     v
 }
@@ -389,13 +417,13 @@ pub fn system_check() -> Report {
         critical: true,
     });
 
-    let (auth_status, auth_detail, auth_fix) = helper_auth(&helper);
+    let (auth_status, auth_detail, auth_fix, auth_critical) = helper_auth(&helper);
     checks.push(Check {
         name: "Helper authorization",
         status: auth_status,
         detail: auth_detail,
         fix: auth_fix,
-        critical: false,
+        critical: auth_critical,
     });
 
     let dir = std::path::Path::new("/etc/wireguard").is_dir();

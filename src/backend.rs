@@ -238,15 +238,22 @@ pub fn tunnel_exists(name: &str) -> bool {
 /// A collision-free tunnel name based on `base`: returns `base`, else
 /// `base-2`, `base-3`, … (kept within the 15-char interface-name limit).
 pub fn unique_name(base: &str) -> String {
+    unique_name_with(base, tunnel_exists)
+}
+
+fn unique_name_with<F>(base: &str, exists: F) -> String
+where
+    F: Fn(&str) -> bool,
+{
     let base = sanitize_name(base);
-    if !tunnel_exists(&base) {
+    if !exists(&base) {
         return base;
     }
     for n in 2..1000 {
         let suffix = format!("-{n}");
         let keep = 15usize.saturating_sub(suffix.len());
         let candidate = format!("{}{}", base.chars().take(keep).collect::<String>(), suffix);
-        if !tunnel_exists(&candidate) {
+        if !exists(&candidate) {
             return candidate;
         }
     }
@@ -259,6 +266,10 @@ pub fn read_config(name: &str) -> Result<String, String> {
 
 pub fn save_config(name: &str, content: &str) -> Result<(), String> {
     helper(&["save", name], Some(content)).map(|_| ())
+}
+
+pub fn rename_config(old: &str, new: &str, content: &str) -> Result<(), String> {
+    helper(&["rename", old, new], Some(content)).map(|_| ())
 }
 
 pub fn activate(name: &str) -> Result<(), String> {
@@ -940,6 +951,14 @@ mod tests {
                 "{input} -> {n}"
             );
         }
+    }
+
+    #[test]
+    fn unique_name_deduplicates() {
+        let name = unique_name_with("vpn config", |candidate| {
+            matches!(candidate, "vpn_config" | "vpn_config-2")
+        });
+        assert_eq!(name, "vpn_config-3");
     }
 
     #[test]
