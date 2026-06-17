@@ -6,13 +6,13 @@ first tunnel in, connecting, reading the live status, putting a tunnel on your
 phone, and the small print (start-on-boot, editing, renaming, exporting,
 troubleshooting). No prior WireGuard experience is assumed.
 
-Tested against version 1.5.5.
+Tested against version 1.6.0.
 
 ---
 
 ## 1. What this is and who it's for
 
-`wireguard-gui` is a native Linux GUI (built in Rust with the Slint toolkit) for
+`wireguard-gui` (and its shorter alias `wg-gui`) is a native Linux GUI (built in Rust with the Slint toolkit) for
 plain WireGuard configs: a tunnel list on the left, an Interface/Peer detail
 pane on the right, and direct Activate/Deactivate actions. It drives the
 standard `wg-quick` path - your tunnels are plain `.conf` files in
@@ -63,7 +63,7 @@ git clone https://github.com/JamilleJung/wireguard-gui.git && cd wireguard-gui &
    if `cargo` is not already present.
 3. **Builds** the release binary - as the invoking user, never as root, so build
    scripts never run with root privilege.
-4. **Installs** the binary (`wireguard-gui`), the privileged helper (`wg-helper`),
+4. **Installs** the binary (`wireguard-gui`, also linked as `wg-gui`), the privileged helper (`wg-helper`),
    a `.desktop` launcher and an icon.
 5. **Sets up passwordless privileged access** so the app never asks for your
    password at runtime (details below).
@@ -71,10 +71,12 @@ git clone https://github.com/JamilleJung/wireguard-gui.git && cd wireguard-gui &
 On an unrecognised distro it tells you exactly which packages to install
 manually, then still builds and installs.
 
-When it finishes, launch **WireGuard** from your application menu, or run:
+When it finishes, launch **WireGuard** from your application menu, or run either:
 
 ```sh
 wireguard-gui
+# or
+wg-gui
 ```
 
 ### The no-sudo / passwordless explanation
@@ -247,7 +249,7 @@ the UI never stutters):
 | **Status / public key / listen port / addresses / DNS** | Interface card | The interface side of the tunnel. |
 | **Latest handshake** | Peer card | How long ago the peer last completed a handshake. A recent handshake means the link is alive. |
 | **Transfer** | Peer card | Total bytes received and sent over this peer. |
-| **Live speed** | Interface card | Real-time throughput, shown as `down <rate>/s   up <rate>/s`, derived from successive samples. |
+| **Live speed** | Interface card | Real-time throughput, shown as `↓ <rate>/s   ↑ <rate>/s`, derived from successive samples. |
 | **Connection health** | Interface card | A handshake-based summary: `OK (last handshake ... ago)` when the last handshake is under 3 minutes old, `stale (last handshake ... ago)` when older, or `waiting for handshake...` before the first one. |
 
 If an activation fails, the app explains the cause in plain language (for
@@ -358,7 +360,7 @@ file name is `wireguard-tunnels.zip`).
 | **Activate / Deactivate** | Interface card | `wg-quick up` / `down` for the selected tunnel | All |
 | **Show QR** | Detail pane | Display the tunnel as a QR code for the mobile app | All |
 | **Start on boot** | Detail pane | Toggle the `wg-quick@<name>` systemd unit | All |
-| **Kill switch** | Detail pane | Add/remove helper-managed iptables/ip6tables OUTPUT rules for an active tunnel | Advanced |
+| **Kill switch** | Detail pane | Toggle helper-managed firewall rules (nftables preferred; iptables fallback) to block non-tunnel traffic | Advanced |
 | **Copy** (public key) | Detail pane | Copy the interface public key to the clipboard | All |
 | **Edit** | Bottom action bar | Open the inline editor (form or config text) | All |
 | **Easy / Advanced** toggle | Bottom action bar, next to Edit | Switch between Easy and Advanced; remembered across runs | All |
@@ -402,9 +404,9 @@ Other editor buttons: **Copy config** (copy the whole config to the clipboard),
 The GUI has no subcommands - it is launched as a windowed app. The only CLI is:
 
 ```sh
-wireguard-gui            # launch the app
-wireguard-gui --version  # print the version and exit
-wireguard-gui --help     # show usage and exit
+wireguard-gui            # launch the app (or: wg-gui)
+wireguard-gui --version  # print the version and exit (or: wg-gui --version)
+wireguard-gui --help     # show usage and exit (or: wg-gui --help)
 ```
 
 (There is no `doctor` or `setup` subcommand; that is the terminal sibling
@@ -456,7 +458,7 @@ not set up. Re-create it:
 ```
 
 If the installer reported "sudoers validation failed" or said a present
-`openresolv` was missing, update to **1.5.5** - that release puts `/usr/sbin` and
+`openresolv` was missing, update to **1.5.5** or later - that release puts `/usr/sbin` and
 `/sbin` on `PATH` after the root re-exec so it can find `visudo` and the
 `resolvconf` probe. The hint when the drop-in is skipped is to re-run
 `./install.sh --polkit`.

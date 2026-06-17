@@ -76,8 +76,8 @@ client while staying close to the tools Linux WireGuard users already know.
 - Shows a tunnel as a QR code for mobile import.
 - Copies interface and peer public keys.
 - Toggles start-on-boot using systemd `wg-quick@<name>` when systemd is present.
-- Toggles a helper-managed kill switch for active tunnels using Linux firewall
-  primitives.
+- Toggles a helper-managed kill switch for active tunnels using nftables
+  (preferred) or iptables/ip6tables.
 - Provides a tray menu on desktops with StatusNotifier/AppIndicator support.
 
 ### Editing and config
@@ -230,13 +230,15 @@ Launch from the application menu or from a terminal:
 
 ```sh
 wireguard-gui
+# or the shorter alias:
+wg-gui
 ```
 
 Non-window CLI paths for scripts:
 
 ```sh
-wireguard-gui --version
-wireguard-gui --help
+wireguard-gui --version   # or: wg-gui --version
+wireguard-gui --help      # or: wg-gui --help
 ```
 
 The left pane lists tunnels. The right pane shows interface and peer details.
@@ -358,8 +360,7 @@ not log private keys.
 - The helper prompts every time: run `./install.sh` or `./install.sh --polkit`
   so the installed helper path is authorized.
 - The helper is missing: install the `.deb` or run `./install.sh`.
-- Kill switch fails: the tunnel must be active and the system needs iptables or
-  ip6tables available.
+- Kill switch fails: the tunnel must be active and the system needs nftables, iptables, or ip6tables available.
 - Start-on-boot is unavailable: the system does not provide `systemctl`.
 - The Log tab is empty: `journalctl` is missing or the system is not using
   journald.
@@ -367,8 +368,7 @@ not log private keys.
   AppIndicator host. GNOME usually needs an extension.
 - A tunnel managed elsewhere behaves strangely: stop managing the same WireGuard
   interface through NetworkManager and this app at the same time.
-- Blank window or invisible inputs: make sure OpenGL/EGL and the Slint runtime
-  dependencies are installed. The packaged build and installer install these.
+- Blank window or invisible inputs: make sure OpenGL/EGL and the Slint runtime dependencies are installed. The packaged build and installer install these.
 
 ## Known limitations
 
@@ -388,10 +388,11 @@ not log private keys.
 
 ## Roadmap
 
-- nftables backend for kill switch on systems that do not ship iptables.
 - More helper and installer tests, including firewall rule dry-run coverage.
-- More distro packages where maintainers want them.
-- Better docs and screenshots for multi-peer editing and firewall behavior.
+- SSH-auto-detect for kill switch (auto-allowlist when connected via SSH).
+- More distro packages where maintainers want them (COPR, official Alpine/Void).
+- GUI component split for improved hackability (`ui/components/`).
+- Improved screenshots covering multi-peer editing and kill switch workflows.
 
 ## License
 

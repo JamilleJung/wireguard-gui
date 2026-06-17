@@ -10,14 +10,16 @@ git clone https://github.com/JamilleJung/wireguard-gui.git
 cd wireguard-gui
 ./install.sh            # installs build deps for your distro, or:
 cargo build --release   # if you already have the toolchain + dev libs
-cargo run --release     # run from source
+cargo run --release
+# The binary is `wireguard-gui`; a symlink `wg-gui` is also created by install.sh     # run from source
 ```
 
 Build prerequisites (the installer handles these automatically): a Rust
 toolchain, `pkg-config`, a C compiler, and the dev headers for `fontconfig` +
 `libxkbcommon`. See the per-distro table in the [README](README.md).
 
-`cargo run --release` talks to real tunnels. If you want to test changes
+`cargo run --release
+# The binary is `wireguard-gui`; a symlink `wg-gui` is also created by install.sh` talks to real tunnels. If you want to test changes
 without touching production configs, work in a throwaway VM or use a local test
 `/etc/wireguard` setup.
 

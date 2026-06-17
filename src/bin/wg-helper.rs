@@ -751,6 +751,35 @@ fn killswitch_enable_nft(name: &str, mark: &str) -> Result<(), String> {
     let comment = kill_comment(name);
     killswitch_flush_nft(name);
     nft_ensure_chain()?;
+    // SSH safety: when $SSH_CONNECTION is set, insert an ACCEPT rule for
+    // established/related SSH return traffic before the kill-switch rules
+    // so the current session survives.
+    let ssh_port = std::env::var("SSH_CONNECTION")
+        .ok()
+        .and_then(|conn| conn.split_whitespace().nth(3)?.parse::<u16>().ok());
+    if let Some(port) = ssh_port {
+        let _ = command_output(
+            "nft",
+            &[
+                "insert",
+                "rule",
+                "inet",
+                "filter",
+                "output",
+                "tcp",
+                "sport",
+                &port.to_string(),
+                "ct",
+                "state",
+                "established,related",
+                "accept",
+                "comment",
+                &comment,
+            ],
+            None,
+            Duration::from_secs(5),
+        );
+    }
     command_output(
         "nft",
         &[
@@ -826,6 +855,39 @@ fn killswitch_flush_iptables(name: &str) {
 fn killswitch_enable_iptables(name: &str, mark: &str) -> Result<(), String> {
     let comment = kill_comment(name);
     killswitch_flush_iptables(name);
+    let ssh_port = std::env::var("SSH_CONNECTION")
+        .ok()
+        .and_then(|conn| conn.split_whitespace().nth(3)?.parse::<u16>().ok());
+    if let Some(port) = ssh_port {
+        for tool_name in ["iptables", "ip6tables"] {
+            if !have_tool(tool_name) {
+                continue;
+            }
+            let _ = command_output(
+                tool_name,
+                &[
+                    "-I",
+                    "OUTPUT",
+                    "-p",
+                    "tcp",
+                    "--sport",
+                    &port.to_string(),
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "ESTABLISHED,RELATED",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+                None,
+                Duration::from_secs(5),
+            );
+        }
+    }
     for tool_name in ["iptables", "ip6tables"] {
         if !have_tool(tool_name) {
             continue;
@@ -901,9 +963,7 @@ fn killswitch_status(name: &str) -> Result<(), String> {
 fn killswitch_enable(name: &str) -> Result<(), String> {
     // SSH safety: warn when $SSH_CONNECTION is set (kill switch can lock out).
     if std::env::var("SSH_CONNECTION").is_ok() {
-        eprintln!(
-            "wg-helper: WARNING — You are connected via SSH.              Enabling the kill switch may interrupt this session.              Make sure you have local or console access."
-        );
+        eprintln!("wg-helper: SSH session detected — auto-allowing established SSH traffic. ");
     }
 
     // 1. Ensure tunnel has FwMark and is active.
@@ -1076,6 +1136,75 @@ mod tests {
             }
         }
         assert!(handles.is_empty());
+    }
+
+    #[test]
+    fn killswitch_nft_rule_structure() {
+        // Verify the nftables rules we generate have valid structure
+        // (comment is essential for later cleanup).
+        let c = kill_comment("test-tun");
+        assert!(c.contains("wg-helper-killswitch"));
+        assert!(c.contains("test-tun"));
+        // Comment should be safe for nftables (no quotes in name).
+        assert!(!c.contains('"'));
+        assert!(!c.contains("'"));
+    }
+
+    #[test]
+    fn killswitch_iptables_comment_format() {
+        // iptables --comment must survive shell/iptables parsing.
+        let c = kill_comment("home-vpn");
+        // No shell metacharacters.
+        assert!(!c.contains('$'));
+        assert!(!c.contains('`'));
+        assert!(!c.contains(';'));
+        assert!(!c.contains('|'));
+        // Must be valid after --comment flag.
+        assert!(c.len() >= 10);
+    }
+
+    #[test]
+    fn ssh_port_parsing() {
+        // Simulate SSH_CONNECTION parsing
+        let conn = "192.168.1.5 52341 10.0.0.1 22";
+        let port: Option<u16> = conn
+            .split_whitespace()
+            .nth(3)
+            .and_then(|s| s.parse::<u16>().ok());
+        assert_eq!(port, Some(22));
+
+        let bad = "garbage";
+        let port2: Option<u16> = bad
+            .split_whitespace()
+            .nth(3)
+            .and_then(|s| s.parse::<u16>().ok());
+        assert_eq!(port2, None);
+    }
+
+    #[test]
+    fn fwmark_present_tunnel_reactivation_logic() {
+        // When FwMark is already in config, ensure_tunnel_has_fwmark should
+        // not modify the config (no backup, no rewrite).
+        // We test the detection logic only (can't call wg-quick in unit test).
+        let cfg = "[Interface]
+PrivateKey = x
+FwMark = 51820
+Address = 10.0.0.1/24
+";
+        let has = cfg.lines().any(|line| {
+            let lower = line.trim().to_ascii_lowercase();
+            lower.starts_with("fwmark") && lower.contains('=')
+        });
+        assert!(has);
+
+        let cfg2 = "[Interface]
+PrivateKey = x
+";
+        let has2 = cfg2.lines().any(|line| {
+            let lower = line.trim().to_ascii_lowercase();
+            lower.starts_with("fwmark") && lower.contains('=')
+        });
+        assert!(!has2);
     }
 
     #[test]

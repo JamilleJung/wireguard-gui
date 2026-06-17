@@ -41,8 +41,10 @@ Hardening in `wg-helper`:
 - **Audit log.** Mutating actions are logged to the journal
   (`journalctl -t wireguard-gui`).
 - **Kill switch scope.** The helper can add/remove tunnel-scoped
-  iptables/ip6tables OUTPUT rules for an active `wg-quick` tunnel. It does not
-  install a daemon or own the system firewall permanently.
+  firewall rules for an active `wg-quick` tunnel, preferring **nftables**
+  (`inet filter`) with an iptables/ip6tables fallback. The kill switch never
+  flushes user rules and cleans up on disable. It does not install a daemon
+  or own the system firewall permanently.
 
 ### Privilege escalation backend
 
