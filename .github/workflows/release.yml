@@ -194,30 +194,29 @@ jobs:
           echo "Verifying signature with the committed public key…"
           minisign -Vm SHA256SUMS -p minisign.pub
 
-      - name: Publish GitHub Release
-        - name: Prepare release notes
-          id: notes
-          run: |
-            V="${{ steps.ver.outputs.v }}"
-            # Extract the changelog section for the exact version header
-            notes=$(awk -v ver="$V" 'BEGIN{p=0} /^## \['ver'\]/{p=1; print; next} /^## \[/{if(p){exit}} p{print}' CHANGELOG.md)
-            if [ -z "${notes// }" ]; then
-              notes="Release $V"
-            fi
-            echo "body<<EOF" >> "$GITHUB_OUTPUT"
-            printf "%s\n" "$notes" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
+      - name: Prepare release notes
+        id: notes
+        run: |
+          V="${{ steps.ver.outputs.v }}"
+          # Extract the changelog section for the exact version header
+          notes=$(awk -v ver="$V" 'BEGIN{p=0} $0 ~ ("^## \\[" ver "\\]") {p=1; print; next} /^## \\[/{if(p){exit}} p{print}' CHANGELOG.md)
+          if [ -z "${notes// }" ]; then
+            notes="Release $V"
+          fi
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          printf "%s\n" "$notes" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
-        - name: Publish GitHub Release
-          uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-          with:
-            generate_release_notes: false
-            body: ${{ steps.notes.outputs.body }}
-            files: |
-              *.tar.gz
-              *.deb
-              *.AppImage
-              SHA256SUMS
-              SHA256SUMS.minisig
-              minisign.pub
-              wireguard-gui/CHANGELOG.md
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          generate_release_notes: false
+          body: ${{ steps.notes.outputs.body }}
+          files: |
+            *.tar.gz
+            *.deb
+            *.AppImage
+            SHA256SUMS
+            SHA256SUMS.minisig
+            minisign.pub
+            wireguard-gui/CHANGELOG.md
