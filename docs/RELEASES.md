@@ -77,7 +77,7 @@ version-aligned**: a given version number means the same capabilities and the
 same fixes in both. When you read a version below, the matching `wg-tui` release
 covers the same ground (with the obvious interface differences - menus and a tray
 on the GUI side, key bindings on the TUI side). The current version of both is
-**1.5.5**.
+**1.6.0**.
 
 ---
 
@@ -98,7 +98,7 @@ released, the code has to pass:
 - Rust helper unit tests and negative helper tests that prove traversal-style tunnel names are rejected
   before any filesystem access.
 
-**Tag-triggered release.** Pushing a version tag (for example `v1.5.5`) kicks off
+**Tag-triggered release.** Pushing a version tag (for example `v1.6.0`) kicks off
 the release workflow, which runs the same smoke and shell validation, builds the
 `.deb`, the AppImage and the portable tarball, generates `SHA256SUMS`, signs it with minisign to produce
 `SHA256SUMS.minisig`, attaches `minisign.pub`, and publishes a GitHub Release.
@@ -110,7 +110,16 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
 
 ## Version history
 
-### 1.5.5 - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
+### 1.6.0 (2026-06-17)
+
+- **nftables kill switch backend** — preferred when `nft` is available (`inet filter` table covers both IPv4+IPv6); iptables/ip6tables fallback.
+- **SSH safety warning** — the helper warns (stderr) before enabling a kill switch over an SSH connection.
+- **Copy UX** — click the value text or trailing ⧉ icon to copy; no more large "Copy" button.
+- **Log tab** — `TextEdit` (read-only) for native text selection and scrolling; journal limits raised to 1000 lines.
+- **Speed display** — uses ↓ ↑ icons instead of "down"/"up"; throughput calculation is more robust (no longer gated on active flag).
+- **More tests** — kill switch rule generation tests: nftables handle extraction and iptables rule numbering.
+
+## 1.5.5 - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
 
 **Highlights**
 
@@ -438,5 +447,5 @@ feature set and the same fixes in both apps, differing only where the interface
 itself differs (windows, menus and a tray icon here; key bindings and the
 `wg-tui doctor`/`setup` subcommands there). When one app releases a version, the
 other releases the matching version. Tags are `v<version>` (for example
-`v1.5.5`), and the changelog ([CHANGELOG.md](../CHANGELOG.md)) is the
+`v1.6.0`), and the changelog ([CHANGELOG.md](../CHANGELOG.md)) is the
 authoritative per-version record.

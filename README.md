@@ -76,8 +76,8 @@ client while staying close to the tools Linux WireGuard users already know.
 - Shows a tunnel as a QR code for mobile import.
 - Copies interface and peer public keys.
 - Toggles start-on-boot using systemd `wg-quick@<name>` when systemd is present.
-- Toggles a helper-managed kill switch for active tunnels using Linux firewall
-  primitives.
+- Toggles a helper-managed kill switch for active tunnels using nftables
+  (preferred) or iptables/ip6tables.
 - Provides a tray menu on desktops with StatusNotifier/AppIndicator support.
 
 ### Editing and config

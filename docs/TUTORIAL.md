@@ -6,7 +6,7 @@ first tunnel in, connecting, reading the live status, putting a tunnel on your
 phone, and the small print (start-on-boot, editing, renaming, exporting,
 troubleshooting). No prior WireGuard experience is assumed.
 
-Tested against version 1.5.5.
+Tested against version 1.6.0.
 
 ---
 
@@ -247,7 +247,7 @@ the UI never stutters):
 | **Status / public key / listen port / addresses / DNS** | Interface card | The interface side of the tunnel. |
 | **Latest handshake** | Peer card | How long ago the peer last completed a handshake. A recent handshake means the link is alive. |
 | **Transfer** | Peer card | Total bytes received and sent over this peer. |
-| **Live speed** | Interface card | Real-time throughput, shown as `down <rate>/s   up <rate>/s`, derived from successive samples. |
+| **Live speed** | Interface card | Real-time throughput, shown as `↓ <rate>/s   ↑ <rate>/s`, derived from successive samples. |
 | **Connection health** | Interface card | A handshake-based summary: `OK (last handshake ... ago)` when the last handshake is under 3 minutes old, `stale (last handshake ... ago)` when older, or `waiting for handshake...` before the first one. |
 
 If an activation fails, the app explains the cause in plain language (for
@@ -358,7 +358,7 @@ file name is `wireguard-tunnels.zip`).
 | **Activate / Deactivate** | Interface card | `wg-quick up` / `down` for the selected tunnel | All |
 | **Show QR** | Detail pane | Display the tunnel as a QR code for the mobile app | All |
 | **Start on boot** | Detail pane | Toggle the `wg-quick@<name>` systemd unit | All |
-| **Kill switch** | Detail pane | Add/remove helper-managed iptables/ip6tables OUTPUT rules for an active tunnel | Advanced |
+| **Kill switch** | Detail pane | Toggle helper-managed firewall rules (nftables preferred; iptables fallback) to block non-tunnel traffic | Advanced |
 | **Copy** (public key) | Detail pane | Copy the interface public key to the clipboard | All |
 | **Edit** | Bottom action bar | Open the inline editor (form or config text) | All |
 | **Easy / Advanced** toggle | Bottom action bar, next to Edit | Switch between Easy and Advanced; remembered across runs | All |
@@ -456,7 +456,7 @@ not set up. Re-create it:
 ```
 
 If the installer reported "sudoers validation failed" or said a present
-`openresolv` was missing, update to **1.5.5** - that release puts `/usr/sbin` and
+`openresolv` was missing, update to **1.5.5** or later - that release puts `/usr/sbin` and
 `/sbin` on `PATH` after the root re-exec so it can find `visudo` and the
 `resolvconf` probe. The hint when the drop-in is skipped is to re-run
 `./install.sh --polkit`.
