@@ -627,63 +627,40 @@ fn fwmark(name: &str) -> Result<String, String> {
     }
 }
 
-/// Ensure the tunnel config has FwMark set; add it if missing.
+/// Ensure the tunnel config has FwMark set and the tunnel is active.
 fn ensure_tunnel_has_fwmark(name: &str) -> Result<(), String> {
     let cfg = read_config_text(name)?;
-    // If FwMark is already set, we're done.
-    if cfg.lines().any(|line| {
-        let lower = line.to_ascii_lowercase();
-        lower.starts_with("fwmark") || lower.starts_with("fwmark =")
-    }) {
+    let was_active = interface_active(name);
+    let already_has = cfg.lines().any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        lower.starts_with("fwmark") && lower.contains('=')
+    });
+    if already_has {
+        // FwMark already present; bring tunnel up if it isn't active yet.
+        if !was_active {
+            command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
+        }
         return Ok(());
     }
-    // Add FwMark = 51820 (a common choice; uses the listening port as a hint).
-    let mut new_cfg = cfg.clone();
+    // Add FwMark = 51820 (the default WireGuard port doubles as routing table).
+    let mut new_cfg = cfg;
     if !new_cfg.ends_with('\n') {
         new_cfg.push('\n');
     }
     new_cfg.push_str("FwMark = 51820\n");
-
-    // Save the updated config.
     backup_existing(name)?;
     atomic_write(&conf_path(name), &new_cfg)?;
     log_action(&format!("added FwMark to {name}"));
-
-    // Reactivate the tunnel if it was active.
-    if interface_active(name) {
+    // (Re)activate so the fwmark takes effect.
+    if was_active {
         command_output("wg-quick", &["down", name], None, Duration::from_secs(30))?;
-        command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
     }
+    command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
     Ok(())
 }
 
 fn kill_comment(name: &str) -> String {
     format!("wg-helper-killswitch:{name}")
-}
-
-fn iptables_rule_args<'a>(name: &'a str, mark: &'a str, comment: &'a str) -> Vec<&'a str> {
-    vec![
-        "OUTPUT",
-        "!",
-        "-o",
-        name,
-        "-m",
-        "mark",
-        "!",
-        "--mark",
-        mark,
-        "-m",
-        "addrtype",
-        "!",
-        "--dst-type",
-        "LOCAL",
-        "-m",
-        "comment",
-        "--comment",
-        comment,
-        "-j",
-        "REJECT",
-    ]
 }
 
 fn iptables_has_comment(tool_name: &str, comment: &str) -> bool {
@@ -692,57 +669,132 @@ fn iptables_has_comment(tool_name: &str, comment: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Remove every firewall rule that carries the killswitch comment (both tables).
+fn killswitch_flush(name: &str) {
+    let comment = kill_comment(name);
+    for tool_name in ["iptables", "ip6tables"] {
+        if !have_tool(tool_name) {
+            continue;
+        }
+        let Ok(out) = command_output(tool_name, &["-S", "OUTPUT"], None, Duration::from_secs(5))
+        else {
+            continue;
+        };
+        // Collect 1‑based rule numbers whose line contains our comment.
+        let mut nums: Vec<usize> = Vec::new();
+        let mut idx = 0usize;
+        for line in out.lines() {
+            if line.starts_with("-A OUTPUT ") {
+                idx += 1;
+                if line.contains(&comment) {
+                    nums.push(idx);
+                }
+            }
+        }
+        // Delete highest‑numbered first so earlier indices stay valid.
+        nums.sort_unstable_by(|a, b| b.cmp(a));
+        for n in nums {
+            let _ = command_output(
+                tool_name,
+                &["-D", "OUTPUT", &n.to_string()],
+                None,
+                Duration::from_secs(5),
+            );
+        }
+    }
+}
+
 fn killswitch_status(name: &str) -> Result<(), String> {
-    let enabled = iptables_has_comment("iptables", &kill_comment(name))
-        || iptables_has_comment("ip6tables", &kill_comment(name));
+    let comment = kill_comment(name);
+    let enabled =
+        iptables_has_comment("iptables", &comment) || iptables_has_comment("ip6tables", &comment);
     println!("{}", if enabled { "enabled" } else { "disabled" });
     Ok(())
 }
 
 fn killswitch_enable(name: &str) -> Result<(), String> {
-    // Ensure the tunnel config has FwMark; add it if missing and activate.
+    // 1. Ensure tunnel has FwMark and is active.
     ensure_tunnel_has_fwmark(name)?;
-
+    if !interface_active(name) {
+        return Err(format!("kill switch needs an active tunnel: {name}"));
+    }
     let mark = fwmark(name)?;
     let comment = kill_comment(name);
     if !have_tool("iptables") && !have_tool("ip6tables") {
         return Err("kill switch needs iptables or ip6tables".into());
     }
+    // 2. Remove any stale rules (old or new format).
+    killswitch_flush(name);
+    // 3. Insert permissive rules at the top of OUTPUT, then a catch‑all REJECT
+    //    at the end.  Order of insertion (last -I wins the top spot):
+    //      rule 1  ACCEPT  marked WireGuard UDP  (inserted 2nd)
+    //      rule 2  ACCEPT  loopback              (inserted 1st → top)
+    //      rule N  REJECT  everything else       (appended last)
     for tool_name in ["iptables", "ip6tables"] {
-        if !have_tool(tool_name) || iptables_has_comment(tool_name, &comment) {
+        if !have_tool(tool_name) {
             continue;
         }
-        let mut args = vec!["-I"];
-        let rule = iptables_rule_args(name, &mark, &comment);
-        args.extend(rule);
-        command_output(tool_name, &args, None, Duration::from_secs(10))?;
+        // Allow packets that carry the tunnel fwmark (WireGuard UDP encap).
+        command_output(
+            tool_name,
+            &[
+                "-I",
+                "OUTPUT",
+                "-m",
+                "mark",
+                "--mark",
+                &mark,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ],
+            None,
+            Duration::from_secs(10),
+        )?;
+        // Allow loopback (DNS resolvers, local services).
+        command_output(
+            tool_name,
+            &[
+                "-I",
+                "OUTPUT",
+                "-o",
+                "lo",
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ],
+            None,
+            Duration::from_secs(10),
+        )?;
+        // Reject anything that wasn't accepted above.
+        command_output(
+            tool_name,
+            &[
+                "-A",
+                "OUTPUT",
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "REJECT",
+            ],
+            None,
+            Duration::from_secs(10),
+        )?;
     }
     log_action(&format!("killswitch-enable {name}"));
     Ok(())
 }
 
 fn killswitch_disable(name: &str) -> Result<(), String> {
-    let comment = kill_comment(name);
-    for tool_name in ["iptables", "ip6tables"] {
-        if !have_tool(tool_name) {
-            continue;
-        }
-        // Verify tunnel is active to get fwmark; if not active, rule shouldn't exist anyway.
-        let Ok(mark) = fwmark(name) else {
-            continue;
-        };
-        // Reconstruct the exact rule to delete (matching what killswitch_enable creates).
-        let rule = iptables_rule_args(name, &mark, &comment);
-        // Try to delete all instances of this rule (in case multiple were added).
-        loop {
-            let mut args = vec!["-D", "OUTPUT"];
-            args.extend(rule.iter().copied());
-            match command_output(tool_name, &args, None, Duration::from_secs(10)) {
-                Ok(_) => {}      // Rule was deleted; try again to remove duplicates
-                Err(_) => break, // No more rules to delete
-            }
-        }
-    }
+    killswitch_flush(name);
     log_action(&format!("killswitch-disable {name}"));
     Ok(())
 }
