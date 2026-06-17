@@ -81,9 +81,9 @@ wireguard-gui
 
 WireGuard needs root to read `/etc/wireguard`, run `wg show`, and bring tunnels
 up and down. So that the app never nags you for a password on every status poll,
-all root actions go through **one small, auditable script, `wg-helper`**
+all root actions go through **one small, auditable Rust helper, `wg-helper`**
 (installed at `/usr/local/lib/wireguard-gui/wg-helper`). The installer
-authorises **only that script** to run without a password:
+authorises **only that helper** to run without a password:
 
 - **Default:** a `sudoers` drop-in scoped to the helper.
 - **`pkexec` fallback:** if no passwordless path is set up, the app falls back to
@@ -353,6 +353,7 @@ file name is `wireguard-tunnels.zip`).
 | **Activate / Deactivate** | Interface card | `wg-quick up` / `down` for the selected tunnel | All |
 | **Show QR** | Detail pane | Display the tunnel as a QR code for the mobile app | All |
 | **Start on boot** | Detail pane | Toggle the `wg-quick@<name>` systemd unit | All |
+| **Kill switch** | Detail pane | Add/remove helper-managed iptables/ip6tables OUTPUT rules for an active tunnel | Advanced |
 | **Copy** (public key) | Detail pane | Copy the interface public key to the clipboard | All |
 | **Edit** | Bottom action bar | Open the inline editor (form or config text) | All |
 | **Easy / Advanced** toggle | Bottom action bar, next to Edit | Switch between Easy and Advanced; remembered across runs | All |
@@ -373,19 +374,19 @@ file name is `wireguard-tunnels.zip`).
 The editor has two views, and a toggle to switch between them:
 
 - **Edit fields (form view)** - labelled Interface fields (Private key, Address,
-  DNS, Listen port, MTU) and a single Peer (Public key, Preshared key, Allowed
-  IPs, Endpoint, Persistent keepalive).
+  DNS, Listen port, MTU) and one or more Peer entries (Public key, Preshared
+  key, Allowed IPs, Endpoint, Persistent keepalive).
 - **Config text** - the raw `.conf` text.
 
 New tunnels open in the **form**; existing tunnels open in **config text** (so a
 hand-tuned config is never silently rewritten on open). Edits in either view stay
 in sync, and **Generate keypair** / **Generate PSK** update both.
 
-The form only maps a single peer and a fixed set of keys. For configs it cannot
-faithfully represent - a **second `[Peer]`**, `PostUp`/`PreUp`/`PostDown`/`PreDown`,
-`Table`, `SaveConfig`, or any other unmapped key - the editor stays in **config
-text** and refuses to switch to the form, telling you why, so it never drops the
-parts it cannot show. Edit those configs as raw text.
+The form maps the common Interface keys and multiple Peer sections. For configs
+it cannot faithfully represent - `PostUp`/`PreUp`/`PostDown`/`PreDown`, `Table`,
+`SaveConfig`, or any other unmapped key - the editor stays in **config text** and
+refuses to switch to the form, telling you why, so it never drops the parts it
+cannot show. Edit those configs as raw text.
 
 Other editor buttons: **Copy config** (copy the whole config to the clipboard),
 **Generate keypair**, **Generate PSK**, **Save** (validate then write), and

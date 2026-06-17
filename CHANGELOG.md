@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Rust `wg-helper` binary with the same fixed verb contract as the previous
+  helper.
+- Advanced-mode kill switch toggle backed by helper-managed iptables/ip6tables
+  rules for active tunnels.
+- Multi-peer structured editor support for common Interface/Peer fields.
+- aarch64 Linux release tarballs and Alpine/Void packaging templates.
+
 ### Changed
 - Reframed project docs and package metadata around the small native Linux
   WireGuard client model: plain `/etc/wireguard` configs, `wg`/`wg-quick`, no
@@ -15,7 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The helper now performs a second, privileged-boundary config shape check before
   save/rename, in addition to frontend validation.
 - Helper writes now make a best-effort `sync -f` before atomic rename.
+- Runtime helper command execution moved out of shell into Rust argv-based
+  process calls with fixed tool lookup and timeouts.
 - CI now runs negative helper-name validation tests.
+- CI now runs installer sanity checks for helper paths, sudoers validation, and
+  non-root build handoff.
 
 ## [1.5.4] - 2026-06-17
 

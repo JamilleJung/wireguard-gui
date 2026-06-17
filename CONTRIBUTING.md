@@ -28,7 +28,7 @@ without touching production configs, work in a throwaway VM or use a local test
 | `ui/app.slint` | The entire UI (Slint markup). |
 | `src/backend.rs` | Privilege handling, `wg` orchestration, config parse + validation. |
 | `src/main.rs` | Wires UI callbacks to the backend. |
-| `packaging/wg-helper` | The single privileged entry point (audited shell script). |
+| `src/bin/wg-helper.rs` | The single privileged entry point (audited Rust helper). |
 | `packaging/49-wireguard-gui.rules` | polkit rule (optional auth backend). |
 | `install.sh` | Universal build + install. |
 
@@ -42,15 +42,19 @@ cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
-bash -n install.sh        # and shellcheck packaging/wg-helper if you have it
+bash -n install.sh
+shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+bash tests/helper-validation.sh target/release/wg-helper
+bash tests/installer-sanity.sh
 ```
 
 Guidelines:
 
 - Keep the diff focused; match the surrounding style.
-- If you touch `wg-helper`, preserve the safety properties: fixed paths, strict
-  name validation (no path traversal), atomic writes, backups before
-  overwrite/delete, and the audit log. Add a line to `CHANGELOG.md`.
+- If you touch `src/bin/wg-helper.rs`, preserve the safety properties: fixed
+  paths, strict name validation (no path traversal), argv-based command
+  execution, atomic writes, backups before overwrite/delete, and the audit log.
+  Add a line to `CHANGELOG.md`.
 - UI changes: please attach a screenshot.
 - Be mindful of the **Slint quirk on GNOME/Wayland**: setting `background` on a
   `Window` (or any ancestor of a text input) makes `LineEdit`/`TextEdit` render

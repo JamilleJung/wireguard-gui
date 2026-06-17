@@ -14,8 +14,65 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  arm64-tarball:
+    name: Build aarch64 tarball
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Version from tag
+        id: ver
+        run: echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: cargo test
+        run: cargo test
+
+      - name: Smoke helper and CLI
+        run: |
+          ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
+          ./target/release/wireguard-gui --help >/dev/null
+          bash tests/helper-validation.sh target/release/wg-helper
+
+      - name: Build aarch64 tarball
+        run: |
+          V="${{ steps.ver.outputs.v }}"
+          D="wireguard-gui-${V}-aarch64-linux"
+          mkdir -p "$D"
+          cp target/release/wireguard-gui "$D/"
+          cp target/release/wg-helper "$D/"
+          cp packaging/wireguard-gui.desktop "$D/"
+          cp packaging/wireguard-gui.svg "$D/"
+          cp packaging/49-wireguard-gui.rules "$D/"
+          cp install.sh README.md LICENSE "$D/"
+          tar -czf "${D}.tar.gz" "$D"
+
+      - name: Upload aarch64 tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: wireguard-gui-aarch64-tarball
+          path: wireguard-gui-*-aarch64-linux.tar.gz
+          if-no-files-found: error
+
   release:
     name: Build artifacts & publish release
+    needs: arm64-tarball
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -50,10 +107,11 @@ jobs:
           ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
           ./target/release/wireguard-gui --help >/dev/null
           bash -n install.sh
-          bash -n packaging/wg-helper
           bash -n tests/helper-validation.sh
-          shellcheck -S warning install.sh packaging/wg-helper tests/helper-validation.sh
-          bash tests/helper-validation.sh
+          bash -n tests/installer-sanity.sh
+          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+          bash tests/helper-validation.sh target/release/wg-helper
+          bash tests/installer-sanity.sh
 
       # ---------------- binary tarball ----------------
       - name: Build binary tarball
@@ -62,12 +120,18 @@ jobs:
           D="wireguard-gui-${V}-x86_64-linux"
           mkdir -p "$D"
           cp target/release/wireguard-gui "$D/"
-          cp packaging/wg-helper "$D/"
+          cp target/release/wg-helper "$D/"
           cp packaging/wireguard-gui.desktop "$D/"
           cp packaging/wireguard-gui.svg "$D/"
           cp packaging/49-wireguard-gui.rules "$D/"
           cp install.sh README.md LICENSE "$D/"
           tar -czf "${D}.tar.gz" "$D"
+
+      - name: Download aarch64 tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: wireguard-gui-aarch64-tarball
+          path: .
 
       # ---------------- .deb ----------------
       - name: Build .deb
@@ -88,7 +152,7 @@ jobs:
                    "$APPDIR/usr/share/applications" \
                    "$APPDIR/usr/share/icons/hicolor/scalable/apps"
           cp target/release/wireguard-gui "$APPDIR/usr/bin/"
-          cp packaging/wg-helper "$APPDIR/usr/lib/wireguard-gui/"
+          cp target/release/wg-helper "$APPDIR/usr/lib/wireguard-gui/"
           cp packaging/wireguard-gui.desktop "$APPDIR/usr/share/applications/"
           cp packaging/wireguard-gui.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
           # Pinned linuxdeploy release + verified checksum (supply-chain hardening)

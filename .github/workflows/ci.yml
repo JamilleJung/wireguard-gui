@@ -52,8 +52,9 @@ jobs:
       - name: Shell lint the helper & installer
         run: |
           sudo apt-get install -y shellcheck
-          bash -n packaging/wg-helper
           bash -n install.sh
           bash -n tests/helper-validation.sh
-          shellcheck -S warning packaging/wg-helper install.sh tests/helper-validation.sh
-          bash tests/helper-validation.sh
+          bash -n tests/installer-sanity.sh
+          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+          bash tests/helper-validation.sh target/release/wg-helper
+          bash tests/installer-sanity.sh

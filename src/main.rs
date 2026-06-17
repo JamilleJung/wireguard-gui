@@ -320,19 +320,33 @@ fn set_psk(config: &str, key: &str) -> String {
     result
 }
 
-/// The structured fields shown in the form editor (Interface + a single Peer).
-#[derive(Default)]
+/// The structured peer fields shown in the form editor.
+#[derive(Clone, Default)]
+struct PeerFields {
+    peer_public_key: String,
+    preshared_key: String,
+    allowed_ips: String,
+    endpoint: String,
+    keepalive: String,
+}
+
+/// The structured fields shown in the form editor (Interface + N peers).
+#[derive(Clone, Default)]
 struct Fields {
     private_key: String,
     address: String,
     dns: String,
     listen_port: String,
     mtu: String,
-    peer_public_key: String,
-    preshared_key: String,
-    allowed_ips: String,
-    endpoint: String,
-    keepalive: String,
+    peers: Vec<PeerFields>,
+}
+
+impl Fields {
+    fn ensure_peer(&mut self) {
+        if self.peers.is_empty() {
+            self.peers.push(PeerFields::default());
+        }
+    }
 }
 
 /// Value to the right of the first `=` on a `key = value` line, trimmed.
@@ -353,9 +367,9 @@ fn line_key(line: &str) -> Option<String> {
 }
 
 /// Whether the form view can faithfully represent this config. The form maps a
-/// single peer and a fixed set of keys; anything else (a second [Peer],
-/// PostUp/PreUp/Table/SaveConfig/…, or an unknown section) would be silently
-/// dropped on a round-trip, so such configs must stay in raw-text mode.
+/// fixed set of Interface/Peer keys; scripts, routing directives, unknown keys,
+/// and unknown sections would be silently dropped on a round-trip, so such
+/// configs must stay in raw-text mode.
 fn form_representable(cfg: &str) -> bool {
     let mut peers = 0;
     let mut section = "";
@@ -396,13 +410,14 @@ fn form_representable(cfg: &str) -> bool {
             return false;
         }
     }
-    peers <= 1
+    peers > 0
 }
 
-/// Parse a raw config into the structured form fields (first peer only).
+/// Parse a raw config into the structured form fields.
 fn config_to_fields(cfg: &str) -> Fields {
     let mut f = Fields::default();
     let mut section = "";
+    let mut peer_idx: Option<usize> = None;
     for line in cfg.lines() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
@@ -411,10 +426,14 @@ fn config_to_fields(cfg: &str) -> Fields {
         let lower = t.to_ascii_lowercase();
         if lower.starts_with('[') {
             section = if lower.starts_with("[interface]") {
+                peer_idx = None;
                 "interface"
             } else if lower.starts_with("[peer]") {
+                f.peers.push(PeerFields::default());
+                peer_idx = Some(f.peers.len() - 1);
                 "peer"
             } else {
+                peer_idx = None;
                 "other"
             };
             continue;
@@ -433,18 +452,24 @@ fn config_to_fields(cfg: &str) -> Fields {
                 "mtu" => f.mtu = kv_value(t),
                 _ => {}
             },
-            // Only the first peer is mapped to the form.
-            "peer" => match key.as_str() {
-                "publickey" if f.peer_public_key.is_empty() => f.peer_public_key = kv_value(t),
-                "presharedkey" if f.preshared_key.is_empty() => f.preshared_key = kv_value(t),
-                "allowedips" if f.allowed_ips.is_empty() => f.allowed_ips = kv_value(t),
-                "endpoint" if f.endpoint.is_empty() => f.endpoint = kv_value(t),
-                "persistentkeepalive" if f.keepalive.is_empty() => f.keepalive = kv_value(t),
-                _ => {}
-            },
+            "peer" => {
+                let Some(idx) = peer_idx else { continue };
+                let Some(peer) = f.peers.get_mut(idx) else {
+                    continue;
+                };
+                match key.as_str() {
+                    "publickey" => peer.peer_public_key = kv_value(t),
+                    "presharedkey" => peer.preshared_key = kv_value(t),
+                    "allowedips" => peer.allowed_ips = kv_value(t),
+                    "endpoint" => peer.endpoint = kv_value(t),
+                    "persistentkeepalive" => peer.keepalive = kv_value(t),
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
+    f.ensure_peer();
     f
 }
 
@@ -461,42 +486,96 @@ fn fields_to_config(f: &Fields) -> String {
     push(&mut s, "DNS", &f.dns);
     push(&mut s, "ListenPort", &f.listen_port);
     push(&mut s, "MTU", &f.mtu);
-    s.push_str("\n[Peer]\n");
-    push(&mut s, "PublicKey", &f.peer_public_key);
-    push(&mut s, "PresharedKey", &f.preshared_key);
-    push(&mut s, "AllowedIPs", &f.allowed_ips);
-    push(&mut s, "Endpoint", &f.endpoint);
-    push(&mut s, "PersistentKeepalive", &f.keepalive);
+    let mut peers = f.peers.clone();
+    if peers.is_empty() {
+        peers.push(PeerFields::default());
+    }
+    for peer in peers {
+        s.push_str("\n[Peer]\n");
+        push(&mut s, "PublicKey", &peer.peer_public_key);
+        push(&mut s, "PresharedKey", &peer.preshared_key);
+        push(&mut s, "AllowedIPs", &peer.allowed_ips);
+        push(&mut s, "Endpoint", &peer.endpoint);
+        push(&mut s, "PersistentKeepalive", &peer.keepalive);
+    }
     s
 }
 
 /// Push parsed fields into the editor's form properties.
-fn apply_fields(ed: &EditWindow, f: &Fields) {
+fn apply_fields(ed: &EditWindow, f: &Fields, requested_peer: usize) {
+    let mut f = f.clone();
+    f.ensure_peer();
+    let idx = requested_peer.min(f.peers.len() - 1);
+    let peer = &f.peers[idx];
     ed.set_f_private_key(f.private_key.clone().into());
     ed.set_f_address(f.address.clone().into());
     ed.set_f_dns(f.dns.clone().into());
     ed.set_f_listen_port(f.listen_port.clone().into());
     ed.set_f_mtu(f.mtu.clone().into());
-    ed.set_f_peer_public_key(f.peer_public_key.clone().into());
-    ed.set_f_preshared_key(f.preshared_key.clone().into());
-    ed.set_f_allowed_ips(f.allowed_ips.clone().into());
-    ed.set_f_endpoint(f.endpoint.clone().into());
-    ed.set_f_keepalive(f.keepalive.clone().into());
+    ed.set_peer_index(idx as i32);
+    ed.set_peer_count(f.peers.len() as i32);
+    ed.set_peer_label(format!("{} of {}", idx + 1, f.peers.len()).into());
+    ed.set_f_peer_public_key(peer.peer_public_key.clone().into());
+    ed.set_f_preshared_key(peer.preshared_key.clone().into());
+    ed.set_f_allowed_ips(peer.allowed_ips.clone().into());
+    ed.set_f_endpoint(peer.endpoint.clone().into());
+    ed.set_f_keepalive(peer.keepalive.clone().into());
 }
 
-/// Read the editor's form properties back into a `Fields`.
+/// Read the editor's form properties back into `Fields`, preserving peers that
+/// are not currently visible in the form.
 fn read_fields(ed: &EditWindow) -> Fields {
+    let mut f = config_to_fields(&ed.get_config_text());
+    f.ensure_peer();
+    f.private_key = ed.get_f_private_key().to_string();
+    f.address = ed.get_f_address().to_string();
+    f.dns = ed.get_f_dns().to_string();
+    f.listen_port = ed.get_f_listen_port().to_string();
+    f.mtu = ed.get_f_mtu().to_string();
+    let idx = (ed.get_peer_index().max(0) as usize).min(f.peers.len() - 1);
+    f.peers[idx] = PeerFields {
+        peer_public_key: ed.get_f_peer_public_key().to_string(),
+        preshared_key: ed.get_f_preshared_key().to_string(),
+        allowed_ips: ed.get_f_allowed_ips().to_string(),
+        endpoint: ed.get_f_endpoint().to_string(),
+        keepalive: ed.get_f_keepalive().to_string(),
+    };
+    f
+}
+
+fn commit_form_to_config(ed: &EditWindow) -> Option<String> {
+    if !form_representable(&ed.get_config_text()) {
+        return None;
+    }
+    let cfg = fields_to_config(&read_fields(ed));
+    ed.set_public_key(backend::public_key_for_config(&cfg).into());
+    ed.set_config_text(cfg.clone().into());
+    Some(cfg)
+}
+
+fn switch_editor_peer(ed: &EditWindow, requested_peer: usize) {
+    let Some(cfg) = commit_form_to_config(ed) else {
+        return;
+    };
+    let fields = config_to_fields(&cfg);
+    apply_fields(ed, &fields, requested_peer);
+}
+
+#[allow(dead_code)]
+fn single_peer_fields(ed: &EditWindow) -> Fields {
     Fields {
         private_key: ed.get_f_private_key().to_string(),
         address: ed.get_f_address().to_string(),
         dns: ed.get_f_dns().to_string(),
         listen_port: ed.get_f_listen_port().to_string(),
         mtu: ed.get_f_mtu().to_string(),
-        peer_public_key: ed.get_f_peer_public_key().to_string(),
-        preshared_key: ed.get_f_preshared_key().to_string(),
-        allowed_ips: ed.get_f_allowed_ips().to_string(),
-        endpoint: ed.get_f_endpoint().to_string(),
-        keepalive: ed.get_f_keepalive().to_string(),
+        peers: vec![PeerFields {
+            peer_public_key: ed.get_f_peer_public_key().to_string(),
+            preshared_key: ed.get_f_preshared_key().to_string(),
+            allowed_ips: ed.get_f_allowed_ips().to_string(),
+            endpoint: ed.get_f_endpoint().to_string(),
+            keepalive: ed.get_f_keepalive().to_string(),
+        }],
     }
 }
 
@@ -561,10 +640,10 @@ fn open_editor(
     // New tunnels open in the structured form; existing ones in raw-text mode
     // (so a hand-tuned config is never silently rewritten on open). Either way,
     // populate the form fields from the starting config.
-    apply_fields(&ed, &config_to_fields(&text));
+    apply_fields(&ed, &config_to_fields(&text), 0);
     // New tunnels open in the form; existing ones in raw text. Never open the
-    // form for a config the form can't represent (multi-peer / scripts / Table),
-    // or saving would silently drop those parts.
+    // form for a config the form can't represent (scripts / Table / unknown
+    // keys), or saving would silently drop those parts.
     ed.set_form_mode(is_new && form_representable(&text));
 
     // Live-update the public key as the config is edited.
@@ -583,13 +662,7 @@ fn open_editor(
         let edw = ed.as_weak();
         ed.on_fields_changed(move || {
             if let Some(ed) = edw.upgrade() {
-                // Never clobber a config the form can't represent.
-                if !form_representable(&ed.get_config_text()) {
-                    return;
-                }
-                let cfg = fields_to_config(&read_fields(&ed));
-                ed.set_public_key(backend::public_key_for_config(&cfg).into());
-                ed.set_config_text(cfg.into());
+                let _ = commit_form_to_config(&ed);
             }
         });
     }
@@ -601,24 +674,78 @@ fn open_editor(
         ed.on_switch_mode(move |to_form| {
             let Some(ed) = edw.upgrade() else { return };
             if to_form {
-                // Refuse to enter the form for configs it can't represent —
+                // Refuse to enter the form for configs it can't represent -
                 // keep raw text so nothing is dropped, and say why.
                 if !form_representable(&ed.get_config_text()) {
                     ed.set_warning(
-                        "This config has parts the form can't show (extra peers, \
-                         PostUp/Table, …). Edit it as Config text."
+                        "This config has parts the form can't show (PostUp/Table, \
+                         unknown keys, ...). Edit it as Config text."
                             .into(),
                     );
                     ed.set_form_mode(false);
                     return;
                 }
-                apply_fields(&ed, &config_to_fields(&ed.get_config_text()));
+                let idx = ed.get_peer_index().max(0) as usize;
+                apply_fields(&ed, &config_to_fields(&ed.get_config_text()), idx);
             } else {
-                let cfg = fields_to_config(&read_fields(&ed));
-                ed.set_public_key(backend::public_key_for_config(&cfg).into());
-                ed.set_config_text(cfg.into());
+                let _ = commit_form_to_config(&ed);
             }
             ed.set_form_mode(to_form);
+        });
+    }
+
+    // Multi-peer form navigation. The raw config remains the source of truth;
+    // each navigation commits the current peer first so peer edits are not lost.
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_prev(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            let idx = ed.get_peer_index().max(0) as usize;
+            switch_editor_peer(&ed, idx.saturating_sub(1));
+        });
+    }
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_next(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            let idx = ed.get_peer_index().max(0) as usize;
+            switch_editor_peer(&ed, idx + 1);
+        });
+    }
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_add(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            if !form_representable(&ed.get_config_text()) {
+                return;
+            }
+            let mut fields = read_fields(&ed);
+            fields.peers.push(PeerFields::default());
+            let idx = fields.peers.len() - 1;
+            let cfg = fields_to_config(&fields);
+            ed.set_public_key(backend::public_key_for_config(&cfg).into());
+            ed.set_config_text(cfg.into());
+            apply_fields(&ed, &fields, idx);
+        });
+    }
+    {
+        let edw = ed.as_weak();
+        ed.on_peer_remove(move || {
+            let Some(ed) = edw.upgrade() else { return };
+            if !form_representable(&ed.get_config_text()) {
+                return;
+            }
+            let mut fields = read_fields(&ed);
+            if fields.peers.len() <= 1 {
+                return;
+            }
+            let idx = (ed.get_peer_index().max(0) as usize).min(fields.peers.len() - 1);
+            fields.peers.remove(idx);
+            let next = idx.min(fields.peers.len() - 1);
+            let cfg = fields_to_config(&fields);
+            ed.set_public_key(backend::public_key_for_config(&cfg).into());
+            ed.set_config_text(cfg.into());
+            apply_fields(&ed, &fields, next);
         });
     }
 
@@ -707,7 +834,8 @@ fn open_editor(
             match backend::generate_keypair() {
                 Ok((priv_k, pub_k)) => {
                     let updated = set_private_key(&ed.get_config_text(), &priv_k);
-                    apply_fields(&ed, &config_to_fields(&updated));
+                    let idx = ed.get_peer_index().max(0) as usize;
+                    apply_fields(&ed, &config_to_fields(&updated), idx);
                     ed.set_config_text(updated.into());
                     ed.set_public_key(pub_k.clone().into());
                     ed.set_error("".into());
@@ -730,8 +858,19 @@ fn open_editor(
             }
             match backend::generate_psk() {
                 Ok(psk) => {
-                    let updated = set_psk(&ed.get_config_text(), &psk);
-                    apply_fields(&ed, &config_to_fields(&updated));
+                    let idx = ed.get_peer_index().max(0) as usize;
+                    let updated = if ed.get_form_mode() && form_representable(&ed.get_config_text())
+                    {
+                        let mut fields = read_fields(&ed);
+                        fields.ensure_peer();
+                        let peer_idx = idx.min(fields.peers.len() - 1);
+                        fields.peers[peer_idx].preshared_key = psk;
+                        let cfg = fields_to_config(&fields);
+                        apply_fields(&ed, &fields, peer_idx);
+                        cfg
+                    } else {
+                        set_psk(&ed.get_config_text(), &psk)
+                    };
                     ed.set_config_text(updated.into());
                     ed.set_error("".into());
                     ed.set_warning("New preshared key generated.".into());
@@ -787,6 +926,7 @@ fn to_slint_detail(d: backend::Detail) -> TunnelDetail {
         name: d.name.into(),
         active: d.active,
         autostart: d.autostart,
+        killswitch: d.killswitch,
         public_key: d.public_key.into(),
         listen_port: d.listen_port.into(),
         addresses: d.addresses.into(),
@@ -1201,6 +1341,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ---- toggle helper-managed firewall kill switch ----
+    {
+        let w = ui.as_weak();
+        ui.on_set_killswitch(move |name, on| {
+            let ui = w.unwrap();
+            match backend::set_killswitch(&name, on) {
+                Ok(()) => set_status(
+                    &ui,
+                    format!(
+                        "{} kill switch for {name}",
+                        if on { "Enabled" } else { "Disabled" }
+                    ),
+                ),
+                Err(e) => set_status(&ui, format!("Kill switch change failed: {e}")),
+            }
+            load_detail(&ui, &name);
+        });
+    }
+
     // ---- copy text to the clipboard ----
     {
         let w = ui.as_weak();
@@ -1571,14 +1730,24 @@ mod form_tests {
     }
 
     #[test]
-    fn not_representable_when_multi_peer_or_scripts() {
-        // Two peers — the form maps only one.
+    fn representable_multi_peer_config() {
         let two = format!(
             "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
              [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n\n\
              [Peer]\nPublicKey = {KEY}\nAllowedIPs = 10.1.0.0/24\n"
         );
-        assert!(!form_representable(&two));
+        assert!(form_representable(&two));
+        let fields = config_to_fields(&two);
+        assert_eq!(fields.peers.len(), 2);
+        assert_eq!(fields.peers[1].allowed_ips, "10.1.0.0/24");
+        let rebuilt = fields_to_config(&fields);
+        let reparsed = config_to_fields(&rebuilt);
+        assert_eq!(reparsed.peers.len(), 2);
+        assert_eq!(reparsed.peers[1].allowed_ips, "10.1.0.0/24");
+    }
+
+    #[test]
+    fn not_representable_when_scripts_or_unknown_routing_fields() {
         // PostUp runs as root and is not a form field.
         let scripted = format!(
             "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nPostUp = iptables -A FORWARD -i %i -j ACCEPT\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
@@ -1596,16 +1765,17 @@ mod form_tests {
         let f = config_to_fields(&single_peer());
         assert_eq!(f.private_key, KEY);
         assert_eq!(f.address, "10.0.0.2/24");
-        assert_eq!(f.peer_public_key, KEY);
-        assert_eq!(f.allowed_ips, "0.0.0.0/0");
-        assert_eq!(f.endpoint, "vpn.example.com:51820");
+        assert_eq!(f.peers.len(), 1);
+        assert_eq!(f.peers[0].peer_public_key, KEY);
+        assert_eq!(f.peers[0].allowed_ips, "0.0.0.0/0");
+        assert_eq!(f.peers[0].endpoint, "vpn.example.com:51820");
         // Rebuilt config is itself representable and re-parses to the same fields.
         let rebuilt = fields_to_config(&f);
         assert!(form_representable(&rebuilt));
         let f2 = config_to_fields(&rebuilt);
         assert_eq!(f2.private_key, f.private_key);
-        assert_eq!(f2.endpoint, f.endpoint);
-        assert_eq!(f2.allowed_ips, f.allowed_ips);
+        assert_eq!(f2.peers[0].endpoint, f.peers[0].endpoint);
+        assert_eq!(f2.peers[0].allowed_ips, f.peers[0].allowed_ips);
     }
 
     #[test]
@@ -1618,6 +1788,6 @@ mod form_tests {
         assert!(!form_representable(&cfg)); // PrivateKeyFile/EndpointBackup are unknown
         let f = config_to_fields(&cfg);
         assert_eq!(f.private_key, KEY); // exact PrivateKey, not PrivateKeyFile
-        assert_eq!(f.endpoint, ""); // EndpointBackup must not become Endpoint
+        assert_eq!(f.peers[0].endpoint, ""); // EndpointBackup must not become Endpoint
     }
 }

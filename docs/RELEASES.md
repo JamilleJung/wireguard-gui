@@ -24,15 +24,15 @@ ships the following artifacts:
 | `wireguard-gui_*_amd64.deb` | Debian / Ubuntu / Mint - `sudo apt install ./wireguard-gui_*_amd64.deb` (sets up the polkit rule automatically) |
 | `wireguard-gui-*-x86_64.AppImage` | Any distro - `chmod +x *.AppImage && ./*.AppImage` |
 | `wireguard-gui-*-x86_64-linux.tar.gz` | Portable binary bundle plus `install.sh` |
+| `wireguard-gui-*-aarch64-linux.tar.gz` | Portable Linux aarch64 bundle plus `install.sh` |
 | `SHA256SUMS` | Checksums for all of the above |
 | `SHA256SUMS.minisig` | The minisign signature over `SHA256SUMS` |
 | `minisign.pub` | The minisign public key (also committed in the repo) |
 
-Prebuilt binaries are **x86_64 only**. Other architectures can build from
-source with `./install.sh` (see the README). Note that the `.deb`, AppImage and
-tarball do **not** bundle WireGuard itself - they still need your distro's
-`wireguard-tools` present (the `.deb` is the smoothest because it pulls in the
-desktop and polkit integration).
+The release workflow builds portable x86_64 and aarch64 tarballs. The `.deb` and
+AppImage paths remain x86_64-focused. The packages do **not** bundle WireGuard
+itself - they still need your distro's `wireguard-tools` present (the `.deb` is
+the smoothest because it pulls in the desktop and polkit integration).
 
 ---
 
@@ -94,9 +94,8 @@ released, the code has to pass:
 - a release **build** of the binary.
 - a **smoke test** that `wireguard-gui --version` and `--help` start and exit
   cleanly without opening a window.
-- `shellcheck` on the privileged helper (`wg-helper`) and on `install.sh` - CI
-  **hard-fails on shellcheck warnings**, because those scripts run as root.
-- negative helper tests that prove traversal-style tunnel names are rejected
+- shell syntax/lint checks on `install.sh` and helper validation scripts.
+- Rust helper unit tests and negative helper tests that prove traversal-style tunnel names are rejected
   before any filesystem access.
 
 **Tag-triggered release.** Pushing a version tag (for example `v1.5.4`) kicks off
@@ -110,6 +109,20 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
 ---
 
 ## Version history
+
+### Next - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
+
+**Highlights**
+
+- The privileged runtime helper is now Rust (`src/bin/wg-helper.rs`) with the
+  same fixed verb contract.
+- Advanced mode can toggle a tunnel-scoped kill switch for active tunnels using
+  helper-managed iptables/ip6tables rules.
+- The structured editor now supports multiple peers for common Interface/Peer
+  fields while keeping hooks, routing directives, and unknown keys in raw text.
+- Release automation now builds portable x86_64 and aarch64 Linux tarballs.
+- Alpine APKBUILD and Void template packaging starts are included for
+  maintainers.
 
 Newest first. Each entry lists the theme, what you actually get ("Highlights"),
 and any upgrade notes worth knowing.

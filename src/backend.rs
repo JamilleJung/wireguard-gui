@@ -1,7 +1,7 @@
-//! Talks to WireGuard through the privileged `wg-helper` script.
+//! Talks to WireGuard through the privileged `wg-helper` binary.
 //!
 //! Everything that needs root (reading /etc/wireguard, `wg show`, `wg-quick`)
-//! goes through `helper()`, which shells out as:
+//! goes through `helper()`, which runs the helper as:
 //!   * nothing            — when we are already root
 //!   * `sudo -n wg-helper`— the normal case (NOPASSWD sudoers drop-in)
 //!   * `pkexec wg-helper` — fallback when sudo is not set up (prompts)
@@ -100,9 +100,18 @@ fn helper_path() -> &'static str {
                 return adj.to_string_lossy().into_owned();
             }
         }
-        // dev fallback: <manifest>/packaging/wg-helper
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging/wg-helper");
-        dev.to_string_lossy().into_owned()
+        // dev fallback: a helper built from src/bin/wg-helper.rs.
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for rel in ["target/debug/wg-helper", "target/release/wg-helper"] {
+            let dev = manifest.join(rel);
+            if dev.is_file() {
+                return dev.to_string_lossy().into_owned();
+            }
+        }
+        manifest
+            .join("target/debug/wg-helper")
+            .to_string_lossy()
+            .into_owned()
     })
 }
 
@@ -197,6 +206,7 @@ pub struct Detail {
     pub name: String,
     pub active: bool,
     pub autostart: bool,
+    pub killswitch: bool,
     pub public_key: String,
     pub listen_port: String,
     pub addresses: String,
@@ -376,6 +386,7 @@ pub fn get_detail(name: &str) -> Detail {
         name: name.to_string(),
         active,
         autostart: is_autostart(name),
+        killswitch: is_killswitch(name),
         public_key,
         listen_port,
         addresses: parsed.address.unwrap_or_default(),
@@ -846,6 +857,30 @@ pub fn is_autostart(name: &str) -> bool {
 /// Enable/disable starting the tunnel on boot.
 pub fn set_autostart(name: &str, on: bool) -> Result<(), String> {
     helper(&[if on { "enable" } else { "disable" }, name], None).map(|_| ())
+}
+
+/// Whether the helper-installed firewall kill switch is present for this tunnel.
+pub fn is_killswitch(name: &str) -> bool {
+    helper(&["killswitch-status", name], None)
+        .map(|s| s.trim() == "enabled")
+        .unwrap_or(false)
+}
+
+/// Enable/disable the helper-installed firewall kill switch. This is intentionally
+/// not persistent: it uses standard firewall rules and no daemon.
+pub fn set_killswitch(name: &str, on: bool) -> Result<(), String> {
+    helper(
+        &[
+            if on {
+                "killswitch-enable"
+            } else {
+                "killswitch-disable"
+            },
+            name,
+        ],
+        None,
+    )
+    .map(|_| ())
 }
 
 /// True if the config contains directives that `wg-quick` runs as **root** on

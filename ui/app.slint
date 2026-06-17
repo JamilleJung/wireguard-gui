@@ -28,6 +28,7 @@ export struct TunnelDetail {
     name: string,
     active: bool,
     autostart: bool,
+    killswitch: bool,
     public-key: string,
     listen-port: string,
     addresses: string,
@@ -371,6 +372,7 @@ export component MainWindow inherits Window {
     callback import-qr();
     callback show-qr(string);
     callback set-autostart(string, bool);
+    callback set-killswitch(string, bool);
     callback copy-text(string);
     callback show-about();
     callback persist-live(string);
@@ -648,6 +650,26 @@ export component MainWindow inherits Window {
                             Rectangle { horizontal-stretch: 1; }
                         }
 
+                        if !root.easy-mode: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: ""; width: 132px; }
+                            CheckBox {
+                                text: "Kill switch";
+                                checked: root.detail.killswitch;
+                                enabled: root.detail.active;
+                                toggled => {
+                                    root.set-killswitch(root.detail.name, self.checked);
+                                }
+                            }
+                            Text {
+                                text: root.detail.active ? "blocks non-local traffic outside this tunnel" : "requires an active tunnel";
+                                color: #6a6a6a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
                         // Activate / Deactivate + Show QR — below the details,
                         // aligned under the value column (matches the Windows client).
                         HorizontalLayout {
@@ -866,9 +888,12 @@ export component EditWindow inherits Window {
     in property <string> warning: "";
     in property <string> public-key: "";
 
-    // Form view: structured fields (single peer). `form-mode` toggles between
-    // the form and the raw config text.
+    // Form view: structured fields. `form-mode` toggles between the form and
+    // the raw config text; peer-index/peer-count drive multi-peer navigation.
     in-out property <bool> form-mode: false;
+    in-out property <int> peer-index: 0;
+    in property <int> peer-count: 1;
+    in property <string> peer-label: "1 of 1";
     in-out property <string> f-private-key;
     in-out property <string> f-address;
     in-out property <string> f-dns;
@@ -887,6 +912,10 @@ export component EditWindow inherits Window {
     callback config-changed(string);
     callback fields-changed();
     callback switch-mode(bool);
+    callback peer-prev();
+    callback peer-next();
+    callback peer-add();
+    callback peer-remove();
     callback copy(string);
 
     // Force the light palette so the text inputs use dark-text-on-light fills —
@@ -1029,11 +1058,41 @@ export component EditWindow inherits Window {
                         edited => { root.fields-changed(); }
                     }
                     Rectangle { height: 4px; }
-                    Text {
-                        text: "Peer";
-                        font-size: 13px;
-                        font-weight: 700;
-                        color: #1b1b1b;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Peer";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: #1b1b1b;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.peer-label;
+                            color: #6a6a6a;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        PushButton {
+                            text: "Prev";
+                            enabled: root.peer-index > 0;
+                            clicked => { root.peer-prev(); }
+                        }
+                        PushButton {
+                            text: "Next";
+                            enabled: root.peer-index + 1 < root.peer-count;
+                            clicked => { root.peer-next(); }
+                        }
+                        PushButton {
+                            text: "Add peer";
+                            clicked => { root.peer-add(); }
+                        }
+                        PushButton {
+                            text: "Remove";
+                            enabled: root.peer-count > 1;
+                            clicked => { root.peer-remove(); }
+                        }
                     }
                     FormField {
                         label: "Public key";

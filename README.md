@@ -6,7 +6,7 @@ A native Linux desktop client for WireGuard.
 
 Built with Rust + Slint. No Electron. No WebView. No NetworkManager layer. It
 manages plain `/etc/wireguard/*.conf` tunnels through `wg` and `wg-quick`, and
-keeps root operations behind a small auditable helper.
+keeps root operations behind a small auditable Rust helper.
 
 ![Screenshot of the active tunnel view](docs/screenshot.png)
 
@@ -74,14 +74,16 @@ client while staying close to the tools Linux WireGuard users already know.
 - Shows a tunnel as a QR code for mobile import.
 - Copies interface and peer public keys.
 - Toggles start-on-boot using systemd `wg-quick@<name>` when systemd is present.
+- Toggles a helper-managed kill switch for active tunnels using Linux firewall
+  primitives.
 - Provides a tray menu on desktops with StatusNotifier/AppIndicator support.
 
 ### Editing and config
 
 - Opens a native editor window for tunnel configs.
 - Supports raw config editing.
-- Supports a structured form for simple single-peer configs.
-- Keeps multi-peer or advanced configs in raw-text mode so fields are not lost.
+- Supports a structured form for simple multi-peer configs.
+- Keeps advanced configs in raw-text mode when fields cannot be represented.
 - Generates WireGuard keypairs with `wg genkey` / `wg pubkey`.
 - Generates preshared keys with `wg genpsk`.
 - Copies generated public keys and config text.
@@ -148,6 +150,7 @@ The release page normally includes:
 
 - `wireguard-gui_*_amd64.deb`
 - `wireguard-gui-*-x86_64-linux.tar.gz`
+- `wireguard-gui-*-aarch64-linux.tar.gz`
 - `wireguard-gui-*-x86_64.AppImage` when the AppImage job succeeds
 - `SHA256SUMS`
 - `SHA256SUMS.minisig` when signing is configured
@@ -235,8 +238,8 @@ wireguard-gui --help
 
 The left pane lists tunnels. The right pane shows interface and peer details.
 Use Add Tunnel to import a file, import a QR image, or create a new tunnel. Use
-Edit for raw config editing and the structured single-peer form. Use Advanced
-mode for export, running config, and save-live operations.
+Edit for raw config editing and the structured multi-peer form. Use Advanced
+mode for export, running config, kill switch, and save-live operations.
 
 ## Security and privilege model
 
@@ -252,7 +255,8 @@ Designed with a small auditable privilege boundary:
 The helper exposes fixed verbs only:
 
 `list`, `active`, `read`, `dump`, `up`, `down`, `save`, `rename`, `delete`,
-`enable`, `disable`, `is-enabled`, `sync`, `showconf`, `persist`, and `log`.
+`enable`, `disable`, `is-enabled`, `sync`, `showconf`, `persist`, `log`,
+`killswitch-status`, `killswitch-enable`, and `killswitch-disable`.
 
 Helper hardening:
 
@@ -270,6 +274,8 @@ Helper hardening:
   and rename into place.
 - Overwrite, rename, and delete create timestamped backups first.
 - Mutating actions are logged without private keys.
+- Kill switch verbs require an active `wg-quick` tunnel with a WireGuard fwmark,
+  use iptables/ip6tables when present, and do not install a daemon.
 
 Important WireGuard reality: `wg-quick` supports `PreUp`, `PostUp`, `PreDown`,
 and `PostDown`. Those hooks run as root when a tunnel is activated. The editor
@@ -291,10 +297,10 @@ This is MIT open source. Fork it to hack on your own ideas.
 | `src/main.rs` | App startup, tray, UI callbacks, live polling |
 | `src/backend.rs` | Helper client, WireGuard orchestration, parsing, validation |
 | `src/doctor.rs` | Read-only system checks and setup hints |
-| `packaging/wg-helper` | Privileged helper and fixed verb surface |
+| `src/bin/wg-helper.rs` | Privileged Rust helper and fixed verb surface |
 | `install.sh` | Distro-aware source installer |
 | `tests/helper-validation.sh` | Shell tests for helper name validation |
-| `packaging/` | Desktop entry, icon, polkit, AUR/RPM metadata |
+| `packaging/` | Desktop entry, icon, polkit, AUR/RPM/APK/Void metadata |
 | `.github/workflows/` | CI and release automation |
 
 ### Build and test
@@ -305,9 +311,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 bash -n install.sh
-bash -n packaging/wg-helper
-shellcheck -S warning install.sh packaging/wg-helper tests/helper-validation.sh
-bash tests/helper-validation.sh
+bash -n tests/installer-sanity.sh
+shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+bash tests/helper-validation.sh target/release/wg-helper
+bash tests/installer-sanity.sh
 ```
 
 ### Run from source
@@ -320,6 +327,7 @@ During development, the binary can use the in-tree helper. You can also point it
 at a helper explicitly:
 
 ```sh
+cargo build --bin wg-helper
 WG_HELPER=/absolute/path/to/wg-helper cargo run
 ```
 
@@ -341,6 +349,8 @@ not log private keys.
 - The helper prompts every time: run `./install.sh` or `./install.sh --polkit`
   so the installed helper path is authorized.
 - The helper is missing: install the `.deb` or run `./install.sh`.
+- Kill switch fails: the tunnel must be active and the system needs iptables or
+  ip6tables available.
 - Start-on-boot is unavailable: the system does not provide `systemctl`.
 - The Log tab is empty: `journalctl` is missing or the system is not using
   journald.
@@ -354,24 +364,23 @@ not log private keys.
 ## Known limitations
 
 - Start-on-boot is systemd-only.
-- Prebuilt release artifacts are currently x86_64.
-- The structured editor intentionally handles simple single-peer configs only.
-  Multi-peer and advanced configs are edited as raw text.
+- The release workflow builds x86_64 and aarch64 tarballs; `.deb` and AppImage
+  coverage remains x86_64-focused.
+- The structured editor handles the common Interface/Peer fields for multiple
+  peers; configs with hooks, `Table`, `SaveConfig`, or unknown directives stay
+  in raw text.
 - The tray icon depends on desktop StatusNotifier/AppIndicator support.
 - AppImage privileged actions need a system helper for the smooth path.
-- The helper is still shell-based; a Rust helper is a realistic future hardening
-  step.
+- The kill switch is intentionally helper-managed firewall state, not a daemon
+  or persistent firewall manager.
 - The project does not bundle WireGuard tools or kernel modules.
 
 ## Roadmap
 
-- Rust helper with the same verb contract.
-- Better multi-peer structured editing.
-- Kill-switch support that stays close to Linux firewall primitives.
-- More release architectures, especially aarch64, when CI/release packaging is
-  ready.
-- More helper and installer tests.
+- nftables backend for kill switch on systems that do not ship iptables.
+- More helper and installer tests, including firewall rule dry-run coverage.
 - More distro packages where maintainers want them.
+- Better docs and screenshots for multi-peer editing and firewall behavior.
 
 ## License
 

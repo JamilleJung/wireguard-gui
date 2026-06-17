@@ -20,8 +20,9 @@ This is an early project; only the latest release (and `main`) receive fixes.
 ## Security model
 
 `wireguard-gui` runs as your normal user. Anything requiring root is funnelled
-through one small, auditable script - **`packaging/wg-helper`** - which is the
-*entire* privileged surface. The GUI binary itself never runs as root.
+through one small, auditable Rust helper - **`src/bin/wg-helper.rs`**, installed
+as `wg-helper` - which is the privileged surface. The GUI binary itself never
+runs as root.
 
 Hardening in `wg-helper`:
 
@@ -39,6 +40,9 @@ Hardening in `wg-helper`:
   the old config to `/etc/wireguard/.backup/<name>.conf.<timestamp>`.
 - **Audit log.** Mutating actions are logged to the journal
   (`journalctl -t wireguard-gui`).
+- **Kill switch scope.** The helper can add/remove tunnel-scoped
+  iptables/ip6tables OUTPUT rules for an active `wg-quick` tunnel. It does not
+  install a daemon or own the system firewall permanently.
 
 ### Privilege escalation backend
 
@@ -61,10 +65,9 @@ importing a `.conf` like running a script: only do it from sources you trust.
 
 ### Notes & scope
 
-- The privileged surface is the `wg-helper` script: fixed `PATH` and `WG_DIR`,
+- The privileged surface is the `wg-helper` binary: fixed `PATH` and `WG_DIR`,
   strict name validation (no shell metacharacters, no path traversal), and no
-  use of `eval`/shell-interpolation of inputs (the Rust side spawns it with
-  `execve`-style argv, never a shell).
+  use of `eval`/shell-interpolation of inputs.
 - Config files contain private keys in clear text (same as upstream WireGuard
   tools). They are stored `0600`, root-owned, in `/etc/wireguard` (mode `700`).
   The editor displays them in clear text by design. The audit log records
