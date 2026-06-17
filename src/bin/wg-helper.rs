@@ -386,6 +386,11 @@ fn read_config(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Read tunnel config and return the text (internal helper).
+fn read_config_text(name: &str) -> Result<String, String> {
+    fs::read_to_string(conf_path(name)).map_err(|e| format!("read {name}: {e}"))
+}
+
 fn dump(name: &str) -> Result<(), String> {
     if let Ok(out) = command_output("wg", &["show", name, "dump"], None, Duration::from_secs(5)) {
         print!("{out}");
@@ -624,7 +629,7 @@ fn fwmark(name: &str) -> Result<String, String> {
 
 /// Ensure the tunnel config has FwMark set; add it if missing.
 fn ensure_tunnel_has_fwmark(name: &str) -> Result<(), String> {
-    let cfg = read_config(name).map_err(|_| "couldn't read tunnel config")?;
+    let cfg = read_config_text(name)?;
     // If FwMark is already set, we're done.
     if cfg.lines().any(|line| {
         let lower = line.to_ascii_lowercase();
