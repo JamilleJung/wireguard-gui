@@ -230,13 +230,15 @@ Launch from the application menu or from a terminal:
 
 ```sh
 wireguard-gui
+# or the shorter alias:
+wg-gui
 ```
 
 Non-window CLI paths for scripts:
 
 ```sh
-wireguard-gui --version
-wireguard-gui --help
+wireguard-gui --version   # or: wg-gui --version
+wireguard-gui --help      # or: wg-gui --help
 ```
 
 The left pane lists tunnels. The right pane shows interface and peer details.
@@ -366,8 +368,7 @@ not log private keys.
   AppIndicator host. GNOME usually needs an extension.
 - A tunnel managed elsewhere behaves strangely: stop managing the same WireGuard
   interface through NetworkManager and this app at the same time.
-- Blank window or invisible inputs: make sure OpenGL/EGL and the Slint runtime
-  dependencies are installed. The packaged build and installer install these.
+- Blank window or invisible inputs: make sure OpenGL/EGL and the Slint runtime dependencies are installed. The packaged build and installer install these.
 
 ## Known limitations
 

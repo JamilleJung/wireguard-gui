@@ -71,10 +71,12 @@ git clone https://github.com/JamilleJung/wireguard-gui.git && cd wireguard-gui &
 On an unrecognised distro it tells you exactly which packages to install
 manually, then still builds and installs.
 
-When it finishes, launch **WireGuard** from your application menu, or run:
+When it finishes, launch **WireGuard** from your application menu, or run either:
 
 ```sh
 wireguard-gui
+# or
+wg-gui
 ```
 
 ### The no-sudo / passwordless explanation

@@ -147,7 +147,7 @@ Install 'sudo' manually and re-run, or run wireguard-gui as root."
 # ---------------------------------------------------------------------------
 if [ "$ACTION" = "uninstall" ]; then
     say "Removing wireguard-gui"
-    as_root rm -f "$BIN" "$HELPER" "$DESKTOP" "$SUDOERS" "$POLKIT_RULE" "$ICON_DIR/wireguard-gui.svg"
+    as_root rm -f "$BIN" "$PREFIX/bin/wg-gui" "$HELPER" "$DESKTOP" "$SUDOERS" "$POLKIT_RULE" "$ICON_DIR/wireguard-gui.svg"
     as_root rm -rf "$LIBDIR"
     command -v update-desktop-database >/dev/null 2>&1 && \
         as_root update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
@@ -306,6 +306,7 @@ build_app
 say "Installing into $PREFIX"
 as_root install -d "$LIBDIR" "$ICON_DIR" "$PREFIX/bin" "$PREFIX/share/applications"
 as_root install -m755 "$HERE/target/release/wireguard-gui" "$BIN"
+as_root ln -sf "$BIN" "$PREFIX/bin/wg-gui"
 as_root install -m755 "$HERE/target/release/wg-helper" "$HELPER"
 as_root install -m644 "$HERE/packaging/wireguard-gui.desktop" "$DESKTOP"
 [ -f "$HERE/packaging/wireguard-gui.svg" ] && \
