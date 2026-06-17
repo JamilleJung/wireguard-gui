@@ -217,14 +217,18 @@ component DetailRow inherits HorizontalLayout {
     if root.copyable: HorizontalLayout {
         spacing: 2px;
         horizontal-stretch: 1;
+        alignment: start;
         TouchArea {
             horizontal-stretch: 1;
+            vertical-stretch: 1;
             clicked => { root.copy(root.copy-value); }
             Text {
                 text: root.value;
                 color: #1b1b1b;
                 font-size: 13px;
                 wrap: word-wrap;
+                horizontal-alignment: left;
+                vertical-alignment: top;
             }
         }
         Text {

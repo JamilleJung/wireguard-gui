@@ -109,4 +109,17 @@ mod tests {
         let long = sanitize_import_name("averylongtunnelname1234567");
         assert!(long.chars().count() <= 15);
     }
+
+    #[test]
+    fn rejects_empty_and_single_dot_names() {
+        assert!(validate_tunnel_name("").is_err());
+        assert!(validate_tunnel_name(".").is_err());
+        assert!(validate_tunnel_name("..").is_err());
+    }
+
+    #[test]
+    fn allows_max_length_names() {
+        assert!(validate_tunnel_name("a12345678901234").is_ok()); // 15 chars
+        assert!(validate_tunnel_name("a123456789012345").is_err()); // 16 chars
+    }
 }

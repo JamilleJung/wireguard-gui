@@ -1139,6 +1139,67 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_name_edge_cases() {
+        // Valid names at the boundary.
+        assert!(name_ok("a")); // single char
+        assert!(name_ok("a1")); // alphanumeric
+        assert!(name_ok("a.b")); // dots ok
+        assert!(name_ok("a-b")); // hyphens ok
+        assert!(name_ok("a_b")); // underscores ok
+        assert!(name_ok("a12345678901234")); // 15 chars max
+        // Invalid edge cases.
+        assert!(!name_ok("")); // empty
+        assert!(!name_ok("a123456789012345")); // 16 chars — too long
+        assert!(!name_ok("-a")); // leading hyphen
+        assert!(!name_ok(".a")); // leading dot
+        assert!(!name_ok("a..b")); // double dot
+    }
+
+    #[test]
+    fn config_validation_edge_cases() {
+        // Empty config
+        assert!(validate_config_text("").is_err());
+        // Only comment
+        assert!(validate_config_text("# just a comment").is_err());
+        // Interface with no private key
+        assert!(validate_config_text("[Interface]\nAddress = 10.0.0.1/24\n").is_err());
+        // Peer with no public key
+        assert!(
+            validate_config_text(&format!(
+                "[Interface]\nPrivateKey = {KEY}\n\n[Peer]\nAllowedIPs = 0.0.0.0/0\n"
+            ))
+            .is_err()
+        );
+        // Peer with no allowed IPs
+        assert!(
+            validate_config_text(&format!(
+                "[Interface]\nPrivateKey = {KEY}\n\n[Peer]\nPublicKey = {KEY}\n"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn redact_handles_empty_and_comments() {
+        assert_eq!(redact(""), "");
+        assert_eq!(redact("# nothing secret"), "# nothing secret");
+        // Case insensitivity for PrivateKey
+        let out = redact("privatekey = secret\nPRESHAREDKEY = also-secret");
+        assert!(out.contains("<redacted>"));
+        assert!(!out.contains("secret"));
+        assert!(!out.contains("also-secret"));
+    }
+
+    #[test]
+    fn atomic_write_paths_are_fixed() {
+        // Paths must always stay under /etc/wireguard
+        assert!(conf_path("wg0").starts_with("/etc/wireguard"));
+        assert!(conf_path("home-vpn").starts_with("/etc/wireguard"));
+        // No escaping even with tricky names (validation would reject these anyway)
+        assert_eq!(conf_path("wg0"), Path::new("/etc/wireguard/wg0.conf"));
+    }
+
+    #[test]
     fn killswitch_nft_rule_structure() {
         // Verify the nftables rules we generate have valid structure
         // (comment is essential for later cleanup).
