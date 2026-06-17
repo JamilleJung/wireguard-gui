@@ -643,12 +643,12 @@ fn ensure_tunnel_has_fwmark(name: &str) -> Result<(), String> {
         new_cfg.push('\n');
     }
     new_cfg.push_str("FwMark = 51820\n");
-    
+
     // Save the updated config.
     backup_existing(name)?;
     atomic_write(&conf_path(name), &new_cfg)?;
     log_action(&format!("added FwMark to {name}"));
-    
+
     // Reactivate the tunnel if it was active.
     if interface_active(name) {
         command_output("wg-quick", &["down", name], None, Duration::from_secs(30))?;
@@ -702,7 +702,7 @@ fn killswitch_status(name: &str) -> Result<(), String> {
 fn killswitch_enable(name: &str) -> Result<(), String> {
     // Ensure the tunnel config has FwMark; add it if missing and activate.
     ensure_tunnel_has_fwmark(name)?;
-    
+
     let mark = fwmark(name)?;
     let comment = kill_comment(name);
     if !have_tool("iptables") && !have_tool("ip6tables") {
@@ -738,7 +738,7 @@ fn killswitch_disable(name: &str) -> Result<(), String> {
             let mut args = vec!["-D", "OUTPUT"];
             args.extend(rule.iter().copied());
             match command_output(tool_name, &args, None, Duration::from_secs(10)) {
-                Ok(_) => {} // Rule was deleted; try again to remove duplicates
+                Ok(_) => {}      // Rule was deleted; try again to remove duplicates
                 Err(_) => break, // No more rules to delete
             }
         }
