@@ -6,17 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.6.1] - 2026-06-18
+## [1.6.2] - 2026-06-18
 
 ### Added
-- SSH auto-allowlist: kill switch now auto-allows established SSH return traffic
-  when `$SSH_CONNECTION` is detected, preventing accidental session lock-out.
-- Firewall rule dry-run tests: nftables rule structure, iptables comment safety,
-  SSH port parsing, and FwMark detection logic.
+- SSH auto-allowlist: kill switch auto-allows established SSH return traffic
+  when `$SSH_CONNECTION` is detected.
+- Terminal QR cell-aspect-ratio auto-detection (square vs 2:1 cells).
+- TUI `+` key in Advanced mode to quick-add a `[Peer]` section via `$EDITOR`.
+- Validation tests: tunnel name edge cases, max length, import sanitization.
+- More helper tests: killswitch rule structure, iptables comment safety,
+  SSH port parsing, FwMark detection, config validation edges.
 
 ### Changed
+- GUI: `DetailRow` copy area uses clickable text + ⧉ icon instead of large
+  "Copy" button; fixed text centering regression.
 - GUI: `StatusDot` component extracted to `ui/components/statusdot.slint`.
 - TUI: `popup_area` helper moved to `src/ui/helpers.rs`.
+- Log limits increased to 1000 lines (was 300/200).
+
+### Fixed
+- Speed/throughput could get stuck at 0 when active detection from dump failed.
+- `DetailRow` text centering caused by `TouchArea` default alignment.
 
 
 ## [1.6.0] - 2026-06-17
