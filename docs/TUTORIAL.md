@@ -6,7 +6,7 @@ first tunnel in, connecting, reading the live status, putting a tunnel on your
 phone, and the small print (start-on-boot, editing, renaming, exporting,
 troubleshooting). No prior WireGuard experience is assumed.
 
-Tested against version 1.6.0.
+Tested against version 1.6.3.
 
 ---
 

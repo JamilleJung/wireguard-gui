@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-06-18
+
+### Fixed
+- Clippy warnings eliminated across all targets; `-D warnings` enforced in CI.
+- Terminal QR no longer fails with "too large" on wide terminals.
+- `DetailRow` text centering regression caused by copy-area `TouchArea`.
+
+### Changed
+- Markdown documentation fully audited and synchronized with v1.6.3 codebase.
+
 ## [1.6.2] - 2026-06-18
 
 ### Added

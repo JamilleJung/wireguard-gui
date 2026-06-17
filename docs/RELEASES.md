@@ -119,6 +119,20 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
 - **Speed display** — uses ↓ ↑ icons instead of "down"/"up"; throughput calculation is more robust (no longer gated on active flag).
 - **More tests** — kill switch rule generation tests: nftables handle extraction and iptables rule numbering.
 
+## 1.6.3 (2026-06-18) — Clippy clean, QR fix, docs sync
+
+- Zero clippy warnings across all targets (`-D warnings` enforced).
+- Terminal QR simplified to half-block only (auto-detect caused false "too large").
+- All markdown documentation audited and synchronized.
+
+## 1.6.2 (2026-06-18) — SSH allowlist, 92 tests, copy/log UX
+
+- **SSH auto-allowlist.** Kill switch now auto-allows established SSH traffic when `$SSH_CONNECTION` is set.
+- **Copy UX.** Click the value text or ⧉ icon to copy — no more large "Copy" button.
+- **Log tab.** 1000 journal lines, `TextEdit` read-only for text selection and scrolling.
+- **Speed fix.** Reliable active detection via `wg show interfaces`; ↓ ↑ icons.
+- **92 tests** across both repos (helper + main).
+
 ## 1.5.5 - Rust helper, kill switch, multi-peer editor, and aarch64 tarballs
 
 **Highlights**
