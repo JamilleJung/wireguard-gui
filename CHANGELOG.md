@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-06-18
+
+### Added
+- SSH auto-allowlist: kill switch now auto-allows established SSH return traffic
+  when `$SSH_CONNECTION` is detected, preventing accidental session lock-out.
+- Firewall rule dry-run tests: nftables rule structure, iptables comment safety,
+  SSH port parsing, and FwMark detection logic.
+
+### Changed
+- GUI: `StatusDot` component extracted to `ui/components/statusdot.slint`.
+- TUI: `popup_area` helper moved to `src/ui/helpers.rs`.
+
+
 ## [1.6.0] - 2026-06-17
 
 ### Added

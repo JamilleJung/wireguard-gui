@@ -389,7 +389,6 @@ not log private keys.
 ## Roadmap
 
 - More helper and installer tests, including firewall rule dry-run coverage.
-- SSH-auto-detect for kill switch (auto-allowlist when connected via SSH).
 - More distro packages where maintainers want them (COPR, official Alpine/Void).
 - GUI component split for improved hackability (`ui/components/`).
 - Improved screenshots covering multi-peer editing and kill switch workflows.
