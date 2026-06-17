@@ -2,7 +2,7 @@
 name = "wireguard-gui"
 version = "1.5.4"
 edition = "2021"
-description = "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client."
+description = "A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick."
 license = "MIT"
 repository = "https://github.com/JamilleJung/wireguard-gui"
 readme = "README.md"
@@ -40,7 +40,7 @@ copyright = "2026 wireguard-gui contributors"
 license-file = ["LICENSE", "0"]
 section = "net"
 priority = "optional"
-extended-description = "A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client: tunnel list, live status, activate/deactivate, import, and an inline config editor with validation."
+extended-description = "A native Linux GUI for managing plain WireGuard tunnels through wg and wg-quick: tunnel list, live status, activate/deactivate, import, QR, editing with validation, and a small privileged helper."
 depends = "$auto, wireguard-tools, libfontconfig1, libxkbcommon0, libgl1, libegl1, libdbus-1-3, polkit-1 | policykit-1"
 assets = [
     ["target/release/wireguard-gui", "usr/bin/", "755"],

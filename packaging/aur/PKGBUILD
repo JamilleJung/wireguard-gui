@@ -2,7 +2,7 @@
 pkgname=wireguard-gui
 pkgver=1.5.4
 pkgrel=1
-pkgdesc="A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard for Windows client"
+pkgdesc="A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick"
 arch=('x86_64')
 url="https://github.com/JamilleJung/wireguard-gui"
 license=('MIT')

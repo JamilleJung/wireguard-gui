@@ -69,6 +69,98 @@ backup_existing() {
     log "backup ${n} -> ${dst}"
 }
 
+validate_config_file() {
+    local file="$1"
+    awk '
+    function trim(s) { gsub(/^[ \t\r]+|[ \t\r]+$/, "", s); return s }
+    function is_key(s) {
+        return length(s) == 44 && substr(s, 44, 1) == "=" && substr(s, 1, 43) !~ /[^A-Za-z0-9+\/]/
+    }
+    function bad(msg) {
+        if (!failed) {
+            print "wg-helper: invalid config: " msg > "/dev/stderr"
+        }
+        failed = 1
+        exit 42
+    }
+    function finish_peer() {
+        if (!in_peer) return
+        if (!peer_pub) bad("peer " peer_no " missing PublicKey")
+        if (!peer_allowed) bad("peer " peer_no " missing AllowedIPs")
+    }
+    BEGIN { section = ""; in_peer = 0; peer_no = 0; failed = 0 }
+    {
+        line = trim($0)
+        if (line == "" || line ~ /^#/) next
+        if (line ~ /^\[.*\]$/) {
+            name = tolower(trim(substr(line, 2, length(line) - 2)))
+            if (name == "peer") {
+                finish_peer()
+                section = "peer"
+                in_peer = 1
+                peer_no++
+                have_peer = 1
+                peer_pub = 0
+                peer_allowed = 0
+                next
+            }
+            if (name == "interface") {
+                finish_peer()
+                section = "interface"
+                in_peer = 0
+                have_iface = 1
+                next
+            }
+            section = "other"
+            in_peer = 0
+            next
+        }
+        pos = index(line, "=")
+        if (pos == 0) next
+        key = tolower(trim(substr(line, 1, pos - 1)))
+        val = trim(substr(line, pos + 1))
+        if (section == "interface") {
+            if (key == "privatekey") {
+                if (!is_key(val)) bad("[Interface] PrivateKey must be a 44-character WireGuard key")
+                have_private = 1
+            }
+            if (key == "address") {
+                if (val == "") bad("[Interface] Address is empty")
+                have_address = 1
+            }
+        } else if (section == "peer") {
+            if (key == "publickey") {
+                if (!is_key(val)) bad("peer " peer_no " PublicKey must be a 44-character WireGuard key")
+                peer_pub = 1
+            }
+            if (key == "presharedkey" && val != "" && !is_key(val)) {
+                bad("peer " peer_no " PresharedKey must be a 44-character WireGuard key")
+            }
+            if (key == "allowedips") {
+                if (val == "") bad("peer " peer_no " AllowedIPs is empty")
+                peer_allowed = 1
+            }
+        }
+    }
+    END {
+        if (failed) exit 42
+        finish_peer()
+        if (!have_iface) bad("missing [Interface]")
+        if (!have_private) bad("[Interface] missing PrivateKey")
+        if (!have_address) bad("[Interface] missing Address")
+        if (!have_peer) bad("missing [Peer]")
+    }
+    ' "$file" || {
+        local rc=$?
+        [ "$rc" -eq 42 ] && exit 2
+        die "config validation failed"
+    }
+}
+
+sync_file_if_possible() {
+    sync -f "$1" 2>/dev/null || true
+}
+
 verb="${1:-}"
 [ -n "$verb" ] || die "no verb"
 shift || true
@@ -111,13 +203,16 @@ case "$verb" in
         # Content from stdin. Back up first, then write atomically (temp + rename)
         # so a crash mid-write can never leave a truncated config.
         validate_name "${1:-}"
-        backup_existing "$1"
         umask 077
         tmp="${WG_DIR}/.$1.conf.tmp.$$"
         trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
         cat > "$tmp"
         chmod 600 "$tmp"
+        validate_config_file "$tmp"
+        backup_existing "$1"
+        sync_file_if_possible "$tmp"
         mv -f "$tmp" "${WG_DIR}/$1.conf"
+        sync_file_if_possible "$WG_DIR"
         trap - EXIT
         log "save $1"
         ;;
@@ -140,6 +235,12 @@ case "$verb" in
         dst="${WG_DIR}/$2.conf"
         [ -f "$src" ] || die "no such tunnel: $1"
         [ ! -e "$dst" ] || die "target already exists: $2"
+        umask 077
+        tmp="${WG_DIR}/.$2.conf.tmp.$$"
+        trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
+        cat > "$tmp"
+        chmod 600 "$tmp"
+        validate_config_file "$tmp"
         current="$(T 5 wg show interfaces 2>/dev/null || true)"
         case " $current " in
             *" $1 "*) T 30 wg-quick down "$1" || die "rename requires the active tunnel to stop: $1" ;;
@@ -151,12 +252,9 @@ case "$verb" in
         else
             enabled=0
         fi
-        umask 077
-        tmp="${WG_DIR}/.$2.conf.tmp.$$"
-        trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
-        cat > "$tmp"
-        chmod 600 "$tmp"
+        sync_file_if_possible "$tmp"
         mv -f "$tmp" "$dst"
+        sync_file_if_possible "$WG_DIR"
         trap - EXIT
         if [ "$enabled" -eq 1 ] && have_systemctl; then
             systemctl enable "wg-quick@$2" >/dev/null 2>&1 || true

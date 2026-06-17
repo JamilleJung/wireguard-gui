@@ -20,10 +20,10 @@ Requires:       wireguard-tools
 Requires:       polkit
 
 %description
-A native Linux GUI for managing WireGuard tunnels, modelled on the WireGuard
-for Windows client: tunnel list with live status, activate/deactivate, import
-from .conf or QR, an inline editor with validation, key generation, live
-throughput, and a small auditable privileged helper (sudoers/polkit).
+A native Linux GUI for managing plain WireGuard tunnels through wg and wg-quick:
+tunnel list with live status, activate/deactivate, import from .conf or QR, an
+inline editor with validation, key generation, live throughput, and a small
+auditable privileged helper (sudoers/polkit).
 
 %prep
 %autosetup

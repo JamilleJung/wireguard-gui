@@ -12,12 +12,11 @@ Tested against version 1.5.4.
 
 ## 1. What this is and who it's for
 
-`wireguard-gui` is a native Linux GUI (built in Rust with the Slint toolkit)
-that looks and behaves like the WireGuard for Windows client: a tunnel list on
-the left, an Interface/Peer detail pane on the right, and one-click
-Activate/Deactivate. It drives the standard `wg-quick` path - your tunnels are
-plain `.conf` files in `/etc/wireguard` - and deliberately bypasses
-NetworkManager.
+`wireguard-gui` is a native Linux GUI (built in Rust with the Slint toolkit) for
+plain WireGuard configs: a tunnel list on the left, an Interface/Peer detail
+pane on the right, and direct Activate/Deactivate actions. It drives the
+standard `wg-quick` path - your tunnels are plain `.conf` files in
+`/etc/wireguard` - and deliberately bypasses NetworkManager.
 
 It is for anyone who wants to use WireGuard on a Linux desktop without typing
 `wg-quick` commands by hand. The overwhelming majority of users are **clients**:
@@ -298,16 +297,17 @@ editor.
   config first - keys, addresses, `AllowedIPs` (parsed as real IP/CIDR),
   endpoints (including bracketed IPv6 such as `[2001:db8::1]:51820`). If anything
   is wrong, the editor shows the error and does **not** write the file, so typos
-  are caught here instead of at activation time.
+  are caught here instead of at activation time. The helper also performs a
+  second basic config-shape check before replacing files.
 - **Live apply to a running tunnel.** If the tunnel is currently up, saving
   applies the change live with `wg syncconf` - peer sessions are **not** dropped.
   The status line confirms `Saved <name> (applied live)`. Some fields
   (`Address`, `DNS`, `MTU`, routes/`Table`) are wg-quick-only and cannot be synced
   live; in that case the app saves the file and tells you to reconnect to apply
   them.
-- **Backups.** Every save (overwrite) and every delete first copies the current
-  config to `/etc/wireguard/.backup/<name>.conf.<timestamp>` (mode 600), and the
-  action is recorded in the audit log.
+- **Backups.** Every save (overwrite), rename, and delete first copies the
+  current config to `/etc/wireguard/.backup/<name>.conf.<timestamp>` (mode 600),
+  and the action is recorded in the audit log.
 - **Script warning.** If a config contains `PostUp`/`PreUp`/`PostDown`/`PreDown`
   (commands `wg-quick` runs as root on activation), the editor shows an amber
   warning. Only save it if you trust the source.

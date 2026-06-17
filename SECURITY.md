@@ -31,9 +31,12 @@ Hardening in `wg-helper`:
   `^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$` and may never be `.`/`..` or contain `..`,
   so a name can't escape the config directory.
 - **Atomic writes.** Configs are written to a temp file and `rename()`d into
-  place (mode `600`), so a crash can't leave a truncated config.
-- **Reversible destruction.** Every overwrite and delete first copies the old
-  config to `/etc/wireguard/.backup/<name>.conf.<timestamp>`.
+  place (mode `600`), with best-effort `sync -f`, so a crash is less likely to
+  leave a truncated config.
+- **Privileged-boundary config validation.** The UI validates configs before
+  save, and the helper performs a second basic shape check before save/rename.
+- **Reversible destruction.** Every overwrite, rename, and delete first copies
+  the old config to `/etc/wireguard/.backup/<name>.conf.<timestamp>`.
 - **Audit log.** Mutating actions are logged to the journal
   (`journalctl -t wireguard-gui`).
 

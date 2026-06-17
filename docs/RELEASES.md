@@ -96,10 +96,12 @@ released, the code has to pass:
   cleanly without opening a window.
 - `shellcheck` on the privileged helper (`wg-helper`) and on `install.sh` - CI
   **hard-fails on shellcheck warnings**, because those scripts run as root.
+- negative helper tests that prove traversal-style tunnel names are rejected
+  before any filesystem access.
 
 **Tag-triggered release.** Pushing a version tag (for example `v1.5.4`) kicks off
-the release workflow, which builds the `.deb`, the AppImage and the portable
-tarball, generates `SHA256SUMS`, signs it with minisign to produce
+the release workflow, which runs the same smoke and shell validation, builds the
+`.deb`, the AppImage and the portable tarball, generates `SHA256SUMS`, signs it with minisign to produce
 `SHA256SUMS.minisig`, attaches `minisign.pub`, and publishes a GitHub Release.
 Supply-chain hygiene is built in: third-party GitHub Actions are pinned to commit
 SHAs, the AppImage tool (`linuxdeploy`) is pinned to a release with a verified

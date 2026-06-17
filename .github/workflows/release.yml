@@ -31,7 +31,7 @@ jobs:
             build-essential pkg-config \
             libfontconfig-dev libxkbcommon-dev \
             libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev \
-            file desktop-file-utils
+            file desktop-file-utils shellcheck
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -44,6 +44,16 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+      - name: Smoke and shell validation
+        run: |
+          ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
+          ./target/release/wireguard-gui --help >/dev/null
+          bash -n install.sh
+          bash -n packaging/wg-helper
+          bash -n tests/helper-validation.sh
+          shellcheck -S warning install.sh packaging/wg-helper tests/helper-validation.sh
+          bash tests/helper-validation.sh
 
       # ---------------- binary tarball ----------------
       - name: Build binary tarball

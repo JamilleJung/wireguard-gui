@@ -54,4 +54,6 @@ jobs:
           sudo apt-get install -y shellcheck
           bash -n packaging/wg-helper
           bash -n install.sh
-          shellcheck -S warning packaging/wg-helper install.sh
+          bash -n tests/helper-validation.sh
+          shellcheck -S warning packaging/wg-helper install.sh tests/helper-validation.sh
+          bash tests/helper-validation.sh
