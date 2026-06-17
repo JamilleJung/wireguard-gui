@@ -92,7 +92,7 @@ released, the code has to pass:
 - `cargo clippy` - lint warnings are treated as failures.
 - `cargo test` - unit tests run on every push and pull request.
 - a release **build** of the binary.
-- a **smoke test** that `wireguard-gui --version` and `--help` start and exit
+- a **smoke test** that `wireguard-gui --version` (or `wg-gui --version`) and `--help` start and exit
   cleanly without opening a window.
 - shell syntax/lint checks on `install.sh` and helper validation scripts.
 - Rust helper unit tests and negative helper tests that prove traversal-style tunnel names are rejected

@@ -12,7 +12,7 @@ Tested against version 1.6.0.
 
 ## 1. What this is and who it's for
 
-`wireguard-gui` is a native Linux GUI (built in Rust with the Slint toolkit) for
+`wireguard-gui` (and its shorter alias `wg-gui`) is a native Linux GUI (built in Rust with the Slint toolkit) for
 plain WireGuard configs: a tunnel list on the left, an Interface/Peer detail
 pane on the right, and direct Activate/Deactivate actions. It drives the
 standard `wg-quick` path - your tunnels are plain `.conf` files in
@@ -63,7 +63,7 @@ git clone https://github.com/JamilleJung/wireguard-gui.git && cd wireguard-gui &
    if `cargo` is not already present.
 3. **Builds** the release binary - as the invoking user, never as root, so build
    scripts never run with root privilege.
-4. **Installs** the binary (`wireguard-gui`), the privileged helper (`wg-helper`),
+4. **Installs** the binary (`wireguard-gui`, also linked as `wg-gui`), the privileged helper (`wg-helper`),
    a `.desktop` launcher and an icon.
 5. **Sets up passwordless privileged access** so the app never asks for your
    password at runtime (details below).
@@ -404,9 +404,9 @@ Other editor buttons: **Copy config** (copy the whole config to the clipboard),
 The GUI has no subcommands - it is launched as a windowed app. The only CLI is:
 
 ```sh
-wireguard-gui            # launch the app
-wireguard-gui --version  # print the version and exit
-wireguard-gui --help     # show usage and exit
+wireguard-gui            # launch the app (or: wg-gui)
+wireguard-gui --version  # print the version and exit (or: wg-gui --version)
+wireguard-gui --help     # show usage and exit (or: wg-gui --help)
 ```
 
 (There is no `doctor` or `setup` subcommand; that is the terminal sibling
