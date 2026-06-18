@@ -20,7 +20,7 @@ path = "src/bin/wg-helper.rs"
 slint = "1"
 rfd = "0.15"
 libc = "0.2"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 qrcode = { version = "0.14", default-features = false }
 rqrr = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
