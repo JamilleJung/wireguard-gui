@@ -161,6 +161,32 @@ minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4
 When in doubt, **build from source** - `cargo build --release` is reproducible
 on any supported distro with the Rust toolchain and Slint dev libraries.
 
+### 🧾 Dependency advisories (accepted, documented)
+
+`cargo audit` runs in CI against the RUSTSEC database. A few advisories are
+flagged on **transitive build-time / proc-macro / optional** dependencies - none
+of which are compiled into the runtime binary:
+
+- `ansi_term` and `atty` come from a build-time codegen step inside the `ksni`
+  tray crate (`dbus-codegen` → `clap v2`);
+- `bincode` and `paste` come from the Slint UI framework and its image-codec
+  compiler step.
+
+These are **unmaintained / soundness-lint advisories, not exploitable
+vulnerabilities**, and they live in upstream crates this project does not
+control. Eliminating them today would require replacing the entire UI framework,
+or pulling a much heavier *runtime* dependency (`tokio`, a C `appindicator`, …)
+into the app to drop a *build-time* warning - a net increase in real attack
+surface. They are therefore listed as documented `--ignore` entries in the audit
+gate, which **still fails on any real or new vulnerability**. Dependabot watches
+the crate and Action pins, so the ignores can be removed as soon as a clean
+upstream fix is available.
+
+To see what a shipped binary *actually* contains (the audit gate scans the full
+lockfile, including non-shipping deps), every release binary embeds an SBOM via
+`cargo auditable build` - run `cargo audit bin <binary>` to audit exactly what
+was compiled in.
+
 ## 📝 Notes
 
 - The privileged surface is the `wg-helper` binary only. The GUI binary runs

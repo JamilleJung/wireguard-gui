@@ -106,6 +106,15 @@ Supply-chain hygiene is built in: third-party GitHub Actions are pinned to commi
 SHAs, the AppImage tool (`linuxdeploy`) is pinned to a release with a verified
 SHA-256, and the job aborts if the `.deb` or checksums are missing.
 
+CI also runs `cargo audit` against the RUSTSEC advisory database. A handful of
+advisories are flagged on transitive **build-time / proc-macro / optional**
+dependencies of Slint and `ksni` (`ansi_term`, `atty`, `bincode`, `paste`) -
+none ship in the runtime binary and none are exploitable. They are documented
+`--ignore` entries (the gate still fails on real or new vulnerabilities), and
+every release binary embeds an SBOM via `cargo auditable build`, so
+`cargo audit bin <file>` audits exactly what was compiled in. Dependabot watches
+for upstream fixes so the ignores can be removed once a clean update lands.
+
 ---
 
 ## 📋 Version history

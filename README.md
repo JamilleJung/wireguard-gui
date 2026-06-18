@@ -291,6 +291,21 @@ genuinely need a hook, edit the file under `/etc/wireguard` directly as root.
 
 QR and zip export contain private keys. Treat them like the config file itself.
 
+### 🧾 Dependency advisories
+
+`cargo audit` (run in CI) flags a few **unmaintained / soundness** advisories on
+transitive **build-time / proc-macro / optional** dependencies of the Slint UI
+framework and the `ksni` tray crate (`ansi_term`, `atty`, `bincode`, `paste`).
+**None of them ship in the runtime binary, and none are exploitable** - they are
+build-script, proc-macro, or optional-and-disabled crates inside upstream code we
+do not control. Removing them today would mean replacing the UI framework, or
+pulling a heavier *runtime* dependency (`tokio`, a C `appindicator`) just to
+silence a *build-time* warning - a net loss. So they are documented `--ignore`
+entries in the audit gate, which still fails on any real or new vulnerability,
+and Dependabot watches for upstream fixes so the ignores can be dropped later.
+Every release binary embeds an SBOM, so `cargo audit bin <binary>` audits exactly
+what was compiled in. See [SECURITY.md](SECURITY.md).
+
 ## 🔧 Hacking on it
 
 This is MIT open source. Fork it to hack on your own ideas.
