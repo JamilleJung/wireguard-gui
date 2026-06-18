@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-06-18
+
+### CI / supply chain
+- Release binaries now **embed an SBOM** via `cargo auditable build` (pinned
+  `=0.7.4`). The exact dependency set compiled into each shipped binary can be
+  audited directly with `cargo audit bin <file>` - verifiable provenance that
+  does not require trusting the build logs.
+- The `cargo audit` CI gate documents the accepted, non-shipping informational
+  advisories (unmaintained / unsound transitive build/proc-macro/optional
+  dependencies of Slint, `ksni`, and `rqrr`); it still fails on real or new
+  vulnerabilities.
+
 ## [1.6.6] - 2026-06-18
 
 ### Security
