@@ -18,7 +18,7 @@ path = "src/bin/wg-helper.rs"
 
 [dependencies]
 slint = "1"
-rfd = "0.15"
+rfd = "0.17"
 libc = "0.2"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 qrcode = { version = "0.14", default-features = false }
