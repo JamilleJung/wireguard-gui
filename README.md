@@ -283,10 +283,11 @@ Helper hardening:
   use iptables/ip6tables when present, and do not install a daemon.
 
 Important WireGuard reality: `wg-quick` supports `PreUp`, `PostUp`, `PreDown`,
-and `PostDown`. Those hooks run as root when a tunnel is activated. The editor
-warns when a config contains them, but the project does not remove them because
-they are part of the plain WireGuard workflow. Treat imported configs like
-scripts you might run as root.
+and `PostDown`, which run **arbitrary commands as root** when a tunnel is
+activated. To keep the passwordless helper grant from becoming full root, the
+**helper refuses to save any config containing those hooks** - so an imported or
+edited `.conf` with a `PostUp` line is rejected, not silently saved. If you
+genuinely need a hook, edit the file under `/etc/wireguard` directly as root.
 
 QR and zip export contain private keys. Treat them like the config file itself.
 

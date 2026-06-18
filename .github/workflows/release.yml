@@ -7,8 +7,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Least privilege: the token is read-only everywhere except the publish job.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,12 +18,15 @@ jobs:
   arm64-tarball:
     name: Build aarch64 tarball
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Version from tag
-        id: ver
-        run: echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Validate tag format
+        run: |
+          echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1; }
 
       - name: Install system dependencies
         run: |
@@ -39,10 +43,10 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Smoke helper and CLI
         run: |
@@ -51,8 +55,10 @@ jobs:
           bash tests/helper-validation.sh target/release/wg-helper
 
       - name: Build aarch64 tarball
+        env:
+          REF: ${{ github.ref_name }}
         run: |
-          V="${{ steps.ver.outputs.v }}"
+          V="${REF#v}"
           D="wireguard-gui-${V}-aarch64-linux"
           mkdir -p "$D"
           cp target/release/wireguard-gui "$D/"
@@ -64,7 +70,7 @@ jobs:
           tar -czf "${D}.tar.gz" "$D"
 
       - name: Upload aarch64 tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wireguard-gui-aarch64-tarball
           path: wireguard-gui-*-aarch64-linux.tar.gz
@@ -74,12 +80,15 @@ jobs:
     name: Build artifacts & publish release
     needs: arm64-tarball
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # elevated ONLY for the publishing job
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Version from tag
-        id: ver
-        run: echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Validate tag format
+        run: |
+          echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1; }
 
       - name: Install system dependencies
         run: |
@@ -97,10 +106,10 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Smoke and shell validation
         run: |
@@ -115,8 +124,10 @@ jobs:
 
       # ---------------- binary tarball ----------------
       - name: Build binary tarball
+        env:
+          REF: ${{ github.ref_name }}
         run: |
-          V="${{ steps.ver.outputs.v }}"
+          V="${REF#v}"
           D="wireguard-gui-${V}-x86_64-linux"
           mkdir -p "$D"
           cp target/release/wireguard-gui "$D/"
@@ -128,7 +139,7 @@ jobs:
           tar -czf "${D}.tar.gz" "$D"
 
       - name: Download aarch64 tarball
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: wireguard-gui-aarch64-tarball
           path: .
@@ -136,17 +147,18 @@ jobs:
       # ---------------- .deb ----------------
       - name: Build .deb
         run: |
-          cargo install cargo-deb --version '^2' --locked
+          cargo install cargo-deb --version =2.12.1 --locked
           cargo deb --no-build --no-strip || cargo deb
           cp target/debian/*.deb .   # mandatory: fail the release if none exists
 
-      # ---------------- AppImage ----------------
+      # ---------------- AppImage (optional: never blocks the release) ----------------
       - name: Build AppImage
-        continue-on-error: true   # never block the .deb/tarball release
+        continue-on-error: true
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          REF: ${{ github.ref_name }}
         run: |
-          V="${{ steps.ver.outputs.v }}"
+          V="${REF#v}"
           APPDIR=AppDir
           mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/wireguard-gui" \
                    "$APPDIR/usr/share/applications" \
@@ -181,22 +193,23 @@ jobs:
           sha256sum "${artifacts[@]}" | tee SHA256SUMS
           test -s SHA256SUMS
 
-      # ---------------- sign the checksums (minisign) ----------------
+      # ---------------- sign the checksums (minisign) — fail-closed ----------------
       - name: Sign SHA256SUMS with minisign
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          REF: ${{ github.ref_name }}
         run: |
           if [ -z "$MINISIGN_KEY" ]; then
-            echo "::warning::MINISIGN_KEY secret not set — skipping signature"
-            exit 0
+            echo "::error::MINISIGN_KEY secret not set — refusing to publish an unsigned release"
+            exit 1
           fi
           sudo apt-get install -y --no-install-recommends minisign
           printf '%s\n' "$MINISIGN_KEY" > minisign.key
-          minisign -S -s minisign.key -m SHA256SUMS \
-            -t "wireguard-gui ${{ steps.ver.outputs.v }}"
+          minisign -S -s minisign.key -m SHA256SUMS -t "wireguard-gui ${REF#v}"
           rm -f minisign.key
           echo "Verifying signature with the committed public key…"
           minisign -Vm SHA256SUMS -p minisign.pub
+          test -s SHA256SUMS.minisig
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0

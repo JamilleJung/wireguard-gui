@@ -28,10 +28,13 @@ auditable as possible, and to keep everything else unprivileged.
 **In scope** (things we actively defend against):
 
 - A bug or hijacked environment in the **unprivileged UI** escalating to root.
+- A user who can run the **helper** (via the passwordless grant) escalating
+  beyond "manage WireGuard tunnels" to arbitrary root code execution.
 - The privileged helper being tricked into touching files outside
   `/etc/wireguard` (path traversal) or running attacker-chosen commands.
 - A malicious or malformed `.conf`/QR import corrupting existing tunnels or
-  being saved without the user understanding what it does.
+  smuggling code that would run as root.
+- Another local user reading your private keys through the helper.
 - Truncated/lost configs from interrupted writes.
 
 **Out of scope** (cannot be defended against here):
@@ -39,7 +42,7 @@ auditable as possible, and to keep everything else unprivileged.
 - An attacker who is **already root**, or who can already run code **as your
   user** (they can read your keys directly; pinning a binary path doesn't help).
 - The security of WireGuard itself, the kernel module, or `wg`/`wg-quick`.
-- Physical access / a compromised display server.
+- Physical access / a compromised display server / your clipboard history.
 
 ## 🔒 The privilege boundary
 
@@ -53,11 +56,16 @@ Authorisation is scoped to **exactly that one helper path**:
 
 - the **sudoers** drop-in grants passwordless execution of only
   `/usr/local/lib/wireguard-gui/wg-helper` for the installing user;
-- the **polkit** rule allows `pkexec` of only that program for an active local
-  session.
+- the **polkit** rule allows `pkexec` of only that program, and only for a user
+  who is both in an **active local session** *and* a member of the **`wireguard`
+  group**. `install.sh --polkit` (and the `.deb`) create the group and add the
+  intended user. This is deliberate: the helper can read configs that contain
+  private keys, so a passwordless grant must not be handed to *every* logged-in
+  user. Until a user is in the group the rule denies and `pkexec` falls back to
+  asking for the admin password (fail closed).
 
 Because the grant is bound to the absolute helper path, pointing the app at a
-different script (e.g. via `$WG_HELPER`) cannot silently gain root - it would
+different program (e.g. via `$WG_HELPER`) cannot silently gain root - it would
 fall outside the sudoers/polkit grant and prompt or fail. In release builds the
 helper-path override is additionally refused unless `WG_ALLOW_UNSAFE_HELPER=1`
 is set and the target is an absolute, root-owned, non-world-writable file.
@@ -71,37 +79,48 @@ The helper itself:
 - **validates every tunnel name** against `^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`
   and rejects `.`, `..`, `/`, `\`, so `"$WG_DIR/<name>.conf"` can never escape
   `/etc/wireguard`;
+- **rejects `PostUp` / `PreUp` / `PostDown` / `PreDown` script hooks** in any
+  config it saves (see below) - these are blocked *at the privilege boundary*,
+  not just warned about in the UI;
 - **no `sh -c`** - all subprocess calls use argv arrays directly;
 - **timeouts** - every external call has a `Duration` bound;
-- writes configs **atomically** (temp file + best-effort `sync -f` + `rename`,
+- writes configs **atomically** (temp file with `O_EXCL` + `fsync` + `rename`,
   mode `600`) and keeps a **timestamped 0600 backup** before any overwrite,
   rename, or delete;
 - validates the saved config shape in the helper before save/rename, in
   addition to the unprivileged frontend validation (second check inside the
   privileged boundary);
 - **logs every mutating action** (with the invoking user) to the journal
-  (`logger -t wireguard-gui`) without key material.
+  (`logger -t wireguard-gui`), with private/preshared keys redacted.
+
+### 🚫 Script hooks are blocked
+
+WireGuard configs may contain `PostUp` / `PreUp` / `PostDown` / `PreDown`
+directives, which **`wg-quick` runs as root** when the tunnel is activated. Left
+unchecked, a config saved through the helper could therefore run arbitrary root
+commands - turning the narrow "manage tunnels" grant into full root.
+
+To keep the privilege boundary meaningful, **the helper refuses to save or
+rename any config that contains those directives** (the editor surfaces the
+error). If you genuinely need a hook, edit the file under `/etc/wireguard`
+directly as root - outside this constrained helper.
 
 ### 🔌 Kill switch scope
 
 The helper can add/remove tunnel-scoped firewall rules for an active `wg-quick`
 tunnel, preferring **nftables** (`inet filter`) with an iptables/ip6tables
-fallback. The kill switch never flushes user rules and cleans up on disable.
-It does not install a daemon or own the system firewall permanently.
-When `$SSH_CONNECTION` is set, it auto-allows established SSH return traffic
-to prevent accidental session lock-out.
+fallback. The rules allow loopback, the tunnel interface, the tunnel's fwmark
+(WireGuard's own encrypted egress) and - when `$SSH_CONNECTION` is set -
+established SSH return traffic, and reject everything else. On the iptables
+fallback it **fails closed** if the host has IPv6 but `ip6tables` is missing,
+rather than silently leaving IPv6 unprotected.
 
-## ⚠️ Config hooks run as root - only import configs you trust
-
-WireGuard configs may contain `PostUp` / `PreUp` / `PostDown` / `PreDown`
-directives, which **`wg-quick` runs as root** when the tunnel is activated. A
-malicious `.conf` could therefore run arbitrary root commands on activation.
-
-This is inherent to `wg-quick` (the same risk as running `wg-quick up` on any
-config by hand) - it is **not** a flaw specific to this app. To mitigate it,
-the editor shows an amber warning whenever a config contains those directives.
-Treat importing a `.conf` like running a script: only do it from sources you
-trust.
+The kill switch is **not persistent**: it installs no daemon and the rules live
+only as long as the helper-managed tunnel does. They are torn down on
+deactivate/delete/rename. If a tunnel is stopped by some *other* path (a manual
+`wg-quick down`, a service restart, a reboot of just the unit), the rules can
+linger until you next use the app - re-activating or toggling the kill switch
+off clears them. Do not rely on it as a permanent system firewall.
 
 ## 🔑 Private keys and QR codes
 
@@ -114,16 +133,25 @@ trust.
   code. Anyone who photographs your screen gets the key. Only display it when
   it is safe to do so.
 - **Export** writes every tunnel's `.conf` into a `.zip`; that archive contains
-  private keys. Store it somewhere safe and delete it when done.
+  private keys. It is created `0600` and refuses to follow a symlink at the
+  destination. Store it somewhere safe and delete it when done.
+- **Copying the running config** copies the full `[Interface]` block, *including
+  the private key*, to your clipboard. Clipboard managers may keep history;
+  clear it when done.
 
 ## ✅ Supply chain and verifying a download
 
 - Prebuilt release artifacts ship with a `SHA256SUMS` file that is **signed
-  with minisign** (`SHA256SUMS.minisig`; public key `minisign.pub`).
-- Third-party GitHub Actions are pinned to commit SHAs.
-- `linuxdeploy` (AppImage builder) is pinned to a release with a verified
-  SHA-256 checksum.
-- Verify with:
+  with minisign** (`SHA256SUMS.minisig`; public key `minisign.pub`). Signing is
+  **fail-closed**: the release aborts rather than publish unsigned artifacts.
+- **All** GitHub Actions are pinned to commit SHAs (including first-party
+  `actions/*`); `cargo-deb` and `linuxdeploy` are pinned to exact versions, and
+  `linuxdeploy` is SHA-256-verified before it runs.
+- The release token is **least-privilege**: read-only everywhere except the one
+  job that publishes.
+- CI runs `cargo audit` against the RUSTSEC advisory DB, and Dependabot watches
+  the crate and Action pins.
+- Verify a download with:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
@@ -138,6 +166,7 @@ on any supported distro with the Rust toolchain and Slint dev libraries.
 - The privileged surface is the `wg-helper` binary only. The GUI binary runs
   unprivileged and never escalates.
 - Treat the `sudoers`/`polkit` grant as "this local user may control WireGuard
-  without a password" - equivalent to the trust you'd place in `wg-quick`.
+  without a password" - equivalent to the trust you'd place in `wg-quick`,
+  minus script hooks (which the helper blocks).
 - Config files contain private keys in clear text (same as upstream WireGuard
   tools). They are stored `0600`, root-owned, in `/etc/wireguard` (mode `0700`).

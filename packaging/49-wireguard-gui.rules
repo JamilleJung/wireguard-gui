@@ -1,15 +1,19 @@
 /* polkit rule for wireguard-gui.
  *
- * Lets a user in an ACTIVE LOCAL session run the wg-helper through pkexec
- * without a password. This is the polkit authorization path (used by the .deb
- * and by `install.sh --polkit`); the sudoers drop-in is the source-install
+ * Lets a user who is BOTH in an active local session AND a member of the
+ * "wireguard" group run the wg-helper through pkexec without a password. The
+ * group requirement is essential: the helper can read /etc/wireguard configs
+ * (which contain private keys), so it must NOT be exposed to every active-local
+ * user. install.sh (--polkit) and the .deb create the group and add the
+ * intended user; until then this rule denies (pkexec falls back to asking for
+ * the admin password — fail closed). The sudoers drop-in is the source-install
  * default. Requires polkit with JS rules (>= 0.106).
  */
 polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.policykit.exec" &&
         (action.lookup("program") === "/usr/local/lib/wireguard-gui/wg-helper" ||
          action.lookup("program") === "/usr/lib/wireguard-gui/wg-helper") &&
-        subject.local && subject.active) {
+        subject.local && subject.active && subject.isInGroup("wireguard")) {
         return polkit.Result.YES;
     }
 });

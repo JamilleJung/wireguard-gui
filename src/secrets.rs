@@ -3,15 +3,17 @@
 pub fn redact_config(text: &str) -> String {
     text.lines()
         .map(|line| {
-            let Some((key, _)) = line.split_once('=') else {
-                return line.to_string();
-            };
-            let trimmed = key.trim();
-            if matches!(
-                trimmed.to_ascii_lowercase().as_str(),
-                "privatekey" | "presharedkey"
-            ) {
-                format!("{trimmed} = <redacted>")
+            // Match the privileged helper's redact(): substring-match the
+            // lowercased line and, when a secret-bearing line has no '='
+            // separator (e.g. a journal `PrivateKey: <key>` form), redact the
+            // WHOLE line rather than letting it through. Keeps the two redactors
+            // from diverging into a weaker one on the log path.
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("privatekey") || lower.contains("presharedkey") {
+                match line.split_once('=') {
+                    Some((key, _)) => format!("{} = <redacted>", key.trim()),
+                    None => "<redacted secret line>".to_string(),
+                }
             } else {
                 line.to_string()
             }

@@ -289,6 +289,18 @@ fn validate_config_text(text: &str) -> Result<(), String> {
         };
         let key = key.trim().to_ascii_lowercase();
         let value = value.trim();
+        // PRIVILEGE BOUNDARY: refuse configs that would make wg-quick run
+        // arbitrary commands as root on up/down. The helper runs as root via a
+        // NOPASSWD sudoers/polkit grant, so a caller (or someone who hands the
+        // victim a crafted .conf) must NOT be able to turn "manage tunnels" into
+        // arbitrary root code execution through a PostUp/PreUp/PostDown/PreDown
+        // hook. Anyone who legitimately needs hooks can edit /etc/wireguard as
+        // root directly, outside this constrained helper.
+        if matches!(key.as_str(), "postup" | "preup" | "postdown" | "predown") {
+            return Err(format!(
+                "script hooks are not allowed in managed configs ({key}); they would run as root"
+            ));
+        }
         match section {
             "interface" => match key.as_str() {
                 "privatekey" => {
@@ -1093,6 +1105,27 @@ mod tests {
             ))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn rejects_script_hooks_at_the_privilege_boundary() {
+        let base = format!("[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.1/32\n");
+        for hook in [
+            "PostUp", "PreUp", "PostDown", "PreDown", "postup", "preDown",
+        ] {
+            let cfg = format!("{base}{hook} = cp /bin/bash /tmp/x; chmod u+s /tmp/x\n");
+            assert!(
+                validate_config_text(&cfg).is_err(),
+                "{hook} must be rejected (would run as root)"
+            );
+        }
+        // A hook hidden in a [Peer] section is rejected too.
+        let cfg = format!(
+            "[Interface]\nPrivateKey = {KEY}\n\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nPostUp = id\n"
+        );
+        assert!(validate_config_text(&cfg).is_err());
+        // A normal config without hooks still validates.
+        assert!(validate_config_text(&base).is_ok());
     }
 
     #[test]
