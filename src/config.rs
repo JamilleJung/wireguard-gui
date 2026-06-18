@@ -16,6 +16,16 @@ pub struct ParsedConfig {
     pub peers: Vec<ParsedPeer>,
 }
 
+/// Combine repeated multi-valued keys (Address/DNS/AllowedIPs) so two separate
+/// lines — e.g. an IPv4 and an IPv6 `Address` — are both kept (matching how
+/// `wg-quick` treats repeated directives) instead of last-write-wins.
+fn join_values(existing: Option<String>, value: String) -> String {
+    match existing {
+        Some(prev) if !prev.is_empty() => format!("{prev}, {value}"),
+        _ => value,
+    }
+}
+
 pub fn parse_config(text: &str) -> ParsedConfig {
     let mut cfg = ParsedConfig::default();
     let mut section = "";
@@ -44,8 +54,8 @@ pub fn parse_config(text: &str) -> ParsedConfig {
         match section {
             "interface" => match key.to_ascii_lowercase().as_str() {
                 "privatekey" => cfg.private_key = Some(value),
-                "address" => cfg.address = Some(value),
-                "dns" => cfg.dns = Some(value),
+                "address" => cfg.address = Some(join_values(cfg.address.take(), value)),
+                "dns" => cfg.dns = Some(join_values(cfg.dns.take(), value)),
                 "listenport" => cfg.listen_port = Some(value),
                 _ => {}
             },
@@ -54,7 +64,10 @@ pub fn parse_config(text: &str) -> ParsedConfig {
                     match key.to_ascii_lowercase().as_str() {
                         "publickey" => p.public_key = value,
                         "presharedkey" => p.preshared_key = value,
-                        "allowedips" => p.allowed_ips = value,
+                        "allowedips" => {
+                            let prev = std::mem::take(&mut p.allowed_ips);
+                            p.allowed_ips = join_values((!prev.is_empty()).then_some(prev), value);
+                        }
                         "endpoint" => p.endpoint = value,
                         "persistentkeepalive" => p.keepalive = value,
                         _ => {}
@@ -81,10 +94,38 @@ pub fn is_wg_key(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
 }
 
+/// A syntactically valid DNS hostname (RFC 1123 labels).
+fn is_hostname(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host); // tolerate one trailing dot (FQDN)
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    // A host that is only digits and dots is a malformed IPv4 literal, not a
+    // hostname (a valid one would have parsed as Ipv4Addr already).
+    if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
 /// host:port, including bracketed IPv6 `[::1]:51820`.
 pub fn is_endpoint(s: &str) -> bool {
     let s = s.trim();
-    let port_ok = |port: &str| matches!(port.parse::<u32>(), Ok(p) if (1..=65535).contains(&p));
+    // Reject a leading '+'/'-'/whitespace that `str::parse` would otherwise
+    // accept; a port must be plain ASCII digits in 1..=65535.
+    let port_ok = |port: &str| {
+        !port.is_empty()
+            && port.bytes().all(|b| b.is_ascii_digit())
+            && matches!(port.parse::<u32>(), Ok(p) if (1..=65535).contains(&p))
+    };
 
     if let Some(rest) = s.strip_prefix('[') {
         let Some((inner, after)) = rest.split_once(']') else {
@@ -99,13 +140,10 @@ pub fn is_endpoint(s: &str) -> bool {
     let Some((host, port)) = s.rsplit_once(':') else {
         return false;
     };
-    if host.is_empty() || host.contains(':') {
+    if host.contains(':') {
         return false;
     }
-    let host_ok = host.parse::<std::net::Ipv4Addr>().is_ok()
-        || host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    let host_ok = host.parse::<std::net::Ipv4Addr>().is_ok() || is_hostname(host);
     host_ok && port_ok(port)
 }
 
@@ -200,9 +238,10 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
                 p.endpoint
             ));
         }
-        if !p.keepalive.is_empty() && p.keepalive.parse::<u32>().is_err() {
+        let ka = p.keepalive.trim();
+        if !ka.is_empty() && !ka.eq_ignore_ascii_case("off") && ka.parse::<u32>().is_err() {
             return Err(format!(
-                "Peer {n}: PersistentKeepalive '{}' must be a number.",
+                "Peer {n}: PersistentKeepalive '{}' must be a number or 'off'.",
                 p.keepalive
             ));
         }
@@ -236,6 +275,39 @@ mod tests {
         assert!(!is_endpoint("host:99999"));
         assert!(!is_endpoint("host"));
         assert!(!is_endpoint("@#$:51820"));
+        // Tightened cases: leading '-' label, malformed dotted-quad, and a port
+        // with a leading '+' that str::parse would otherwise accept.
+        assert!(is_endpoint("a-b.example.com:51820"));
+        assert!(!is_endpoint("-evil:51820"));
+        assert!(!is_endpoint("999.999.999.999:51820"));
+        assert!(!is_endpoint("host:+5"));
+        assert!(is_endpoint("host.example.com.:51820")); // one trailing dot (FQDN) tolerated
+    }
+
+    #[test]
+    fn keepalive_off_is_valid() {
+        let cfg = format!(
+            "[Interface]\nPrivateKey = {KEY}\n\n[Peer]\nPublicKey = {KEY}\n\
+             AllowedIPs = 0.0.0.0/0\nPersistentKeepalive = off\n"
+        );
+        assert!(validate_basic_wireguard_config(&cfg).is_ok());
+        let bad = format!(
+            "[Interface]\nPrivateKey = {KEY}\n\n[Peer]\nPublicKey = {KEY}\n\
+             AllowedIPs = 0.0.0.0/0\nPersistentKeepalive = soon\n"
+        );
+        assert!(validate_basic_wireguard_config(&bad).is_err());
+    }
+
+    #[test]
+    fn repeated_address_and_allowedips_lines_are_joined() {
+        let cfg = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nAddress = fd00::2/64\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nAllowedIPs = ::/0\n"
+        );
+        let p = parse_config(&cfg);
+        assert_eq!(p.address.as_deref(), Some("10.0.0.2/24, fd00::2/64"));
+        assert_eq!(p.peers[0].allowed_ips, "0.0.0.0/0, ::/0");
+        assert!(validate_basic_wireguard_config(&cfg).is_ok());
     }
 
     #[test]

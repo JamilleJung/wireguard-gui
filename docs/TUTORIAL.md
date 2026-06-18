@@ -1,4 +1,4 @@
-# wireguard-gui tutorial - from zero to a working VPN
+# 📖 wireguard-gui tutorial - from zero to a working VPN
 
 This is a step-by-step guide to `wireguard-gui`, a desktop app for managing
 WireGuard tunnels on Linux. It walks you through installing it, getting your
@@ -10,7 +10,7 @@ Tested against version 1.6.3.
 
 ---
 
-## 1. What this is and who it's for
+## 1. 🎯 What this is and who it's for
 
 `wireguard-gui` (and its shorter alias `wg-gui`) is a native Linux GUI (built in Rust with the Slint toolkit) for
 plain WireGuard configs: a tunnel list on the left, an Interface/Peer detail
@@ -35,7 +35,7 @@ as a keyboard-driven terminal UI.
 
 ---
 
-## 2. Requirements and install
+## 2. 📦 Requirements and install
 
 ### The one-command install
 
@@ -130,7 +130,7 @@ what the prebuilt `.deb` uses automatically).
 
 ---
 
-## 3. First run
+## 3. 🚀 First run
 
 The first time you launch the app it runs a quick, **read-only** system check
 (WireGuard tools, the privileged helper and its authorization, `/etc/wireguard`,
@@ -172,7 +172,7 @@ than a blank pane.
 
 ---
 
-## 4. Get a tunnel in three ways
+## 4. 📥 Get a tunnel in three ways
 
 All three start from the **Add Tunnel** dropdown menu in the toolbar, and all
 three end up at the same inline editor where you confirm and **Save**.
@@ -226,7 +226,7 @@ because creating a first tunnel is a normal setup workflow.
 
 ---
 
-## 5. Connect and disconnect; reading status
+## 5. 🔌 Connect and disconnect; reading status
 
 1. Click a tunnel in the left-hand list to select it. Its Interface and Peer
    details, and live status, appear on the right.
@@ -258,7 +258,7 @@ output.
 
 ---
 
-## 6. Put a tunnel on your phone with Show QR
+## 6. 📱 Put a tunnel on your phone with Show QR
 
 To use the same tunnel in the WireGuard app on your phone, display it as a QR
 code and scan it.
@@ -275,7 +275,7 @@ code and scan it.
 
 ---
 
-## 7. Start-on-boot
+## 7. ⚡ Start-on-boot
 
 To have a tunnel come up automatically when the machine boots:
 
@@ -295,7 +295,7 @@ are permanent on disk, but a tunnel only auto-connects if you turn this on.
 
 ---
 
-## 8. Edit safely
+## 8. ✏️ Edit safely
 
 Click **Edit** (bottom action bar) on a selected tunnel to open the inline
 editor.
@@ -321,7 +321,7 @@ editor.
 
 ---
 
-## 9. Rename, remove, export
+## 9. 🗂️ Rename, remove, export
 
 ### Rename
 
@@ -349,7 +349,7 @@ file name is `wireguard-tunnels.zip`).
 
 ---
 
-## 10. Full reference
+## 10. ⌨️ Full reference
 
 ### Toolbar and actions
 
@@ -414,7 +414,7 @@ wireguard-gui --help     # show usage and exit (or: wg-gui --help)
 
 ---
 
-## 11. Troubleshooting
+## 11. 🐛 Troubleshooting
 
 ### "resolvconf: command not found" when activating (DNS = gotcha)
 
@@ -507,7 +507,7 @@ server/gateway) firewall and IP-forwarding changes.
 
 ---
 
-## 12. Uninstall
+## 12. 🗑️ Uninstall
 
 ```sh
 cd wireguard-gui

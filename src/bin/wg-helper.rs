@@ -386,11 +386,6 @@ fn read_config(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Read tunnel config and return the text (internal helper).
-fn read_config_text(name: &str) -> Result<String, String> {
-    fs::read_to_string(conf_path(name)).map_err(|e| format!("read {name}: {e}"))
-}
-
 fn dump(name: &str) -> Result<(), String> {
     if let Ok(out) = command_output("wg", &["show", name, "dump"], None, Duration::from_secs(5)) {
         print!("{out}");
@@ -405,7 +400,15 @@ fn up(name: &str) -> Result<(), String> {
 
 fn down(name: &str) -> Result<(), String> {
     log_action(&format!("down {name}"));
-    command_output("wg-quick", &["down", name], None, Duration::from_secs(30)).map(|_| ())
+    let res =
+        command_output("wg-quick", &["down", name], None, Duration::from_secs(30)).map(|_| ());
+    // The kill switch must never outlive the tunnel that justified it. Once the
+    // interface and its fwmark are gone, the terminal REJECT rule would block
+    // ALL non-loopback egress (a full network lockout). Tear it down here too —
+    // mirroring what delete()/rename() already do — even if `wg-quick down`
+    // itself failed (e.g. the tunnel was already partially down).
+    let _ = killswitch_disable(name);
+    res
 }
 
 fn save(name: &str) -> Result<(), String> {
@@ -627,41 +630,38 @@ fn fwmark(name: &str) -> Result<String, String> {
     }
 }
 
-/// Ensure the tunnel config has FwMark set and the tunnel is active.
+/// Ensure the tunnel is active and carries a non-zero fwmark for the kill
+/// switch's `meta mark … accept` rule.
+///
+/// We prefer the fwmark `wg-quick` assigns automatically to default-route
+/// tunnels and only set one ourselves when none exists — at RUNTIME via
+/// `wg set`, NEVER by rewriting the user's `.conf`. The old approach appended
+/// `FwMark = 51820` to the end of the file, which on a normal config lands
+/// inside the last `[Peer]` section (FwMark is an `[Interface]` setting), and
+/// did a `wg-quick down`/`up` dance that left a leak window with no rules.
 fn ensure_tunnel_has_fwmark(name: &str) -> Result<(), String> {
-    let cfg = read_config_text(name)?;
-    let was_active = interface_active(name);
-    let already_has = cfg.lines().any(|line| {
-        let lower = line.trim().to_ascii_lowercase();
-        // Match "fwmark" or "fwmark = ..." — but not "FwMarkFile" etc.
-        // Split on = to get the key part, then exact-match.
-        lower == "fwmark"
-            || lower
-                .split_once('=')
-                .map(|(k, _)| k.trim() == "fwmark")
-                .unwrap_or(false)
-    });
-    if already_has {
-        // FwMark already present; bring tunnel up if it isn't active yet.
-        if !was_active {
-            command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
-        }
-        return Ok(());
+    if !interface_active(name) {
+        command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
     }
-    // Add FwMark = 51820 (the default WireGuard port doubles as routing table).
-    let mut new_cfg = cfg;
-    if !new_cfg.ends_with('\n') {
-        new_cfg.push('\n');
+    let current = command_output(
+        "wg",
+        &["show", name, "fwmark"],
+        None,
+        Duration::from_secs(5),
+    )
+    .map(|s| s.trim().to_string())
+    .unwrap_or_default();
+    if current.is_empty() || current == "off" {
+        // No routing fwmark (e.g. a split-tunnel config). Set one at runtime so
+        // WireGuard tags its encapsulated transport packets; this needs no
+        // config change and no interface restart.
+        command_output(
+            "wg",
+            &["set", name, "fwmark", "51820"],
+            None,
+            Duration::from_secs(5),
+        )?;
     }
-    new_cfg.push_str("FwMark = 51820\n");
-    backup_existing(name)?;
-    atomic_write(&conf_path(name), &new_cfg)?;
-    log_action(&format!("added FwMark to {name}"));
-    // (Re)activate so the fwmark takes effect.
-    if was_active {
-        command_output("wg-quick", &["down", name], None, Duration::from_secs(30))?;
-    }
-    command_output("wg-quick", &["up", name], None, Duration::from_secs(45))?;
     Ok(())
 }
 
@@ -789,6 +789,20 @@ fn killswitch_enable_nft(name: &str, mark: &str) -> Result<(), String> {
         "nft",
         &[
             "insert", "rule", "inet", "filter", "output", "oif", "lo", "accept", "comment",
+            &comment,
+        ],
+        None,
+        Duration::from_secs(10),
+    )?;
+    // Allow the tunnel's own plaintext egress: an app's packet is routed to the
+    // wg interface and traverses OUTPUT with oif=<name> and NO fwmark (only
+    // WireGuard's encapsulated transport packets carry the mark, on a second
+    // pass). Without this the terminal reject drops it and the tunnel carries
+    // no traffic at all.
+    command_output(
+        "nft",
+        &[
+            "insert", "rule", "inet", "filter", "output", "oifname", name, "accept", "comment",
             &comment,
         ],
         None,
@@ -933,6 +947,25 @@ fn killswitch_enable_iptables(name: &str, mark: &str) -> Result<(), String> {
             None,
             Duration::from_secs(10),
         )?;
+        // Allow the tunnel's own plaintext egress (oif=<name>, unmarked) — see
+        // the nft path; without it the REJECT drops all tunnelled traffic.
+        command_output(
+            tool_name,
+            &[
+                "-I",
+                "OUTPUT",
+                "-o",
+                name,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ],
+            None,
+            Duration::from_secs(10),
+        )?;
         command_output(
             tool_name,
             &[
@@ -965,6 +998,14 @@ fn killswitch_status(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// True if any non-loopback interface has an IPv6 address — i.e. IPv6 traffic
+/// could leak if the kill switch only covers IPv4.
+fn host_has_global_ipv6() -> bool {
+    fs::read_to_string("/proc/net/if_inet6")
+        .map(|s| s.lines().any(|l| l.split_whitespace().last() != Some("lo")))
+        .unwrap_or(false)
+}
+
 fn killswitch_enable(name: &str) -> Result<(), String> {
     // SSH safety: warn when $SSH_CONNECTION is set (kill switch can lock out).
     if std::env::var("SSH_CONNECTION").is_ok() {
@@ -982,6 +1023,16 @@ fn killswitch_enable(name: &str) -> Result<(), String> {
     if have_tool("nft") {
         killswitch_enable_nft(name, &mark)?;
     } else if have_tool("iptables") || have_tool("ip6tables") {
+        // Fail closed: with only the iptables fallback we must cover IPv6 too.
+        // If the host has a non-loopback IPv6 address but ip6tables is missing,
+        // a v4-only reject would silently leak all IPv6 traffic while the status
+        // still reads "enabled". Refuse rather than give false protection.
+        if host_has_global_ipv6() && !have_tool("ip6tables") {
+            return Err(
+                "kill switch can't protect IPv6 on this host: install nftables (preferred) or ip6tables"
+                    .into(),
+            );
+        }
         killswitch_enable_iptables(name, &mark)?;
     } else {
         return Err("kill switch needs nftables, iptables, or ip6tables".into());

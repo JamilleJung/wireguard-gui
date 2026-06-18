@@ -48,18 +48,28 @@ fn line_key(line: &str) -> Option<String> {
 /// and unknown sections would be silently dropped on a round-trip, so such
 /// configs must stay in raw-text mode.
 pub fn form_representable(cfg: &str) -> bool {
+    use std::collections::HashSet;
     let mut peers = 0;
     let mut section = "";
+    let mut iface_seen: HashSet<String> = HashSet::new();
+    let mut peer_seen: HashSet<String> = HashSet::new();
     for line in cfg.lines() {
         let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
+        if t.is_empty() {
             continue;
+        }
+        // A comment carries layout/intent the structured form cannot round-trip
+        // (fields_to_config never re-emits comments), so keep such configs in
+        // raw-text mode rather than silently dropping the comment on save.
+        if t.starts_with('#') {
+            return false;
         }
         let lower = t.to_ascii_lowercase();
         if lower.starts_with('[') {
             if lower.starts_with("[peer]") {
                 peers += 1;
                 section = "peer";
+                peer_seen.clear();
             } else if lower.starts_with("[interface]") {
                 section = "interface";
             } else {
@@ -82,6 +92,17 @@ pub fn form_representable(cfg: &str) -> bool {
             _ => false,
         };
         if !mapped {
+            return false;
+        }
+        // A repeated key within a section would collapse to a single value on
+        // round-trip (the form models each as one field), losing e.g. a second
+        // Address or AllowedIPs line — keep raw so nothing is dropped.
+        let fresh = match section {
+            "interface" => iface_seen.insert(key),
+            "peer" => peer_seen.insert(key),
+            _ => true,
+        };
+        if !fresh {
             return false;
         }
     }
@@ -248,5 +269,38 @@ mod tests {
         let f = config_to_fields(&cfg);
         assert_eq!(f.private_key, KEY);
         assert_eq!(f.peers[0].endpoint, "");
+    }
+
+    #[test]
+    fn comment_bearing_config_is_not_form_representable() {
+        // The form can't round-trip comments, so such a config must stay raw.
+        let cfg = format!(
+            "[Interface]\n# my home server\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(!form_representable(&cfg));
+    }
+
+    #[test]
+    fn duplicate_mapped_keys_are_not_form_representable() {
+        // Two Address lines (IPv4 + IPv6) would collapse to one on round-trip.
+        let dup_addr = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\nAddress = fd00::2/64\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(!form_representable(&dup_addr));
+        // Two AllowedIPs lines in one peer likewise.
+        let dup_aips = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\nAllowedIPs = ::/0\n"
+        );
+        assert!(!form_representable(&dup_aips));
+        // But the same key appearing once per peer across two peers is fine.
+        let two_peers = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n\n\
+             [Peer]\nPublicKey = {KEY}\nAllowedIPs = 10.1.0.0/24\n"
+        );
+        assert!(form_representable(&two_peers));
     }
 }

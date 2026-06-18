@@ -158,16 +158,21 @@ impl ksni::Tray for Tray {
             .iter()
             .map(|t| {
                 let name = t.name.clone();
-                let active = t.active;
                 CheckmarkItem {
                     label: name.clone(),
-                    checked: active,
+                    checked: t.active,
                     activate: Box::new(move |_: &mut Self| {
-                        if active {
-                            let _ = backend::deactivate(&name);
+                        // The tray label can be up to a refresh-interval stale;
+                        // re-check live state at click time so we never run the
+                        // wrong action (or double-activate) on a captured flag.
+                        let up = backend::list_tunnels()
+                            .iter()
+                            .any(|x| x.name == name && x.active);
+                        let _ = if up {
+                            backend::deactivate(&name)
                         } else {
-                            let _ = backend::activate(&name);
-                        }
+                            backend::activate(&name)
+                        };
                     }),
                     ..Default::default()
                 }

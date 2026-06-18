@@ -604,7 +604,21 @@ pub fn export_zip(dest: &std::path::Path) -> Result<usize, String> {
     if files.is_empty() {
         return Err("No tunnels to export.".into());
     }
-    let f = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    // This archive bundles every tunnel's PrivateKey/PresharedKey, so create it
+    // 0600 and refuse to follow a symlink at the destination (a predictable
+    // export path is a classic symlink-clobber / key-leak target).
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dest)
+        .map_err(|e| format!("create {}: {e}", dest.display()))?;
+    // Tighten perms even if the file pre-existed with a looser mode.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(f);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)

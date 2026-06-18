@@ -1,4 +1,4 @@
-# Per-distro guide: what to install, what to set up, what survives a reboot, and firewall
+# 🐧 Per-distro guide: what to install, what to set up, what survives a reboot, and firewall
 
 This answers the practical questions for every supported distro:
 

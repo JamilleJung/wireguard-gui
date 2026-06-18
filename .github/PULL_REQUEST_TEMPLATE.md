@@ -7,7 +7,7 @@
 ## Checklist
 
 - [ ] `cargo fmt --all` is clean
-- [ ] `cargo clippy --all-targets -- -D warnings` passes
+- [ ] `cargo clippy --all-targets - -D warnings` passes
 - [ ] `cargo build --release` succeeds
 - [ ] UI change? screenshot attached
 - [ ] `wg-helper` touched? safety properties preserved (fixed paths, name

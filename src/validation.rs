@@ -52,6 +52,13 @@ pub fn sanitize_import_name(file_stem: &str) -> String {
             }
         })
         .collect();
+    // Collapse "double dot" runs so the result can never contain a path-traversal
+    // pattern that validate_tunnel_name()/the helper's name_ok() would reject —
+    // this function's contract is to return a *valid* tunnel name.
+    let mut cleaned = cleaned;
+    while cleaned.contains("..") {
+        cleaned = cleaned.replace("..", ".");
+    }
     let truncated: String = cleaned.chars().take(MAX_TUNNEL_NAME_LEN).collect();
     let trimmed = truncated
         .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
@@ -106,8 +113,30 @@ mod tests {
         assert_eq!(sanitize_import_name("@#$"), "tunnel");
         assert_eq!(sanitize_import_name("___abc"), "abc");
         assert_eq!(sanitize_import_name("a.b.c."), "a.b.c");
+        assert_eq!(sanitize_import_name("a..b"), "a.b");
+        assert_eq!(sanitize_import_name("x..conf"), "x");
         let long = sanitize_import_name("averylongtunnelname1234567");
         assert!(long.chars().count() <= 15);
+    }
+
+    #[test]
+    fn sanitize_always_yields_a_valid_tunnel_name() {
+        for input in [
+            "a..b",
+            "../../etc/passwd",
+            "..",
+            "...x",
+            "name.conf.conf",
+            "@@@9abc",
+            "home server",
+            "x..conf",
+        ] {
+            let out = sanitize_import_name(input);
+            assert!(
+                validate_tunnel_name(&out).is_ok(),
+                "{input:?} -> {out:?} is not a valid tunnel name"
+            );
+        }
     }
 
     #[test]

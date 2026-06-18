@@ -1,4 +1,4 @@
-# Releases
+# 📦 Releases
 
 This page explains where to get wireguard-gui, how the downloads are signed and
 verified, how each release is built, and what changed in every version.
@@ -9,7 +9,7 @@ window walk you through anything that is missing". The detail is below.
 
 ---
 
-## Where to get releases
+## 📥 Where to get releases
 
 Every version is published on the GitHub **Releases** page:
 
@@ -36,7 +36,7 @@ the smoothest because it pulls in the desktop and polkit integration).
 
 ---
 
-## How to verify a download (recommended)
+## ✅ How to verify a download (recommended)
 
 Releases are signed so you can confirm a download is authentic and untampered.
 The chain is: a `SHA256SUMS` file lists the SHA-256 of every artifact, and that
@@ -68,7 +68,7 @@ checksums are missing, the job fails rather than shipping something unverifiable
 
 ---
 
-## Version-aligned with the terminal sibling
+## 🔗 Version-aligned with the terminal sibling
 
 wireguard-gui has a sibling, **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)**
 (binary `wg-tui`) - the same tool as a keyboard-driven terminal UI for SSH and
@@ -81,7 +81,7 @@ on the GUI side, key bindings on the TUI side). The current version of both is
 
 ---
 
-## How releases are built
+## 🔧 How releases are built
 
 There are two GitHub Actions workflows.
 
@@ -108,27 +108,27 @@ SHA-256, and the job aborts if the `.deb` or checksums are missing.
 
 ---
 
-## Version history
+## 📋 Version history
 
 ### 1.6.0 (2026-06-17)
 
-- **nftables kill switch backend** — preferred when `nft` is available (`inet filter` table covers both IPv4+IPv6); iptables/ip6tables fallback.
-- **SSH safety warning** — the helper warns (stderr) before enabling a kill switch over an SSH connection.
-- **Copy UX** — click the value text or trailing ⧉ icon to copy; no more large "Copy" button.
-- **Log tab** — `TextEdit` (read-only) for native text selection and scrolling; journal limits raised to 1000 lines.
-- **Speed display** — uses ↓ ↑ icons instead of "down"/"up"; throughput calculation is more robust (no longer gated on active flag).
-- **More tests** — kill switch rule generation tests: nftables handle extraction and iptables rule numbering.
+- **nftables kill switch backend** - preferred when `nft` is available (`inet filter` table covers both IPv4+IPv6); iptables/ip6tables fallback.
+- **SSH safety warning** - the helper warns (stderr) before enabling a kill switch over an SSH connection.
+- **Copy UX** - click the value text or trailing ⧉ icon to copy; no more large "Copy" button.
+- **Log tab** - `TextEdit` (read-only) for native text selection and scrolling; journal limits raised to 1000 lines.
+- **Speed display** - uses ↓ ↑ icons instead of "down"/"up"; throughput calculation is more robust (no longer gated on active flag).
+- **More tests** - kill switch rule generation tests: nftables handle extraction and iptables rule numbering.
 
-## 1.6.3 (2026-06-18) — Clippy clean, QR fix, docs sync
+## 1.6.3 (2026-06-18) - Clippy clean, QR fix, docs sync
 
 - Zero clippy warnings across all targets (`-D warnings` enforced).
 - Terminal QR simplified to half-block only (auto-detect caused false "too large").
 - All markdown documentation audited and synchronized.
 
-## 1.6.2 (2026-06-18) — SSH allowlist, 92 tests, copy/log UX
+## 1.6.2 (2026-06-18) - SSH allowlist, 92 tests, copy/log UX
 
 - **SSH auto-allowlist.** Kill switch now auto-allows established SSH traffic when `$SSH_CONNECTION` is set.
-- **Copy UX.** Click the value text or ⧉ icon to copy — no more large "Copy" button.
+- **Copy UX.** Click the value text or ⧉ icon to copy - no more large "Copy" button.
 - **Log tab.** 1000 journal lines, `TextEdit` read-only for text selection and scrolling.
 - **Speed fix.** Reliable active detection via `wg show interfaces`; ↓ ↑ icons.
 - **92 tests** across both repos (helper + main).
@@ -426,7 +426,7 @@ white window, 1.0.0 is the version that fixes it.
 
 ---
 
-## Pre-1.0 history (for completeness)
+## 📜 Pre-1.0 history (for completeness)
 
 - **0.2.0** - Added README screenshots, a now-removed demo mode (`WGGUI_DEMO=1`),
   project docs (`CONTRIBUTING.md`, `SECURITY.md`, the changelog, issue/PR
@@ -444,7 +444,7 @@ white window, 1.0.0 is the version that fixes it.
 
 ---
 
-## Versioning policy
+## 📜 Versioning policy
 
 wireguard-gui follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (`MAJOR.MINOR.PATCH`):

@@ -1,10 +1,51 @@
-# Changelog
+# 📋 Changelog
 
 All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.6.5] - 2026-06-18
+
+### Security
+- Exported tunnel archive (which bundles every `PrivateKey`/`PresharedKey`) is
+  now created `0600` and with `O_NOFOLLOW`, closing a world/group-readable +
+  symlink-clobber key leak (`File::create` previously used the process umask).
+- Kill switch IPv6 fallback now fails closed: when only iptables is available,
+  the host has a non-loopback IPv6 address, and `ip6tables` is missing, enabling
+  the kill switch errors instead of silently leaving IPv6 unprotected while the
+  status still reads "enabled".
+
+### Fixed
+- Kill switch no longer blocks the tunnel's own traffic: added an explicit allow
+  rule for packets leaving the WireGuard interface (`oifname <iface>`).
+  Previously every packet routed into the tunnel hit the terminal REJECT, so
+  enabling the kill switch cut off all VPN traffic.
+- Deactivating a tunnel now tears the kill switch down with it (`down` calls
+  `killswitch_disable`), preventing the orphaned REJECT rule that otherwise
+  locked the machine out of all non-loopback egress.
+- FwMark is now set at runtime (`wg set <iface> fwmark`) instead of being
+  appended to the `.conf`, where it landed inside the last `[Peer]` section and
+  corrupted the config; this also removes the down/up restart and its leak
+  window, and prefers the fwmark `wg-quick` already assigned.
+- Structured form editor keeps configs with duplicate `Address`/`AllowedIPs`/
+  `DNS` lines (e.g. IPv4 + IPv6) or comments in raw-text mode, instead of
+  silently dropping the second value or the comments on save.
+- `PersistentKeepalive = off` is accepted as the valid WireGuard value it is.
+- Repeated `Address`/`AllowedIPs`/`DNS` lines are combined when parsing rather
+  than last-write-wins, so both an IPv4 and an IPv6 value survive.
+- Endpoint validation rejects malformed hosts (leading `-`, invalid dotted
+  quads such as `999.999.999.999`) and ports with a leading `+`.
+- Import-name sanitisation collapses `..`, so an imported file can no longer
+  produce a name the privileged helper rejects.
+- System-tray tunnel toggles re-check live state at click time instead of acting
+  on a possibly-stale captured flag (avoids the wrong action / double-activate).
+
+### CI
+- `cargo-deb` is version-pinned (`^2`) in the release workflow.
+- The AppImage build step no longer swallows a failed/empty build (`|| true`
+  removed, non-empty result required) before its output is checksummed/signed.
 
 ## [1.6.4] - 2026-06-18
 
@@ -195,7 +236,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Distro packaging**: an **AUR `PKGBUILD`** (Arch) and an **RPM spec for COPR**
   (Fedora/RHEL/Rocky), plus `packaging/PACKAGING.md`. (A Flatpak manifest is
-  included but documented as experimental — the sandbox is a poor fit for a
+  included but documented as experimental - the sandbox is a poor fit for a
   privileged system VPN manager.)
 
 ### Changed
@@ -344,7 +385,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a live "Public key" field (like the WireGuard for Windows dialog); a
   "Generate keypair" button regenerates on demand.
 - **QR codes** - *Show QR* renders a tunnel as a QR code to scan into the mobile
-  app, and *Add Tunnel → Import from QR code…* imports from a QR image.
+  app, and *Add Tunnel → Import from QR code...* imports from a QR image.
 - **Export** all tunnels to a `.zip` (the export button in the bottom bar).
 - **Copy** buttons for public keys, the full config, and the log.
 - **Start on boot** toggle (enables/disables the `wg-quick@` systemd unit).
@@ -417,7 +458,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Activate / Deactivate (`wg-quick up`/`down`).
 - Import one or many `.conf` files - single imports open the editor to name the
   tunnel; bulk imports auto-deduplicate names.
-- Inline editor with **config validation** (keys, addresses, endpoint, …); rename
+- Inline editor with **config validation** (keys, addresses, endpoint, ...); rename
   and remove tunnels.
 - **Hardened privileged helper** (`wg-helper`): fixed paths, strict tunnel-name
   validation (no path traversal), atomic config writes, timestamped backups

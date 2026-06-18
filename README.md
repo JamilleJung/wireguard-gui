@@ -22,7 +22,7 @@ Prefer the terminal? The sibling
 [`wireguard-tui`](https://github.com/JamilleJung/wireguard-tui) provides the same
 project philosophy as a keyboard-driven terminal UI.
 
-## Design philosophy
+## 💡 Design philosophy
 
 This project is intentionally small.
 
@@ -39,7 +39,7 @@ is no mandatory runtime core, daemon, or hidden platform layer.
 The goal is a native client that is easy to use, easy to inspect, easy to fork,
 and easy to extend without turning the project into a framework.
 
-## Why this exists
+## 🤔 Why this exists
 
 Linux already has strong WireGuard primitives. What many desktop users miss is a
 small native client that makes the routine workflow visible: import a config,
@@ -50,7 +50,7 @@ NetworkManager was the original spark, but this project is not only a
 NetworkManager workaround. The broader idea is to keep the clarity of a desktop
 client while staying close to the tools Linux WireGuard users already know.
 
-## Screenshots
+## 🖼️ Screenshots
 
 | Active tunnel | Inactive tunnel |
 |---|---|
@@ -60,9 +60,9 @@ client while staying close to the tools Linux WireGuard users already know.
 |---|---|
 | ![config editor](docs/screenshot-editor.png) | ![qr view](docs/screenshot-qr.png) |
 
-## What it does
+## ✨ What it does
 
-### Everyday use
+### 📋 Everyday use
 
 - Lists tunnels from `/etc/wireguard`.
 - Shows active/inactive state.
@@ -80,7 +80,7 @@ client while staying close to the tools Linux WireGuard users already know.
   (preferred) or iptables/ip6tables; auto-allows established SSH traffic.
 - Provides a tray menu on desktops with StatusNotifier/AppIndicator support.
 
-### Editing and config
+### ✏️ Editing and config
 
 - Opens a native editor window for tunnel configs.
 - Supports raw config editing.
@@ -94,7 +94,7 @@ client while staying close to the tools Linux WireGuard users already know.
 - Renames and removes tunnels through helper verbs.
 - Exports all tunnel configs to a zip archive.
 
-### Advanced operations
+### ⚙️ Advanced operations
 
 - Copies the live running config with `wg showconf`.
 - Applies compatible changes to an active tunnel with `wg syncconf`.
@@ -104,7 +104,7 @@ client while staying close to the tools Linux WireGuard users already know.
   Advanced mode for raw/runtime operations.
 - Remembers the Easy/Advanced preference under the user config directory.
 
-### Setup checks
+### 🚨 Setup checks
 
 On first run, the app opens a setup window when critical requirements are
 missing. The check is read-only and covers:
@@ -121,7 +121,7 @@ The automatic setup action only installs safe prerequisites such as
 `wireguard-tools`, a resolvconf provider, and `/etc/wireguard`. It does not
 install random config files, connect tunnels, or enable start-on-boot.
 
-## What it deliberately does not do
+## ❌ What it deliberately does not do
 
 - No NetworkManager dependency.
 - No Electron.
@@ -133,7 +133,7 @@ install random config files, connect tunnels, or enable start-on-boot.
 - No bundled WireGuard kernel module.
 - No root GUI.
 
-## How it works
+## 💡 How it works
 
 The GUI is a normal user process. It reads UI state, renders Slint views, and
 calls a small helper for operations that require root.
@@ -145,9 +145,9 @@ actions through `logger` so they are visible in the journal.
 The app does not translate configs into a project-specific database. The source
 of truth remains the plain WireGuard config file.
 
-## Install
+## 📦 Install
 
-### Prebuilt packages
+### 📦 Prebuilt packages
 
 The release page normally includes:
 
@@ -166,7 +166,7 @@ The AppImage is convenient for trying the UI, but privileged actions work best
 when the system helper is installed. Run `./install.sh` once, or install the
 `.deb`, if you want passwordless tunnel control.
 
-### Build from source
+### 🛠️ Build from source
 
 ```sh
 git clone https://github.com/JamilleJung/wireguard-gui.git
@@ -205,7 +205,7 @@ Uninstall:
 
 Tunnel configs in `/etc/wireguard` are left in place.
 
-## Verify releases
+## ✅ Verify releases
 
 Download the artifact you want plus `SHA256SUMS`. When `SHA256SUMS.minisig` is
 attached, verify both the signature and checksum:
@@ -224,7 +224,7 @@ minisign -Vm SHA256SUMS -p minisign.pub
 If the signature is not attached for a release, use `SHA256SUMS` as an integrity
 check only and prefer building from source for higher assurance.
 
-## Usage
+## 🎮 Usage
 
 Launch from the application menu or from a terminal:
 
@@ -246,7 +246,7 @@ Use Add Tunnel to import a file, import a QR image, or create a new tunnel. Use
 Edit for raw config editing and the structured multi-peer form. Use Advanced
 mode for export, running config, kill switch, and save-live operations.
 
-## Security and privilege model
+## 🛡️ Security and privilege model
 
 Designed with a small auditable privilege boundary:
 
@@ -290,11 +290,11 @@ scripts you might run as root.
 
 QR and zip export contain private keys. Treat them like the config file itself.
 
-## Hacking on it
+## 🔧 Hacking on it
 
 This is MIT open source. Fork it to hack on your own ideas.
 
-### Codebase map
+### 🗺️ Codebase map
 
 | Path | Purpose |
 |---|---|
@@ -314,11 +314,11 @@ This is MIT open source. Fork it to hack on your own ideas.
 | `packaging/` | Desktop entry, icon, polkit, AUR/RPM/APK/Void metadata |
 | `.github/workflows/` | CI and release automation |
 
-### Build and test
+### ✅ Build and test
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+cargo fmt --all - --check
+cargo clippy --all-targets - -D warnings
 cargo test
 cargo build --release
 bash -n install.sh
@@ -328,7 +328,7 @@ bash tests/helper-validation.sh target/release/wg-helper
 bash tests/installer-sanity.sh
 ```
 
-### Run from source
+### 🚀 Run from source
 
 ```sh
 cargo run --release
@@ -346,14 +346,14 @@ In release builds, `WG_HELPER` is ignored unless `WG_ALLOW_UNSAFE_HELPER=1` is
 set and the target is an absolute, root-owned, non-world-writable file. That is
 intentional: a helper override can become a root boundary.
 
-### Adding privileged behavior
+### 🔒 Adding privileged behavior
 
 Add a helper verb only when it maps to a concrete WireGuard operation. Keep the
 input shape fixed, validate tunnel names before filesystem access, use fixed
 paths, avoid shell expansion, create backups before destructive changes, and do
 not log private keys.
 
-## Troubleshooting
+## 🐛 Troubleshooting
 
 - `wg-quick` fails with `resolvconf: command not found`: install `openresolv` or
   use systemd-resolved.
@@ -370,7 +370,7 @@ not log private keys.
   interface through NetworkManager and this app at the same time.
 - Blank window or invisible inputs: make sure OpenGL/EGL and the Slint runtime dependencies are installed. The packaged build and installer install these.
 
-## Known limitations
+## 🚧 Known limitations
 
 - Start-on-boot is systemd-only.
 - The release workflow builds x86_64 and aarch64 tarballs; `.deb` and AppImage
@@ -386,11 +386,33 @@ not log private keys.
   or persistent firewall manager.
 - The project does not bundle WireGuard tools or kernel modules.
 
-## Roadmap
+## 🗺️ Roadmap
 
 - More distro packages where maintainers want them (COPR, official Alpine/Void).
 
-## License
+## ⭐ Star this project
+
+If `wireguard-gui` is useful to you, **please give it a star on GitHub** - it
+genuinely helps other people discover the project and motivates further work.
+
+👉 **[Star wireguard-gui on GitHub](https://github.com/JamilleJung/wireguard-gui)** ⭐
+
+You can also **watch** the repo for releases and **fork** it to hack on your own ideas.
+
+## ☕ Buy me a coffee
+
+This is a free, open-source project built in spare time. If it saved you some
+trouble and you'd like to say thanks, a coffee is hugely appreciated 💛
+
+<div align="center">
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/jamillejung)
+
+**[☕ buymeacoffee.com/jamillejung](https://www.buymeacoffee.com/jamillejung)**
+
+</div>
+
+## 📄 License
 
 MIT. WireGuard is a registered trademark of Jason A. Donenfeld. This is an
 independent, unofficial client and is not affiliated with or endorsed by the

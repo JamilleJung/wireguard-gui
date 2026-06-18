@@ -136,7 +136,7 @@ jobs:
       # ---------------- .deb ----------------
       - name: Build .deb
         run: |
-          cargo install cargo-deb --locked
+          cargo install cargo-deb --version '^2' --locked
           cargo deb --no-build --no-strip || cargo deb
           cp target/debian/*.deb .   # mandatory: fail the release if none exists
 
@@ -164,7 +164,11 @@ jobs:
             -d packaging/wireguard-gui.desktop \
             -i packaging/wireguard-gui.svg \
             --output appimage
-          mv ./*.AppImage "wireguard-gui-${V}-x86_64.AppImage" 2>/dev/null || true
+          # Gate inclusion: a missing or empty AppImage must not be silently
+          # carried into the checksum/sign/publish steps. No `|| true` (so a
+          # failed rename surfaces) and require a non-empty result.
+          mv ./*.AppImage "wireguard-gui-${V}-x86_64.AppImage"
+          test -s "wireguard-gui-${V}-x86_64.AppImage"
 
       # ---------------- checksums ----------------
       - name: Generate checksums
