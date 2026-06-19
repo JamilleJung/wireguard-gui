@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.13] - 2026-06-20
+
+### Fixed
+- **The `.deb` now installs with `apt` on current Debian/Ubuntu.** The dependency
+  `polkit-1 | policykit-1` was unsatisfiable on systems where polkit was renamed
+  to `polkitd` + `pkexec` (e.g. recent Ubuntu), so `apt install ./…deb` failed
+  with "polkit-1 but it is not installable". It is now
+  `pkexec | polkit-1 | policykit-1`, which resolves on both new and old systems
+  (`pkexec` pulls `polkitd`).
+- **GUI starts on X11 sessions.** Added `libxkbcommon-x11-0` to the `.deb`
+  dependencies — winit `dlopen`s it for the X11 backend, and without it the
+  window failed to open with a panic (`Library libxkbcommon-x11.so could not be
+  loaded`). Wayland sessions were unaffected.
+
 ## [1.6.12] - 2026-06-20
 
 ### Changed
