@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.10] - 2026-06-19
+
+### Size
+- Dropped dependency features that were compiled but never used — no change to
+  behavior or appearance (verified: full test suite passes, binary still launches):
+  - **`arboard` without its default `image-data` feature.** The app only ever
+    copies *text* to the clipboard (`set_text`), so the image-clipboard code path
+    is no longer compiled. Linux clipboard backend (x11rb) is unchanged.
+  - **`zip` uses `deflate-flate2` instead of the `deflate` meta-feature**,
+    dropping the Zopfli encoder. Exported archives are still standard DEFLATE
+    `.zip` that any tool opens; only the (slightly faster, slightly larger)
+    compressor changes.
+  Net ~138 KB off the release binary pre-UPX (~59 KB off the shipped,
+  UPX-compressed binary). Measured, not estimated.
+
 ## [1.6.9] - 2026-06-19
 
 ### Performance
