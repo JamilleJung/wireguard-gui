@@ -1,6 +1,6 @@
 [package]
 name = "wireguard-gui"
-version = "1.6.10"
+version = "1.6.11"
 edition = "2024"
 description = "A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick."
 license = "MIT"
@@ -27,7 +27,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # Text-only clipboard (the app only ever calls set_text), so arboard's
 # image-data path is not compiled.
 arboard = { version = "3", default-features = false }
-ksni = { version = "0.3", features = ["blocking"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 
 [build-dependencies]
 slint-build = "1"

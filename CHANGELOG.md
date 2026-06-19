@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.11] - 2026-06-20
+
+### Fixed
+- **Crash on startup.** The window failed to open with a panic
+  (`there is no reactor running, must be called from the context of a Tokio 1.x
+  runtime`). `ksni` 0.3 pulled `zbus` with its **tokio** feature while Slint's
+  accessibility stack uses `zbus` with **async-io**; Cargo unified the two and
+  zbus picked tokio, so Slint's a11y D-Bus calls panicked with no Tokio runtime
+  on their thread. `ksni` now uses `default-features = false` + the `async-io`
+  backend, so the whole tree shares one async-io reactor. (Regression present
+  since 1.6.8, when `ksni` moved to 0.3/zbus.)
+
+### CI
+- New **headless GUI launch smoke test** (Xvfb + dbus): the release now actually
+  opens the window in CI, so a crash during window/tray/a11y init blocks the
+  release instead of shipping. The bug above slipped through three releases
+  because CI only checked `--version`/`--help`.
+
 ## [1.6.10] - 2026-06-19
 
 ### Size

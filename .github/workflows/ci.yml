@@ -53,6 +53,38 @@ jobs:
           ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
           ./target/release/wireguard-gui --help >/dev/null
 
+      # Launch the real GUI headless so a crash during window/tray/a11y init is
+      # caught here instead of by users. (Regression guard: the zbus "no reactor
+      # running, must be a Tokio runtime" panic shipped undetected because the
+      # checks above never opened a window.)
+      - name: GUI launch smoke (headless)
+        run: |
+          # libxkbcommon-x11-0 is needed for the X11 (Xvfb) path; mesa DRI gives
+          # a software GL context. The a11y/zbus thread (the regression target)
+          # runs once X11+xkb are up, even if the GL render later struggles.
+          sudo apt-get install -y --no-install-recommends \
+            xvfb dbus libxkbcommon-x11-0 libgl1-mesa-dri libegl-mesa0
+          set +e
+          xvfb-run -a dbus-run-session -- env LIBGL_ALWAYS_SOFTWARE=1 \
+            timeout 8 ./target/release/wireguard-gui >/tmp/gui-launch.log 2>&1
+          rc=$?
+          set -e
+          # Hard-fail on the regression this guard exists for: the zbus/Tokio
+          # runtime panic from ksni pulling zbus/tokio vs Slint's async-io a11y.
+          if grep -qiE "no reactor running|Tokio 1\.x runtime" /tmp/gui-launch.log; then
+            echo "::error::zbus/Tokio-runtime panic on launch (ksni async-io fix regressed)"
+            cat /tmp/gui-launch.log; exit 1
+          fi
+          if [ "$rc" -eq 124 ]; then
+            echo "GUI launched and stayed alive 8s under Xvfb — OK"
+          elif grep -qiE "GLX|EGL|libGL|GL context|glutin|NotSupported|xkbcommon|could not" /tmp/gui-launch.log; then
+            echo "::warning::GUI exited early on a headless GL/X11 limitation (rc=$rc); zbus path clean"
+            cat /tmp/gui-launch.log
+          else
+            echo "::error::wireguard-gui crashed on launch (rc=$rc)"
+            cat /tmp/gui-launch.log; exit 1
+          fi
+
       - name: Shell lint the helper & installer
         run: |
           sudo apt-get install -y shellcheck
