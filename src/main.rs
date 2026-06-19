@@ -963,7 +963,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use ksni::blocking::TrayMethods;
     // `assume_sni_available` keeps the service alive even if the SNI host isn't
     // up yet at startup; the watcher_online/offline callbacks then track it.
-    let tray = Tray { window: ui.as_weak() };
+    let tray = Tray {
+        window: ui.as_weak(),
+    };
     if let Ok(tray_handle) = tray.assume_sni_available(true).spawn() {
         // Refresh the tray's tooltip/status periodically so it tracks live state.
         std::thread::spawn(move || {
