@@ -85,7 +85,7 @@ impl ksni::Tray for Tray {
     fn watcher_online(&self) {
         TRAY_ONLINE.store(true, Ordering::Relaxed);
     }
-    fn watcher_offine(&self) -> bool {
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
         // The SNI host went away — closing the window should now quit, not hide.
         TRAY_ONLINE.store(false, Ordering::Relaxed);
         true
@@ -960,18 +960,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- system-tray icon (best-effort; needs SNI support on the desktop,
     // e.g. KDE, or GNOME with the AppIndicator extension). Uses libdbus on its
     // own thread, independent of the zbus stack Slint already uses. ----
-    let tray_service = ksni::TrayService::new(Tray {
-        window: ui.as_weak(),
-    });
-    let tray_handle = tray_service.handle();
-    tray_service.spawn();
-    // Refresh the tray's tooltip/status periodically so it tracks live state.
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(3));
-            tray_handle.update(|_| {});
-        }
-    });
+    use ksni::blocking::TrayMethods;
+    // `assume_sni_available` keeps the service alive even if the SNI host isn't
+    // up yet at startup; the watcher_online/offline callbacks then track it.
+    let tray = Tray { window: ui.as_weak() };
+    if let Ok(tray_handle) = tray.assume_sni_available(true).spawn() {
+        // Refresh the tray's tooltip/status periodically so it tracks live state.
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(3));
+                let _ = tray_handle.update(|_| {});
+            }
+        });
+    }
 
     // ---- select ----
     {
