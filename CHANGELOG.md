@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.12] - 2026-06-20
+
+### Changed
+- **`install.sh` handles a root login cleanly.** Run from a bare `root` shell
+  with no normal user behind it, the installer now stops and recommends running
+  as your normal user (Rust builds with a per-user toolchain and the passwordless
+  helper grant is per-user, so a root install gets neither). Pass `--allow-root`
+  (or `WG_ALLOW_ROOT=1`) to install system-wide as root anyway — that path
+  **reuses an existing prebuilt binary** instead of dropping a Rust toolchain into
+  `/root`, and skips the per-user helper grant (as root the app runs the helper
+  directly, no escalation needed).
+
 ## [1.6.11] - 2026-06-20
 
 ### Fixed
