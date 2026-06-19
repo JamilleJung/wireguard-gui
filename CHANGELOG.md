@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.9] - 2026-06-19
+
+### Performance
+- `fmt_bytes` now picks its unit with a closed-form `floor(log2(b) / 10)` (a
+  single `leading_zeros` instruction) instead of a five-branch if/else ladder,
+  collapsing five `format!` sites into one. Branch-free and **byte-for-byte
+  identical** to the previous output — proven by the new
+  `fmt_bytes_matches_ladder` test across every unit boundary and a full-range
+  sweep.
+
+### Size
+- Release binaries are now **UPX-compressed** (`--best --lzma`), cutting the
+  installed on-disk footprint by ~60–70% (the GUI binary ~11M → ~3M, the helper
+  ~0.4M → ~0.17M). Runtime behavior is unchanged. The AppImage keeps an
+  uncompressed binary (it is already squashfs-compressed). Note: UPX repacks the
+  ELF, so the embedded `cargo auditable` SBOM is no longer extractable from the
+  *shipped* binaries via `cargo audit bin` (the provenance still runs at build
+  time).
+
 ## [1.6.8] - 2026-06-19
 
 ### Dependencies

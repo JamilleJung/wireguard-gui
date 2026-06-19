@@ -57,6 +57,17 @@ jobs:
           ./target/release/wireguard-gui --help >/dev/null
           bash tests/helper-validation.sh target/release/wg-helper
 
+      # Shrink the shipped binaries (~60-70% smaller on disk). Done AFTER the
+      # smoke checks above (which validate the real build), then re-smoked below
+      # so a broken pack fails the release instead of shipping.
+      - name: Compress binaries with UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends upx-ucl
+          upx --best --lzma target/release/wireguard-gui target/release/wg-helper
+          ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
+          ./target/release/wireguard-gui --help >/dev/null
+
       - name: Build aarch64 tarball
         env:
           REF: ${{ github.ref_name }}
@@ -128,6 +139,20 @@ jobs:
           bash tests/helper-validation.sh target/release/wg-helper
           bash tests/installer-sanity.sh
 
+      # Shrink the shipped binaries (~60-70% smaller on disk). Keep pristine
+      # `.full` copies for the AppImage step (linuxdeploy patchelfs the ELF and
+      # cannot process a UPX-packed binary; the AppImage is squashfs-compressed
+      # anyway). The tarball and .deb use the compressed binaries.
+      - name: Compress binaries with UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends upx-ucl
+          cp target/release/wireguard-gui target/release/wireguard-gui.full
+          cp target/release/wg-helper target/release/wg-helper.full
+          upx --best --lzma target/release/wireguard-gui target/release/wg-helper
+          ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
+          ./target/release/wireguard-gui --help >/dev/null
+
       # ---------------- binary tarball ----------------
       - name: Build binary tarball
         env:
@@ -169,8 +194,10 @@ jobs:
           mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/wireguard-gui" \
                    "$APPDIR/usr/share/applications" \
                    "$APPDIR/usr/share/icons/hicolor/scalable/apps"
-          cp target/release/wireguard-gui "$APPDIR/usr/bin/"
-          cp target/release/wg-helper "$APPDIR/usr/lib/wireguard-gui/"
+          # Use the uncompressed binaries: linuxdeploy patchelfs the ELF and
+          # cannot process a UPX-packed executable.
+          cp target/release/wireguard-gui.full "$APPDIR/usr/bin/wireguard-gui"
+          cp target/release/wg-helper.full "$APPDIR/usr/lib/wireguard-gui/wg-helper"
           cp packaging/wireguard-gui.desktop "$APPDIR/usr/share/applications/"
           cp packaging/wireguard-gui.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
           # Pinned linuxdeploy release + verified checksum (supply-chain hardening)

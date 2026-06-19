@@ -507,19 +507,18 @@ fn fmt_handshake(epoch: u64) -> String {
 }
 
 pub fn fmt_bytes(b: u64) -> String {
-    const KIB: f64 = 1024.0;
-    let b = b as f64;
-    if b < KIB {
-        format!("{b:.0} B")
-    } else if b < KIB * KIB {
-        format!("{:.2} KiB", b / KIB)
-    } else if b < KIB * KIB * KIB {
-        format!("{:.2} MiB", b / (KIB * KIB))
-    } else if b < KIB * KIB * KIB * KIB {
-        format!("{:.2} GiB", b / (KIB * KIB * KIB))
-    } else {
-        format!("{:.2} TiB", b / (KIB * KIB * KIB * KIB))
+    if b < 1024 {
+        return format!("{b} B");
     }
+    // Closed-form unit pick instead of an if/else ladder: the unit index is
+    // floor(log2(b) / 10) — i.e. how many whole times 1024 divides b. The
+    // high-bit position is `63 - leading_zeros` (one CPU instruction), and the
+    // 1024-power thresholds are exact in f64, so this is byte-for-byte identical
+    // to the ladder while collapsing five format! sites into one. Clamped to TiB.
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    let exp = (((63 - b.leading_zeros()) / 10) as usize).min(4);
+    let value = b as f64 / 1024f64.powi(exp as i32);
+    format!("{value:.2} {}", UNITS[exp - 1])
 }
 
 fn fmt_transfer(rx: u64, tx: u64) -> String {
@@ -703,6 +702,44 @@ mod tests {
 
     // A syntactically valid 44-char base64 WireGuard key (43 chars + '=').
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+
+    // The previous if/else ladder, kept here as the behavioral oracle so the
+    // closed-form `fmt_bytes` is proven byte-for-byte identical to it.
+    fn fmt_bytes_ladder(b: u64) -> String {
+        const KIB: f64 = 1024.0;
+        let b = b as f64;
+        if b < KIB {
+            format!("{b:.0} B")
+        } else if b < KIB * KIB {
+            format!("{:.2} KiB", b / KIB)
+        } else if b < KIB * KIB * KIB {
+            format!("{:.2} MiB", b / (KIB * KIB))
+        } else if b < KIB * KIB * KIB * KIB {
+            format!("{:.2} GiB", b / (KIB * KIB * KIB))
+        } else {
+            format!("{:.2} TiB", b / (KIB * KIB * KIB * KIB))
+        }
+    }
+
+    #[test]
+    fn fmt_bytes_matches_ladder() {
+        // Every unit boundary (and ±1 around it), plus 0 and u64::MAX.
+        let mut cases = vec![0u64, 1, 1023, 1024, 1025, u64::MAX];
+        for p in [10u32, 20, 30, 40, 50, 60] {
+            let t = 1u64 << p;
+            cases.extend([t - 1, t, t + 1]);
+        }
+        // A dense-ish multiplicative sweep across the whole range.
+        let mut v = 1u64;
+        while v < u64::MAX / 3 {
+            cases.push(v);
+            cases.push(v * 3);
+            v = v.saturating_mul(2);
+        }
+        for b in cases {
+            assert_eq!(fmt_bytes(b), fmt_bytes_ladder(b), "mismatch at b={b}");
+        }
+    }
 
     #[test]
     fn sanitize_name_rules() {
