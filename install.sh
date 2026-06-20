@@ -231,6 +231,12 @@ install_pkgs() {
 # and the toolchain + artifacts land in that user's home, not /root).
 # ---------------------------------------------------------------------------
 build_app() {
+    # Explicit prebuilt reuse (the auto-updater stages verified binaries and sets
+    # WG_USE_PREBUILT=1): skip the compile entirely when both are present.
+    if [ "${WG_USE_PREBUILT:-0}" = 1 ] && [ -f "$HERE/target/release/wireguard-gui" ] && [ -f "$HERE/target/release/wg-helper" ]; then
+        ok "Using staged prebuilt binaries (skipping build)."
+        return 0
+    fi
     # A root install (--allow-root) must not drop a Rust toolchain into /root or
     # run build scripts as root: reuse an existing prebuilt binary when present.
     if [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" = "root" ] \
@@ -267,6 +273,11 @@ BUILD
 # package "installed" but the command/headers still aren't where we need them).
 # ---------------------------------------------------------------------------
 verify_build_deps() {
+    # Explicit prebuilt reuse (WG_USE_PREBUILT=1): nothing is built, so don't
+    # fail on a missing compiler/headers.
+    if [ "${WG_USE_PREBUILT:-0}" = 1 ] && [ -f "$HERE/target/release/wireguard-gui" ] && [ -f "$HERE/target/release/wg-helper" ]; then
+        return 0
+    fi
     # When a root install will reuse the prebuilt binary, there is nothing to
     # build, so don't fail on a missing compiler/headers.
     if [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" = "root" ] \

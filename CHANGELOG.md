@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-06-21
+
+### Fixed
+- **The Log tab is no longer blank.** It now loads the journal automatically when
+  the app starts (not only when you click the tab), so there is never an empty
+  pane to stare at. Empty, error, and "filtered to nothing" states each show a
+  clear placeholder instead of blank text, and the view refreshes itself every
+  few seconds while the Log tab is open.
+- **Copy on the Log tab copies the full log**, not just the currently filtered
+  view, matching what **Save** writes.
+
+### Added
+- **Automatic updates from GitHub.** On startup the app quietly checks for a
+  newer release; if one exists it shows an unobtrusive banner with an
+  **Update now** button (and a **Check for updates** action in the About box).
+  Downloads are verified against the project's bundled minisign key **before**
+  anything is installed — an unverifiable update is refused, never applied. Opt
+  out any time with `WG_NO_UPDATE_CHECK=1` or a `~/.config/wireguard-gui/no-update`
+  file.
+
 ## [1.7.0] - 2026-06-20
 
 ### Added

@@ -8,6 +8,7 @@ mod create;
 mod doctor;
 mod secrets;
 mod ui_bridge;
+mod update;
 mod validation;
 
 use std::cell::RefCell;
@@ -874,23 +875,40 @@ fn refresh_list(ui: &MainWindow) {
 
 /// Re-apply the Log tab's filter + this-tunnel toggle to the stored raw log.
 fn apply_log_filter(ui: &MainWindow) {
+    let raw = RAW_LOG.with(|r| r.borrow().clone());
+
+    // Distinct, never-blank states:
+    //  - RAW empty  -> nothing loaded yet (only happens pre-first-load / after Clear)
+    //  - get_log() sentinels (error / "no entries") -> show verbatim, unfiltered
+    if raw.is_empty() {
+        ui.set_log_text("(loading… press Refresh if this stays empty)".into());
+        return;
+    }
+    if raw.starts_with("Could not read the log:") || raw == "(no recent log entries)" {
+        ui.set_log_text(raw.into());
+        return;
+    }
+
     let needle = ui.get_log_filter().to_string().to_ascii_lowercase();
     let only = if ui.get_log_this_tunnel() {
         selected_name(ui)
     } else {
         None
     };
-    let filtered: String = RAW_LOG.with(|r| {
-        r.borrow()
-            .lines()
-            .filter(|line| {
-                (needle.is_empty() || line.to_ascii_lowercase().contains(&needle))
-                    && only.as_deref().is_none_or(|n| line.contains(n))
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    ui.set_log_text(filtered.into());
+    let filtered: String = raw
+        .lines()
+        .filter(|line| {
+            (needle.is_empty() || line.to_ascii_lowercase().contains(&needle))
+                && only.as_deref().is_none_or(|n| line.contains(n))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if filtered.is_empty() {
+        ui.set_log_text("(no log lines match the current filter)".into());
+    } else {
+        ui.set_log_text(filtered.into());
+    }
 }
 
 /// Rebuild the Backup tab's list model from disk.
@@ -969,6 +987,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = MainWindow::new()?;
     refresh_list(&ui);
+
+    // Pre-load the journal so the Log tab shows content the instant it opens,
+    // instead of relying on the tab-click handler (and so a stale/odd UI build
+    // can never leave it blank).
+    RAW_LOG.with(|r| *r.borrow_mut() = backend::get_log());
+    apply_log_filter(&ui);
 
     // ---- Easy mode (everyday actions only) — load + persist the preference ----
     ui.set_easy_mode(load_easy());
@@ -1220,6 +1244,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let w = ui.as_weak();
+        ui.on_copy_log(move || {
+            let ui = w.unwrap();
+            let text = RAW_LOG.with(|r| r.borrow().clone());
+            if text.is_empty() {
+                set_status(&ui, "Nothing to copy yet — press Refresh");
+                return;
+            }
+            if copy_to_clipboard(&text) {
+                set_status(&ui, "Copied the full log to clipboard");
+            } else {
+                set_status(&ui, "Couldn't access the clipboard");
+            }
+        });
+    }
+    {
+        let w = ui.as_weak();
         ui.on_clear_log(move || {
             let ui = w.unwrap();
             RAW_LOG.with(|r| r.borrow_mut().clear());
@@ -1452,9 +1492,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
         }
+        // ---- About → Check for updates: the manual path that works even when
+        // the automatic startup check is disabled. Runs off the UI thread. ----
+        {
+            let aw = about.as_weak();
+            about.on_check_updates(move || {
+                if let Some(a) = aw.upgrade() {
+                    a.set_update_status("Checking for updates…".into());
+                }
+                let aw = aw.clone();
+                std::thread::spawn(move || {
+                    let msg = match update::check() {
+                        Ok(Some(info)) => {
+                            format!("Update available: v{} → v{}", info.current, info.latest)
+                        }
+                        Ok(None) => "You're on the latest version.".to_string(),
+                        Err(_) => "Couldn't check for updates (offline?).".to_string(),
+                    };
+                    let aw = aw.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(a) = aw.upgrade() {
+                            a.set_update_status(msg.into());
+                        }
+                    });
+                });
+            });
+        }
         let _ = about.show();
         ABOUTWIN.with(|slot| *slot.borrow_mut() = Some(about));
     });
+
+    // ---- Auto-update: main-window banner [Update now] + manual re-check ----
+    {
+        let w = ui.as_weak();
+        ui.on_do_update(move || {
+            let ui = w.unwrap();
+            set_status(&ui, "Downloading and verifying the update…");
+            let w = ui.as_weak();
+            std::thread::spawn(move || {
+                let result = update::download_and_verify().and_then(|dir| update::apply(&dir));
+                let (status, banner) = match result {
+                    Ok(()) => (
+                        "Update installed.".to_string(),
+                        Some("Updated — restart wireguard-gui to apply".to_string()),
+                    ),
+                    Err(e) => (format!("Update failed: {e}"), None),
+                };
+                let w = w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = w.upgrade() {
+                        set_status(&ui, status);
+                        if let Some(b) = banner {
+                            ui.set_update_banner(b.into());
+                        }
+                    }
+                });
+            });
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_check_updates(move || {
+            let ui = w.unwrap();
+            set_status(&ui, "Checking for updates…");
+            let w = ui.as_weak();
+            std::thread::spawn(move || {
+                let found = update::check();
+                let w = w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = w.upgrade() else { return };
+                    match found {
+                        Ok(Some(info)) => {
+                            ui.set_update_banner(
+                                format!("Update available: v{} → v{}", info.current, info.latest)
+                                    .into(),
+                            );
+                            ui.set_update_available(true);
+                        }
+                        Ok(None) => set_status(&ui, "You're on the latest version."),
+                        Err(_) => set_status(&ui, "Couldn't check for updates (offline?)."),
+                    }
+                });
+            });
+        });
+    }
 
     // ---- copy the live running config (wg showconf) ----
     {
@@ -1551,6 +1672,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // ---- Startup update check: detached thread, never blocks the UI. Gated by
+    // update::disabled() (WG_NO_UPDATE_CHECK env + persistent opt-out file).
+    // Offline / curl error → silent no-op. ----
+    if !update::disabled() {
+        let w = ui.as_weak();
+        std::thread::spawn(move || {
+            if let Ok(Some(info)) = update::check() {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.set_update_banner(
+                            format!("Update available: v{} → v{}", info.current, info.latest)
+                                .into(),
+                        );
+                        ui.set_update_available(true);
+                    }
+                });
+            }
+        });
+    }
+
     let live_timer = slint::Timer::default();
     {
         let w = ui.as_weak();
@@ -1585,6 +1726,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 ui.window().request_redraw();
+            },
+        );
+    }
+
+    // ---- Log auto-refresh: while the Log tab is open, re-pull the journal on a
+    // slow cadence so new wg-quick/audit lines appear without a manual Refresh.
+    // (get_log() shells out via sudo, so keep this interval gentle.)
+    let log_timer = slint::Timer::default();
+    {
+        let w = ui.as_weak();
+        log_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(3),
+            move || {
+                let Some(ui) = w.upgrade() else { return };
+                if ui.get_active_tab() != 1 {
+                    return;
+                }
+                RAW_LOG.with(|r| *r.borrow_mut() = backend::get_log());
+                apply_log_filter(&ui);
             },
         );
     }

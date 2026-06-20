@@ -400,6 +400,11 @@ export component MainWindow inherits Window {
     // available because it is a normal first-run workflow.
     in-out property <bool> easy-mode: true;
 
+    // Auto-update: a thin banner above the tab bar, shown only when a newer
+    // release was detected. Rust fills in the message and flips the flag.
+    in property <bool> update-available: false;
+    in property <string> update-banner: "";
+
     // ---- callbacks into Rust ----
     callback toggle-easy();
     callback select(int);
@@ -423,6 +428,7 @@ export component MainWindow inherits Window {
     // Log management
     callback apply-log-filter();
     callback save-log();
+    callback copy-log();
     callback clear-log();
     // Backup management
     callback refresh-backups();
@@ -430,6 +436,9 @@ export component MainWindow inherits Window {
     callback backup-restore(string);
     callback backup-delete(string);
     callback backup-export(string);
+    // Auto-update
+    callback do-update();
+    callback check-updates();
 
     // Force the light palette app-wide (Palette is a global). Without this,
     // GNOME dark mode gives std-widgets near-white fills that vanish on our
@@ -438,6 +447,35 @@ export component MainWindow inherits Window {
 
     VerticalLayout {
         spacing: 0px;
+
+        // ===================== update banner =====================
+        // A thin, unobtrusive row shown only when a newer release was found.
+        if root.update-available: Rectangle {
+            height: 30px;
+            background: #fff4d6;
+            Rectangle { y: parent.height - 1px; height: 1px; background: #e6d9a8; }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 8px;
+                Text {
+                    text: root.update-banner;
+                    color: #6a5300;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    PushButton {
+                        text: "Update now";
+                        primary: true;
+                        clicked => { root.do-update(); }
+                    }
+                }
+            }
+        }
 
         // ===================== tab bar =====================
         Rectangle {
@@ -921,7 +959,7 @@ export component MainWindow inherits Window {
                             alignment: center;
                             PushButton {
                                 text: "Copy";
-                                clicked => { root.copy-raw(root.log-text); }
+                                clicked => { root.copy-log(); }
                             }
                         }
                     }
@@ -1461,8 +1499,10 @@ export component AboutWindow inherits Window {
     width: 440px;
     height: 340px;
     in property <string> version;
+    in property <string> update-status: "";
     callback open-url(string);
     callback close-me();
+    callback check-updates();
 
     init => { Palette.color-scheme = ColorScheme.light; }
     background: white;
@@ -1503,9 +1543,21 @@ export component AboutWindow inherits Window {
                 clicked => { root.open-url("https://github.com/JamilleJung/wireguard-gui"); }
             }
             PushButton {
+                text: "Check for updates";
+                clicked => { root.check-updates(); }
+            }
+            PushButton {
                 text: "Buy me a coffee";
                 clicked => { root.open-url("https://www.buymeacoffee.com/jamillejung"); }
             }
+        }
+
+        if root.update-status != "": Text {
+            text: root.update-status;
+            color: #6a5300;
+            font-size: 12px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
         }
 
         Text {
