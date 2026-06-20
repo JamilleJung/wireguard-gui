@@ -259,7 +259,10 @@ fn save_easy(easy: bool) {
 
 /// Copy text to the system clipboard. Returns whether it succeeded.
 fn copy_to_clipboard(text: &str) -> bool {
-    CLIPBOARD.with(|c| {
+    // Native clipboard via arboard (the Wayland backend is enabled in Cargo.toml
+    // via the `wayland-data-control` feature). Cache the handle so the served
+    // selection persists for the app's lifetime.
+    let via_arboard = CLIPBOARD.with(|c| {
         let mut c = c.borrow_mut();
         if c.is_none() {
             *c = arboard::Clipboard::new().ok();
@@ -267,7 +270,56 @@ fn copy_to_clipboard(text: &str) -> bool {
         c.as_mut()
             .map(|cb| cb.set_text(text.to_string()).is_ok())
             .unwrap_or(false)
-    })
+    });
+    if via_arboard {
+        return true;
+    }
+    // Fallback for sessions where the native backend can't own the selection:
+    // pipe to whichever clipboard CLI is present (wl-copy / xclip / xsel).
+    copy_via_cli(text)
+}
+
+/// Last-resort clipboard: pipe `text` into a clipboard CLI. Tries the
+/// session-appropriate tool first and never blocks (wl-copy/xclip daemonize to
+/// serve the selection and the foreground process exits immediately).
+fn copy_via_cli(text: &str) -> bool {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let candidates: &[(&str, &[&str])] = if wayland {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
+    } else {
+        &[
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+            ("wl-copy", &[]),
+        ]
+    };
+
+    for (prog, args) in candidates {
+        let Ok(mut child) = Command::new(prog)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+            // Drop stdin to signal EOF so the tool stops reading and serves.
+        }
+        if child.wait().map(|s| s.success()).unwrap_or(false) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Replace (or insert) the `PrivateKey` line in a config with `key`.
@@ -911,6 +963,19 @@ fn apply_log_filter(ui: &MainWindow) {
     }
 }
 
+/// Reload the journal OFF the UI thread (`get_log()` shells out via sudo and can
+/// take a moment) and post the result back to the event loop. This is why
+/// opening the Log tab and pressing Refresh never stutter the UI.
+fn refresh_log_async(w: slint::Weak<MainWindow>) {
+    std::thread::spawn(move || {
+        let text = backend::get_log();
+        let _ = w.upgrade_in_event_loop(move |ui| {
+            RAW_LOG.with(|r| *r.borrow_mut() = text);
+            apply_log_filter(&ui);
+        });
+    });
+}
+
 /// Rebuild the Backup tab's list model from disk.
 fn populate_backups(ui: &MainWindow) {
     let rows: Vec<BackupRow> = backend::list_backups()
@@ -988,11 +1053,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = MainWindow::new()?;
     refresh_list(&ui);
 
-    // Pre-load the journal so the Log tab shows content the instant it opens,
-    // instead of relying on the tab-click handler (and so a stale/odd UI build
-    // can never leave it blank).
-    RAW_LOG.with(|r| *r.borrow_mut() = backend::get_log());
+    // Pre-load the journal OFF the UI thread so the Log tab shows content the
+    // instant it opens without ever blocking startup. apply_log_filter() runs
+    // now to paint a "(loading…)" placeholder until the background fetch lands.
     apply_log_filter(&ui);
+    refresh_log_async(ui.as_weak());
 
     // ---- Easy mode (everyday actions only) — load + persist the preference ----
     ui.set_easy_mode(load_easy());
@@ -1215,9 +1280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_refresh_log(move || {
-            let ui = w.unwrap();
-            RAW_LOG.with(|r| *r.borrow_mut() = backend::get_log());
-            apply_log_filter(&ui);
+            refresh_log_async(w.clone());
         });
     }
     {
@@ -1730,25 +1793,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // ---- Log auto-refresh: while the Log tab is open, re-pull the journal on a
-    // slow cadence so new wg-quick/audit lines appear without a manual Refresh.
-    // (get_log() shells out via sudo, so keep this interval gentle.)
-    let log_timer = slint::Timer::default();
-    {
-        let w = ui.as_weak();
-        log_timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_secs(3),
-            move || {
-                let Some(ui) = w.upgrade() else { return };
-                if ui.get_active_tab() != 1 {
-                    return;
-                }
-                RAW_LOG.with(|r| *r.borrow_mut() = backend::get_log());
-                apply_log_filter(&ui);
-            },
-        );
-    }
+    // (No periodic Log auto-refresh: re-pulling the journal on a timer ran
+    // get_log() on the UI thread — which shells out to sudo+journalctl — and
+    // re-set log-text underneath the user, stuttering the UI and clobbering an
+    // in-progress text selection. The log loads on startup, on opening the Log
+    // tab, and via the Refresh button, all off-thread now.)
 
     // First-run check: if something critical is missing, greet new users with a
     // friendly Setup wizard instead of an empty technical window. Otherwise go

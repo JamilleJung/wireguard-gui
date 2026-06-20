@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-06-21
+
+### Fixed
+- **The Log tab actually shows content now.** A layout bug left the log view with
+  no size (it collapsed to 0×0 and rendered nothing), so it stayed blank even
+  after 1.7.1. The view now fills the tab correctly.
+- **No more stutter on the Log tab.** The journal is loaded off the UI thread and
+  the periodic auto-refresh that re-ran a privileged journal read on the UI
+  thread was removed — the UI stays smooth and an in-progress text selection is
+  no longer interrupted.
+- **Copy works again** — both the **⧉** icons on the Tunnels detail (public key,
+  endpoint, …) and the Log tab's **Copy** button. The clipboard's Wayland backend
+  had been disabled by a build setting; it is re-enabled, with `wl-copy` /
+  `xclip` / `xsel` as a fallback for unusual sessions.
+
 ## [1.7.1] - 2026-06-21
 
 ### Fixed

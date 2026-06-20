@@ -896,17 +896,16 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
             background: white;
             VerticalLayout {
-                ScrollView {
+                // The log view. A bare TextEdit (it scrolls on its own) sized by
+                // the layout via vertical-stretch — NOT a ScrollView with an
+                // absolutely-positioned TextEdit, which collapses to 0x0 and
+                // renders nothing (the cause of the "blank Log" bug).
+                TextEdit {
                     vertical-stretch: 1;
-                    horizontal-stretch: 1;
-                    TextEdit {
-                        x: 12px;
-                        y: 10px;
-                        text: root.log-text;
-                        font-family: "monospace";
-                        font-size: 12px;
-                        read-only: true;
-                    }
+                    text: root.log-text;
+                    font-family: "monospace";
+                    font-size: 12px;
+                    read-only: true;
                 }
                 Rectangle {
                     height: 46px;
