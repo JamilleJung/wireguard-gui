@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-20
+
+### Added
+- **Backup manager** (new **Backup** tab): create timestamped archives of every
+  tunnel config, see them listed with date / size / tunnel-count, and **restore**,
+  **export**, or **delete** the selected one. Archives are written `0600` under
+  `~/.local/share/wireguard/backups` (shared with wireguard-tui — a backup made
+  in one shows up in the other).
+
+### Changed
+- **The Log tab is now manageable.** Filter the journal by a substring, limit it
+  to the selected tunnel, and **Save** it to a file or **Clear** the view — next
+  to the existing Refresh / Copy.
+
 ## [1.6.13] - 2026-06-20
 
 ### Fixed

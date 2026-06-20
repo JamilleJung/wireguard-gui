@@ -60,6 +60,9 @@ thread_local! {
     static SETUPWIN: RefCell<Option<SetupWindow>> = const { RefCell::new(None) };
     // Long-lived clipboard handle (kept alive so the copied text persists).
     static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+    // The unfiltered journal text; the Log tab's filter/this-tunnel toggles are
+    // applied to this each time without re-querying the privileged helper.
+    static RAW_LOG: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// System-tray icon (StatusNotifierItem). Shows on KDE, and on GNOME with the
@@ -869,6 +872,42 @@ fn refresh_list(ui: &MainWindow) {
     }
 }
 
+/// Re-apply the Log tab's filter + this-tunnel toggle to the stored raw log.
+fn apply_log_filter(ui: &MainWindow) {
+    let needle = ui.get_log_filter().to_string().to_ascii_lowercase();
+    let only = if ui.get_log_this_tunnel() {
+        selected_name(ui)
+    } else {
+        None
+    };
+    let filtered: String = RAW_LOG.with(|r| {
+        r.borrow()
+            .lines()
+            .filter(|line| {
+                (needle.is_empty() || line.to_ascii_lowercase().contains(&needle))
+                    && only.as_deref().is_none_or(|n| line.contains(n))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    ui.set_log_text(filtered.into());
+}
+
+/// Rebuild the Backup tab's list model from disk.
+fn populate_backups(ui: &MainWindow) {
+    let rows: Vec<BackupRow> = backend::list_backups()
+        .into_iter()
+        .map(|b| BackupRow {
+            name: b.name.into(),
+            date: backend::fmt_time(b.when_secs).into(),
+            size: backend::fmt_size(b.size).into(),
+            count: b.count.to_string().into(),
+        })
+        .collect();
+    ui.set_backups(ModelRc::new(VecModel::from(rows)));
+    ui.set_backup_sel(-1);
+}
+
 fn load_detail(ui: &MainWindow, name: &str) {
     *SELECTED.lock().unwrap() = Some(name.to_string());
     let detail = backend::get_detail(name);
@@ -1148,12 +1187,116 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ---- refresh the Log tab ----
+    // ---- Log tab: refresh / filter / save / clear ----
     {
         let w = ui.as_weak();
         ui.on_refresh_log(move || {
             let ui = w.unwrap();
-            ui.set_log_text(backend::get_log().into());
+            RAW_LOG.with(|r| *r.borrow_mut() = backend::get_log());
+            apply_log_filter(&ui);
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_apply_log_filter(move || apply_log_filter(&w.unwrap()));
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_save_log(move || {
+            let ui = w.unwrap();
+            let Some(dest) = rfd::FileDialog::new()
+                .set_title("Save log to a file")
+                .set_file_name("wireguard-gui-log.txt")
+                .save_file()
+            else {
+                return;
+            };
+            let text = RAW_LOG.with(|r| r.borrow().clone());
+            match backend::save_text_to(&dest, &text) {
+                Ok(()) => set_status(&ui, format!("Log saved to {}", dest.display())),
+                Err(e) => set_status(&ui, format!("Save failed: {e}")),
+            }
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_clear_log(move || {
+            let ui = w.unwrap();
+            RAW_LOG.with(|r| r.borrow_mut().clear());
+            ui.set_log_text("(cleared — press Refresh to reload from the journal)".into());
+        });
+    }
+
+    // ---- Backup tab: list / create / restore / delete / export ----
+    {
+        let w = ui.as_weak();
+        ui.on_refresh_backups(move || populate_backups(&w.unwrap()));
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_backup_create(move || {
+            let ui = w.unwrap();
+            match backend::create_backup() {
+                Ok(info) => set_status(&ui, format!("Backed up {} tunnel(s)", info.count)),
+                Err(e) => set_status(&ui, format!("Backup failed: {e}")),
+            }
+            populate_backups(&ui);
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_backup_restore(move |name| {
+            let ui = w.unwrap();
+            let path = match backend::backup_dir() {
+                Ok(d) => d.join(name.as_str()),
+                Err(e) => {
+                    set_status(&ui, format!("Restore failed: {e}"));
+                    return;
+                }
+            };
+            match backend::restore_backup(&path) {
+                Ok(n) => set_status(&ui, format!("Restored {n} tunnel(s) from backup")),
+                Err(e) => set_status(&ui, format!("Restore failed: {e}")),
+            }
+            refresh_list(&ui);
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_backup_delete(move |name| {
+            let ui = w.unwrap();
+            if let Ok(d) = backend::backup_dir() {
+                match backend::delete_backup(&d.join(name.as_str())) {
+                    Ok(()) => set_status(&ui, "Backup deleted"),
+                    Err(e) => set_status(&ui, format!("Delete failed: {e}")),
+                }
+            }
+            populate_backups(&ui);
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_backup_export(move |name| {
+            let ui = w.unwrap();
+            let src = match backend::backup_dir() {
+                Ok(d) => d.join(name.as_str()),
+                Err(e) => {
+                    set_status(&ui, format!("Export failed: {e}"));
+                    return;
+                }
+            };
+            let Some(dest) = rfd::FileDialog::new()
+                .set_title("Export backup")
+                .set_file_name(name.as_str())
+                .add_filter("Zip archive", &["zip"])
+                .save_file()
+            else {
+                return;
+            };
+            match backend::export_backup_to(&src, &dest) {
+                Ok(()) => set_status(&ui, format!("Exported to {}", dest.display())),
+                Err(e) => set_status(&ui, format!("Export failed: {e}")),
+            }
         });
     }
 

@@ -26,6 +26,13 @@ export struct CheckItem {
     warn: bool,
 }
 
+export struct BackupRow {
+    name: string,
+    date: string,
+    size: string,
+    count: string,
+}
+
 export struct TunnelDetail {
     name: string,
     active: bool,
@@ -377,9 +384,17 @@ export component MainWindow inherits Window {
     in property <TunnelDetail> detail;
     in property <string> status: "";
 
-    // tabs (0 = Tunnels, 1 = Log) + log contents
+    // tabs (0 = Tunnels, 1 = Log, 2 = Backup) + log contents
     in-out property <int> active-tab: 0;
     in property <string> log-text: "";
+    // Log management: a substring filter and a "this tunnel only" toggle that
+    // Rust applies to the raw journal text.
+    in-out property <string> log-filter: "";
+    in-out property <bool> log-this-tunnel: false;
+
+    // Backup manager: the archive list + which row is selected.
+    in property <[BackupRow]> backups;
+    in-out property <int> backup-sel: -1;
 
     // Easy mode hides expert/raw runtime actions. Creating a tunnel stays
     // available because it is a normal first-run workflow.
@@ -405,6 +420,16 @@ export component MainWindow inherits Window {
     callback show-about();
     callback persist-live(string);
     callback show-running(string);
+    // Log management
+    callback apply-log-filter();
+    callback save-log();
+    callback clear-log();
+    // Backup management
+    callback refresh-backups();
+    callback backup-create();
+    callback backup-restore(string);
+    callback backup-delete(string);
+    callback backup-export(string);
 
     // Force the light palette app-wide (Palette is a global). Without this,
     // GNOME dark mode gives std-widgets near-white fills that vanish on our
@@ -430,6 +455,11 @@ export component MainWindow inherits Window {
                     text: "Log";
                     selected: root.active-tab == 1;
                     clicked => { root.active-tab = 1; root.refresh-log(); }
+                }
+                TabButton {
+                    text: "Backup";
+                    selected: root.active-tab == 2;
+                    clicked => { root.active-tab = 2; root.refresh-backups(); }
                 }
             }
         }
@@ -857,12 +887,136 @@ export component MainWindow inherits Window {
                         }
                         VerticalLayout {
                             alignment: center;
-                            PushButton {
-                                text: "Copy log";
-                                clicked => { root.copy-raw(root.log-text); }
+                            LineEdit {
+                                width: 160px;
+                                placeholder-text: "Filter…";
+                                text: root.log-filter;
+                                edited(s) => { root.log-filter = s; root.apply-log-filter(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            CheckBox {
+                                text: "This tunnel";
+                                checked: root.log-this-tunnel;
+                                toggled => { root.log-this-tunnel = self.checked; root.apply-log-filter(); }
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Save";
+                                clicked => { root.save-log(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Clear";
+                                clicked => { root.clear-log(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Copy";
+                                clicked => { root.copy-raw(root.log-text); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===================== Backup tab =====================
+        if root.active-tab == 2: Rectangle {
+            vertical-stretch: 1;
+            background: white;
+            VerticalLayout {
+                // Column header
+                Rectangle {
+                    height: 28px;
+                    background: #f3f3f3;
+                    Rectangle { y: parent.height - 1px; height: 1px; background: #e0e0e0; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        Text { text: "When"; width: 170px; vertical-alignment: center; color: #666; font-size: 12px; }
+                        Text { text: "Size"; width: 90px; vertical-alignment: center; color: #666; font-size: 12px; }
+                        Text { text: "Tunnels"; width: 70px; vertical-alignment: center; color: #666; font-size: 12px; }
+                        Text { text: "File"; vertical-alignment: center; color: #666; font-size: 12px; }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for b[i] in root.backups: Rectangle {
+                        height: 30px;
+                        background: i == root.backup-sel ? #e8f0fe : white;
+                        TouchArea { clicked => { root.backup-sel = i; } }
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 12px;
+                            Text { text: b.date; width: 170px; vertical-alignment: center; font-size: 12px; color: #1b1b1b; }
+                            Text { text: b.size; width: 90px; vertical-alignment: center; font-size: 12px; color: #444; }
+                            Text { text: b.count; width: 70px; vertical-alignment: center; font-size: 12px; color: #444; }
+                            Text { text: b.name; vertical-alignment: center; font-size: 12px; color: #888; overflow: elide; }
+                        }
+                    }
+                }
+                // Empty hint
+                if root.backups.length == 0: Rectangle {
+                    vertical-stretch: 1;
+                    Text {
+                        text: "No backups yet.\nClick “New backup” to archive every tunnel config.";
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        color: #888;
+                    }
+                }
+                // Action bar
+                Rectangle {
+                    height: 46px;
+                    background: #fafafa;
+                    Rectangle { y: 0; height: 1px; background: #e0e0e0; }
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "New backup";
+                                clicked => { root.backup-create(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Restore";
+                                enabled: root.backup-sel >= 0;
+                                clicked => { root.backup-restore(root.backups[root.backup-sel].name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Export";
+                                enabled: root.backup-sel >= 0;
+                                clicked => { root.backup-export(root.backups[root.backup-sel].name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Delete";
+                                enabled: root.backup-sel >= 0;
+                                clicked => { root.backup-delete(root.backups[root.backup-sel].name); }
+                            }
+                        }
                     }
                 }
             }

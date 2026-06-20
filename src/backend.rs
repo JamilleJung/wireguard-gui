@@ -631,6 +631,231 @@ pub fn export_zip(dest: &std::path::Path) -> Result<usize, String> {
     Ok(files.len())
 }
 
+// ===========================================================================
+// Backup management — timestamped archives of every tunnel config, kept under
+// the user's data dir (NOT /etc/wireguard, so no helper needed for storage).
+// ===========================================================================
+
+/// Metadata about one backup archive.
+#[derive(Clone)]
+pub struct BackupInfo {
+    #[allow(dead_code)]
+    pub path: PathBuf,
+    pub name: String,
+    pub when_secs: i64,
+    pub size: u64,
+    pub count: usize,
+}
+
+/// `$XDG_DATA_HOME` (or `~/.local/share`) `/wireguard/backups`, created 0700 —
+/// the archives bundle private keys, so keep the whole tree private. The dir is
+/// shared with wireguard-tui (same /etc/wireguard configs).
+pub fn backup_dir() -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .ok_or("Can't locate a home directory for backups.")?;
+    let dir = base.join("wireguard").join("backups");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn tm_of(secs: i64) -> Option<libc::tm> {
+    let t = secs as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        None
+    } else {
+        Some(tm)
+    }
+}
+
+/// Local "YYYY-MM-DD HH:MM:SS" for display.
+pub fn fmt_time(secs: i64) -> String {
+    match tm_of(secs) {
+        Some(tm) => format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+            tm.tm_sec
+        ),
+        None => "unknown".into(),
+    }
+}
+
+fn stamp_compact(secs: i64) -> String {
+    match tm_of(secs) {
+        Some(tm) => format!(
+            "{:04}{:02}{:02}-{:02}{:02}{:02}",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+            tm.tm_sec
+        ),
+        None => format!("{secs}"),
+    }
+}
+
+/// Human-readable size, e.g. "12.3 KiB".
+pub fn fmt_size(bytes: u64) -> String {
+    fmt_bytes(bytes)
+}
+
+/// Create a timestamped backup of every tunnel config. Returns its metadata.
+pub fn create_backup() -> Result<BackupInfo, String> {
+    let dir = backup_dir()?;
+    let secs = now_secs();
+    let name = format!("wg-backup-{}.zip", stamp_compact(secs));
+    let path = dir.join(&name);
+    let count = export_zip(&path)?; // reuses the 0600 / O_NOFOLLOW writer
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    Ok(BackupInfo {
+        path,
+        name,
+        when_secs: secs,
+        size,
+        count,
+    })
+}
+
+fn count_zip_entries(path: &std::path::Path) -> usize {
+    std::fs::File::open(path)
+        .ok()
+        .and_then(|f| zip::ZipArchive::new(f).ok())
+        .map(|z| z.len())
+        .unwrap_or(0)
+}
+
+/// List existing backups, newest first.
+pub fn list_backups() -> Vec<BackupInfo> {
+    let dir = match backup_dir() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("zip") {
+            continue;
+        }
+        let Ok(md) = ent.metadata() else { continue };
+        let when_secs = md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        out.push(BackupInfo {
+            name: ent.file_name().to_string_lossy().into_owned(),
+            when_secs,
+            size: md.len(),
+            count: count_zip_entries(&path),
+            path,
+        });
+    }
+    out.sort_by_key(|b| std::cmp::Reverse(b.when_secs));
+    out
+}
+
+/// Confirm `path` resolves to a regular file directly inside the backup dir.
+fn backup_path_ok(path: &std::path::Path) -> Result<PathBuf, String> {
+    let dir = backup_dir()?;
+    let canon = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if canon.parent() != Some(dir.as_path()) {
+        return Err("Refusing to act on a path outside the backup directory.".into());
+    }
+    Ok(canon)
+}
+
+/// Restore every `.conf` inside a backup archive (overwriting tunnels of the
+/// same name). Returns the number restored.
+pub fn restore_backup(path: &std::path::Path) -> Result<usize, String> {
+    use std::io::Read;
+    let canon = backup_path_ok(path)?;
+    let f = std::fs::File::open(&canon).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
+    let mut restored = 0usize;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        if !entry.is_file() {
+            continue;
+        }
+        let raw = entry.name().to_string();
+        let stem = std::path::Path::new(&raw)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let name = sanitize_name(stem);
+        let mut content = String::new();
+        entry
+            .read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
+        save_config(&name, &content)?;
+        restored += 1;
+    }
+    if restored == 0 {
+        return Err("The backup contained no tunnel configs.".into());
+    }
+    Ok(restored)
+}
+
+/// Delete a backup archive (only within the backup directory).
+pub fn delete_backup(path: &std::path::Path) -> Result<(), String> {
+    let canon = backup_path_ok(path)?;
+    std::fs::remove_file(&canon).map_err(|e| e.to_string())
+}
+
+/// Copy a file to `dest`, 0600, refusing to follow a symlink there.
+fn write_private(dest: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dest)
+        .map_err(|e| format!("create {}: {e}", dest.display()))?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| e.to_string())?;
+    f.write_all(data).map_err(|e| e.to_string())
+}
+
+/// Copy a backup archive out to an external destination.
+pub fn export_backup_to(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    let canon = backup_path_ok(src)?;
+    let data = std::fs::read(&canon).map_err(|e| format!("read {}: {e}", canon.display()))?;
+    write_private(dest, &data)
+}
+
+/// Write arbitrary text (e.g. a saved log) to a file, 0600.
+pub fn save_text_to(dest: &std::path::Path, text: &str) -> Result<(), String> {
+    write_private(dest, text.as_bytes())
+}
+
 /// Decode a QR-code image file into its text (a WireGuard `.conf`).
 pub fn decode_qr(path: &std::path::Path) -> Result<String, String> {
     let img = image::open(path)
