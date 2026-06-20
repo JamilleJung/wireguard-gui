@@ -8,6 +8,7 @@
 //!      (baked with `include_str!`, so it can't be swapped on disk).
 //!   2. With `SHA256SUMS` now trusted, verify the downloaded tarball's digest
 //!      appears in it.
+//!
 //! No binary is replaced before [`verify_release`] returns `Ok`.
 //!
 //! APPLY re-runs the verified tarball's own `install.sh` — the same trusted
@@ -306,8 +307,8 @@ pub fn apply(tardir: &Path) -> Result<(), String> {
         // vars are passed through `env KEY=VAL` so they survive pkexec's env
         // sanitization. WG_REAL_USER keeps the per-user helper grant on the human.
         let user = invoking_user();
-        let installer_abs = fs::canonicalize(&installer)
-            .map_err(|e| format!("resolve install.sh path: {e}"))?;
+        let installer_abs =
+            fs::canonicalize(&installer).map_err(|e| format!("resolve install.sh path: {e}"))?;
         Command::new("pkexec")
             .arg("env")
             .arg(format!("WG_REAL_USER={user}"))
@@ -334,12 +335,12 @@ pub fn apply(tardir: &Path) -> Result<(), String> {
 fn invoking_user() -> String {
     unsafe {
         let pw = libc::getpwuid(libc::getuid());
-        if !pw.is_null() && !(*pw).pw_name.is_null() {
-            if let Ok(name) = std::ffi::CStr::from_ptr((*pw).pw_name).to_str() {
-                if !name.is_empty() {
-                    return name.to_string();
-                }
-            }
+        if !pw.is_null()
+            && !(*pw).pw_name.is_null()
+            && let Ok(name) = std::ffi::CStr::from_ptr((*pw).pw_name).to_str()
+            && !name.is_empty()
+        {
+            return name.to_string();
         }
     }
     std::env::var("USER").unwrap_or_default()
@@ -366,9 +367,11 @@ fn ensure_minisign() -> Result<(), String> {
     if which("minisign") {
         Ok(())
     } else {
-        Err("`minisign` is not installed and could not be installed; cannot \
+        Err(
+            "`minisign` is not installed and could not be installed; cannot \
              verify the update — aborting (run install.sh to update manually)"
-            .into())
+                .into(),
+        )
     }
 }
 
@@ -428,7 +431,10 @@ mod tests {
     #[test]
     fn extract_json_string_basic() {
         let j = r#"{"name":"v1.2.3","tag_name":"v1.8.0","draft":false}"#;
-        assert_eq!(extract_json_string(j, "tag_name").as_deref(), Some("v1.8.0"));
+        assert_eq!(
+            extract_json_string(j, "tag_name").as_deref(),
+            Some("v1.8.0")
+        );
     }
 
     #[test]
