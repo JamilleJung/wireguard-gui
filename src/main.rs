@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use ui_bridge::editor_form::{
     Fields, PeerFields, config_to_fields, fields_to_config, form_representable,
 };
@@ -57,6 +57,12 @@ thread_local! {
     static QRWIN: RefCell<Option<QrWindow>> = const { RefCell::new(None) };
     // Keeps the About window alive.
     static ABOUTWIN: RefCell<Option<AboutWindow>> = const { RefCell::new(None) };
+    // Keeps the in-app Help window alive.
+    static HELPWIN: RefCell<Option<HelpWindow>> = const { RefCell::new(None) };
+    // Keeps the Updates window alive.
+    static UPDATEWIN: RefCell<Option<UpdateWindow>> = const { RefCell::new(None) };
+    // Keeps the connection-diagnostics window alive.
+    static DIAGWIN: RefCell<Option<DiagWindow>> = const { RefCell::new(None) };
     // Keeps the first-run Setup wizard alive while it's shown.
     static SETUPWIN: RefCell<Option<SetupWindow>> = const { RefCell::new(None) };
     // Long-lived clipboard handle (kept alive so the copied text persists).
@@ -229,8 +235,353 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
-/// Path of the saved Easy/Advanced preference: $XDG_CONFIG_HOME (or ~/.config)
-/// /wireguard-gui/mode.
+/// The in-app guide, embedded at build time. Slint can't render markdown, so the
+/// Help window shows this raw text in a monospace view (still readable).
+const HELP_TEXT: &str = include_str!("../docs/help.md");
+
+/// The changelog, embedded at build time and shown in the Updates window.
+const CHANGELOG_TEXT: &str = include_str!("../CHANGELOG.md");
+
+/// Split a document into a `[string]` line model for the virtualized ListView
+/// doc views (Log / changelog / Help / Diagnostics). One Text row per line keeps
+/// scrolling O(visible) and avoids the read-only-TextEdit relayout/blink-Timer.
+fn lines_model(text: &str) -> ModelRc<SharedString> {
+    let rows: Vec<SharedString> = text.lines().map(SharedString::from).collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+/// Build a single-line model from one placeholder/status string (never-blank
+/// states for the Log view).
+fn one_line_model(text: &str) -> ModelRc<SharedString> {
+    ModelRc::new(VecModel::from(vec![SharedString::from(text)]))
+}
+
+/// Strip the inline markdown markers Slint can't render (`**bold**`, `` `code` ``,
+/// `*italic*`, and `[label](url)` links) down to their visible text, so a Help /
+/// changelog line reads cleanly. Hand-rolled (no regex crate): we drop `*` and
+/// `` ` `` run markers and rewrite links to their label. This is intentionally
+/// lenient — it's display-only text, not a parser, so unbalanced markers just
+/// lose their stray symbol rather than failing.
+fn strip_inline_md(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            // Drop emphasis/code markers (`*`, `**`, `` ` ``) — keep the text.
+            b'*' | b'`' => {
+                i += 1;
+                // Collapse a doubled `**` into one skip.
+                if i < bytes.len() && bytes[i] == c {
+                    i += 1;
+                }
+            }
+            // `[label](url)` -> `label`. Only rewrite a well-formed link; an
+            // unmatched `[` is emitted verbatim.
+            b'[' => {
+                if let Some((label, consumed)) = parse_md_link(&s[i..]) {
+                    out.push_str(&label);
+                    i += consumed;
+                } else {
+                    out.push('[');
+                    i += 1;
+                }
+            }
+            _ => {
+                // Copy this whole UTF-8 char (markers above are all ASCII, so
+                // multi-byte chars only ever hit this arm).
+                let ch_len = utf8_char_len(c);
+                let end = (i + ch_len).min(bytes.len());
+                out.push_str(&s[i..end]);
+                i = end;
+            }
+        }
+    }
+    out
+}
+
+/// Byte length of a UTF-8 char from its leading byte.
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b >> 5 == 0b110 {
+        2
+    } else if b >> 4 == 0b1110 {
+        3
+    } else if b >> 3 == 0b11110 {
+        4
+    } else {
+        1 // stray continuation byte — advance one to make progress
+    }
+}
+
+/// Parse a `[label](url)` markdown link at the start of `s`. Returns the label
+/// and the number of bytes consumed (the whole `[label](url)`), or None if `s`
+/// doesn't start with a complete link.
+fn parse_md_link(s: &str) -> Option<(String, usize)> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'[') {
+        return None;
+    }
+    let close = s.find("](")?;
+    let label = &s[1..close];
+    // Labels don't span lines or contain a nested `[`.
+    if label.contains('[') || label.contains('\n') {
+        return None;
+    }
+    let after = &s[close + 2..];
+    let paren = after.find(')')?;
+    if after[..paren].contains('\n') {
+        return None;
+    }
+    Some((label.to_string(), close + 2 + paren + 1))
+}
+
+/// Lightweight per-line markdown for the Help & changelog doc views: tag each
+/// line with a `kind` MdRow styles. We don't render full markdown — just enough
+/// (headings, bullets, blockquotes, fenced code, rules) to drop the literal
+/// `#`/`**`/backtick noise. Inline markers are stripped for every kind except
+/// code (which is shown verbatim).
+fn md_items(src: &str) -> Vec<DocItem> {
+    let mut items = Vec::new();
+    let mut in_code = false;
+    for raw in src.lines() {
+        let trimmed = raw.trim();
+        // Fenced code: ``` toggles the block; the fence lines themselves are
+        // not emitted.
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            // Verbatim — keep indentation, don't strip inline markers.
+            items.push(DocItem {
+                text: raw.into(),
+                kind: "code".into(),
+            });
+            continue;
+        }
+        let (kind, text): (&str, String) =
+            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                ("rule", String::new())
+            } else if let Some(rest) = trimmed.strip_prefix("### ") {
+                ("h3", strip_inline_md(rest))
+            } else if let Some(rest) = trimmed.strip_prefix("## ") {
+                ("h2", strip_inline_md(rest))
+            } else if let Some(rest) = trimmed.strip_prefix("# ") {
+                ("h1", strip_inline_md(rest))
+            } else if let Some(rest) = trimmed.strip_prefix("> ") {
+                ("quote", strip_inline_md(rest))
+            } else if trimmed.is_empty() {
+                ("blank", String::new())
+            } else if let Some(rest) = bullet_rest(raw) {
+                // Nested bullets (indented 2+ spaces) get a "  ◦ " hollow marker;
+                // top-level ones a "• " filled marker.
+                let nested = raw.len() - raw.trim_start().len() >= 2;
+                let marker = if nested { "  ◦ " } else { "• " };
+                ("bullet", format!("{marker}{}", strip_inline_md(rest)))
+            } else {
+                ("normal", strip_inline_md(trimmed))
+            };
+        items.push(DocItem {
+            text: text.into(),
+            kind: kind.into(),
+        });
+    }
+    items
+}
+
+/// If `line` is a markdown bullet (`- ` or `* ` after optional indentation),
+/// return the text after the marker. Avoids treating a `***` rule (already
+/// handled) or a bare `*` as a bullet.
+fn bullet_rest(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))
+}
+
+/// Build the `[DocItem]` model for a markdown doc view (Help / changelog).
+fn md_items_model(src: &str) -> ModelRc<DocItem> {
+    ModelRc::new(VecModel::from(md_items(src)))
+}
+
+/// Briefly show an inline "Copied!" confirmation in a doc window (Help / Update
+/// / Diag), then clear it. These windows have no main status bar, so a tiny
+/// transient hint stands in. `set_hint` writes the window's `copied-hint`.
+fn flash_copied_hint<W, F>(win: &W, set_hint: F, msg: &str)
+where
+    W: ComponentHandle + 'static,
+    F: Fn(&W, SharedString) + Copy + 'static,
+{
+    set_hint(win, msg.into());
+    let weak = win.as_weak();
+    let timer = Timer::default();
+    timer.start(
+        TimerMode::SingleShot,
+        Duration::from_millis(1500),
+        move || {
+            if let Some(w) = weak.upgrade() {
+                set_hint(&w, SharedString::new());
+            }
+        },
+    );
+    // Leak the timer so it lives long enough to fire (the window outlives it).
+    std::mem::forget(timer);
+}
+
+/// Open (or re-open) the in-app Help window with the embedded guide.
+fn show_help_window() {
+    let Ok(win) = HelpWindow::new() else { return };
+    win.set_items(md_items_model(HELP_TEXT));
+    win.set_full_text(HELP_TEXT.into());
+    {
+        let hw = win.as_weak();
+        win.on_close_me(move || {
+            if let Some(h) = hw.upgrade() {
+                let _ = h.hide();
+            }
+        });
+    }
+    {
+        let hw = win.as_weak();
+        win.on_copy_line(move |line| {
+            if copy_to_clipboard(&line)
+                && let Some(h) = hw.upgrade()
+            {
+                flash_copied_hint(&h, |w, m| w.set_copied_hint(m), "Copied!");
+            }
+        });
+    }
+    {
+        let hw = win.as_weak();
+        win.on_copy_all(move || {
+            let Some(h) = hw.upgrade() else { return };
+            if copy_to_clipboard(&h.get_full_text()) {
+                flash_copied_hint(&h, |w, m| w.set_copied_hint(m), "Copied all!");
+            }
+        });
+    }
+    let _ = win.show();
+    HELPWIN.with(|slot| *slot.borrow_mut() = Some(win));
+}
+
+/// Kick off a background `update::check()` for an open Updates window, posting
+/// the status + update-available flag back on the UI thread.
+fn run_update_check(win: &UpdateWindow) {
+    win.set_status("Checking…".into());
+    win.set_update_available(false);
+    let ww = win.as_weak();
+    std::thread::spawn(move || {
+        let found = update::check();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = ww.upgrade() else { return };
+            match found {
+                Ok(Some(info)) => {
+                    w.set_status(
+                        format!("Update available: v{} → v{}", info.current, info.latest).into(),
+                    );
+                    w.set_update_available(true);
+                }
+                Ok(None) => {
+                    w.set_status(
+                        format!("You are on the latest version (v{}).", w.get_installed()).into(),
+                    );
+                    w.set_update_available(false);
+                }
+                Err(_) => {
+                    w.set_status("Couldn't check for updates (offline?).".into());
+                    w.set_update_available(false);
+                }
+            }
+        });
+    });
+}
+
+/// Trim the dev-facing Keep-a-Changelog header/intro and the (usually empty)
+/// `[Unreleased]` section for the in-app view — end users just want the released
+/// versions, so start at the first `## [x.y.z]` heading.
+fn changelog_for_display(src: &str) -> String {
+    for (i, line) in src.lines().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("## [") && t.as_bytes().get(4).is_some_and(u8::is_ascii_digit) {
+            return src.lines().skip(i).collect::<Vec<_>>().join("\n");
+        }
+    }
+    src.to_string()
+}
+
+/// Open (or re-open) the Updates window: shows the installed version + embedded
+/// changelog, then kicks off a background check.
+fn show_update_window() {
+    let Ok(win) = UpdateWindow::new() else { return };
+    win.set_installed(env!("CARGO_PKG_VERSION").into());
+    let log = changelog_for_display(CHANGELOG_TEXT);
+    win.set_changelog_items(md_items_model(&log));
+    win.set_changelog_text(log.into());
+    {
+        let uw = win.as_weak();
+        win.on_close_me(move || {
+            if let Some(u) = uw.upgrade() {
+                let _ = u.hide();
+            }
+        });
+    }
+    {
+        let uw = win.as_weak();
+        win.on_copy_line(move |line| {
+            if copy_to_clipboard(&line)
+                && let Some(u) = uw.upgrade()
+            {
+                flash_copied_hint(&u, |w, m| w.set_copied_hint(m), "Copied!");
+            }
+        });
+    }
+    {
+        let uw = win.as_weak();
+        win.on_copy_all(move || {
+            let Some(u) = uw.upgrade() else { return };
+            if copy_to_clipboard(&u.get_changelog_text()) {
+                flash_copied_hint(&u, |w, m| w.set_copied_hint(m), "Copied all!");
+            }
+        });
+    }
+    {
+        let uw = win.as_weak();
+        win.on_check_updates(move || {
+            if let Some(u) = uw.upgrade() {
+                run_update_check(&u);
+            }
+        });
+    }
+    {
+        let uw = win.as_weak();
+        win.on_do_update(move || {
+            let Some(u) = uw.upgrade() else { return };
+            u.set_status("Downloading and verifying the update…".into());
+            u.set_update_available(false);
+            let uw = u.as_weak();
+            std::thread::spawn(move || {
+                let result = update::download_and_verify().and_then(|dir| update::apply(&dir));
+                let msg = match result {
+                    Ok(()) => "Update installed — restart wireguard-gui to apply.".to_string(),
+                    Err(e) => format!("Update failed: {e}"),
+                };
+                let uw = uw.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(u) = uw.upgrade() {
+                        u.set_status(msg.into());
+                    }
+                });
+            });
+        });
+    }
+    run_update_check(&win);
+    let _ = win.show();
+    UPDATEWIN.with(|slot| *slot.borrow_mut() = Some(win));
+}
+
+/// Path of the saved "Advanced" disclosure preference: $XDG_CONFIG_HOME (or
+/// ~/.config)/wireguard-gui/mode.
 fn mode_state_path() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -239,21 +590,24 @@ fn mode_state_path() -> Option<std::path::PathBuf> {
     Some(base.join("wireguard-gui").join("mode"))
 }
 
-/// Load the saved mode. New users default to Easy mode.
-fn load_easy() -> bool {
+/// Load whether the per-tunnel "Advanced ▾" section starts expanded. New users
+/// default to collapsed. Tolerates the legacy file contents from the old
+/// Easy/Advanced toggle: old "advanced" maps to expanded, anything else to
+/// collapsed.
+fn load_show_advanced() -> bool {
     match mode_state_path().and_then(|p| std::fs::read_to_string(p).ok()) {
-        Some(s) => s.trim() != "advanced",
-        None => true,
+        Some(s) => matches!(s.trim(), "expanded" | "advanced"),
+        None => false,
     }
 }
 
-/// Persist the mode so the choice sticks across runs.
-fn save_easy(easy: bool) {
+/// Persist the disclosure state so a power user who expands it keeps it.
+fn save_show_advanced(expanded: bool) {
     if let Some(p) = mode_state_path() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, if easy { "easy" } else { "advanced" });
+        let _ = std::fs::write(p, if expanded { "expanded" } else { "collapsed" });
     }
 }
 
@@ -674,6 +1028,9 @@ fn open_editor(
         copy_to_clipboard(&t);
     });
 
+    // Header "? Help" link: open the in-app guide.
+    ed.on_show_help(show_help_window);
+
     // Cancel: just hide (the strong handle lives in EDITOR until next open).
     {
         let edw = ed.as_weak();
@@ -933,11 +1290,13 @@ fn apply_log_filter(ui: &MainWindow) {
     //  - RAW empty  -> nothing loaded yet (only happens pre-first-load / after Clear)
     //  - get_log() sentinels (error / "no entries") -> show verbatim, unfiltered
     if raw.is_empty() {
-        ui.set_log_text("(loading… press Refresh if this stays empty)".into());
+        ui.set_log_lines(one_line_model(
+            "(loading… press Refresh if this stays empty)",
+        ));
         return;
     }
     if raw.starts_with("Could not read the log:") || raw == "(no recent log entries)" {
-        ui.set_log_text(raw.into());
+        ui.set_log_lines(lines_model(&raw));
         return;
     }
 
@@ -947,19 +1306,19 @@ fn apply_log_filter(ui: &MainWindow) {
     } else {
         None
     };
-    let filtered: String = raw
+    let filtered: Vec<SharedString> = raw
         .lines()
         .filter(|line| {
             (needle.is_empty() || line.to_ascii_lowercase().contains(&needle))
                 && only.as_deref().is_none_or(|n| line.contains(n))
         })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .map(SharedString::from)
+        .collect();
 
     if filtered.is_empty() {
-        ui.set_log_text("(no log lines match the current filter)".into());
+        ui.set_log_lines(one_line_model("(no log lines match the current filter)"));
     } else {
-        ui.set_log_text(filtered.into());
+        ui.set_log_lines(ModelRc::new(VecModel::from(filtered)));
     }
 }
 
@@ -1023,7 +1382,52 @@ fn set_status(ui: &MainWindow, msg: impl Into<SharedString>) {
     });
 }
 
+/// Single-instance guard via an abstract Unix socket (auto-released when the
+/// process exits — no stale lock files). If another instance already holds it,
+/// nudge that instance to raise its window and return None so we exit quietly.
+/// Otherwise return the listener; the primary keeps it alive and accepts pings.
+fn single_instance_listener() -> Option<std::os::unix::net::UnixListener> {
+    use std::io::Write as _;
+    use std::os::linux::net::SocketAddrExt as _;
+    use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+
+    let uid = unsafe { libc::getuid() };
+    let addr = SocketAddr::from_abstract_name(format!("wireguard-gui-{uid}")).ok()?;
+    match UnixListener::bind_addr(&addr) {
+        Ok(listener) => Some(listener),
+        Err(_) => {
+            // Already running — ask it to show its window, then bow out.
+            if let Ok(mut s) = UnixStream::connect_addr(&addr) {
+                let _ = s.write_all(b"show");
+            }
+            None
+        }
+    }
+}
+
+/// NVIDIA's proprietary driver stutters on native Wayland (frame-callback
+/// present path); XWayland's X11/GLX path is smooth. If we're on NVIDIA +
+/// Wayland and XWayland is available (DISPLAY set), drop WAYLAND_DISPLAY so
+/// winit uses X11. Opt out with WG_FORCE_WAYLAND=1; non-NVIDIA GPUs are left on
+/// native Wayland.
+fn prefer_xwayland_on_nvidia() {
+    if std::env::var_os("WG_FORCE_WAYLAND").is_some() {
+        return;
+    }
+    let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let have_xwayland = std::env::var_os("DISPLAY").is_some();
+    let nvidia_proprietary = std::path::Path::new("/proc/driver/nvidia/version").exists();
+    if on_wayland && have_xwayland && nvidia_proprietary {
+        // SAFETY: single-threaded, at the very start of main() before any threads.
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // NVIDIA + native Wayland stutters; fall back to XWayland before any
+    // windowing/Slint init (and before any threads spawn).
+    prefer_xwayland_on_nvidia();
+
     // Answer --version/--help without opening a window (useful in scripts).
     if let Some(arg) = std::env::args().nth(1) {
         match arg.as_str() {
@@ -1048,10 +1452,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Single-instance: if WireGuard is already running, raise the existing
+    // window (the listener thread below) instead of opening a second window and
+    // a second tray icon — then exit this launch.
+    let instance = match single_instance_listener() {
+        Some(listener) => listener,
+        None => return Ok(()),
+    };
+
     backend::init();
 
     let ui = MainWindow::new()?;
+
+    // Match the Wayland app_id / X11 WM_CLASS to the .desktop file basename
+    // (`wireguard-gui`) so the compositor maps the window to our .desktop and
+    // shows the installed icon instead of a generic placeholder. Must be set
+    // AFTER the platform is initialized (MainWindow::new does that) but BEFORE
+    // the window is shown.
+    let _ = slint::set_xdg_app_id("wireguard-gui");
+
     refresh_list(&ui);
+
+    // A second launch connects to our abstract socket; raise the window for it.
+    {
+        let w = ui.as_weak();
+        std::thread::spawn(move || {
+            for conn in instance.incoming() {
+                if conn.is_ok() {
+                    let w = w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            let _ = ui.show();
+                            ui.window().set_minimized(false);
+                        }
+                    });
+                }
+            }
+        });
+    }
 
     // Pre-load the journal OFF the UI thread so the Log tab shows content the
     // instant it opens without ever blocking startup. apply_log_filter() runs
@@ -1059,18 +1497,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_log_filter(&ui);
     refresh_log_async(ui.as_weak());
 
-    // ---- Easy mode (everyday actions only) — load + persist the preference ----
-    ui.set_easy_mode(load_easy());
-    {
-        let w = ui.as_weak();
-        ui.on_toggle_easy(move || {
-            if let Some(ui) = w.upgrade() {
-                let next = !ui.get_easy_mode();
-                ui.set_easy_mode(next);
-                save_easy(next);
-            }
-        });
-    }
+    // ---- Advanced disclosure — load the saved state + persist on toggle ----
+    ui.set_show_advanced(load_show_advanced());
+    ui.on_persist_advanced(move |expanded| {
+        save_show_advanced(expanded);
+    });
 
     // ---- close to tray: hide instead of quitting (Quit is on the tray) ----
     // …but only if a tray actually exists to restore the window from. With no
@@ -1122,7 +1553,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_activate(move |name| {
             let ui = w.unwrap();
             match backend::activate(&name) {
-                Ok(()) => set_status(&ui, format!("Activated {name}")),
+                Ok(()) => {
+                    // A wrong clock makes the server silently reject the handshake
+                    // (TAI64N anti-replay): the tunnel reads "active" but never
+                    // connects. Flag it up front, non-blocking, and point at Diagnose.
+                    if doctor::clock_synced() == Some(false) {
+                        set_status(
+                            &ui,
+                            "Activated — but the clock isn't NTP-synced; the handshake may be rejected. Use Diagnose.",
+                        );
+                    } else {
+                        set_status(&ui, format!("Activated {name}"));
+                    }
+                }
                 Err(e) => set_status(
                     &ui,
                     format!("Activate failed: {}", doctor::friendly_error(&e)),
@@ -1142,6 +1585,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             load_detail(&ui, &name);
             refresh_list(&ui);
+        });
+    }
+
+    // ---- diagnose a stuck connection ----
+    // The report pings the endpoint / resolves DNS / shells out, so it MUST run
+    // off the UI thread. We post the finished text back via the event loop and
+    // show it in a simple read-only popup.
+    {
+        let w = ui.as_weak();
+        ui.on_diagnose_conn(move |name| {
+            let ui = w.unwrap();
+            set_status(&ui, "Diagnosing…");
+            std::thread::spawn(move || {
+                let report = backend::diagnose_report(&name);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Ok(win) = DiagWindow::new() else { return };
+                    win.set_report_lines(lines_model(&report));
+                    win.set_full_text(report.as_str().into());
+                    {
+                        let dw = win.as_weak();
+                        win.on_close_me(move || {
+                            if let Some(d) = dw.upgrade() {
+                                let _ = d.hide();
+                            }
+                        });
+                    }
+                    {
+                        let dw = win.as_weak();
+                        win.on_copy_line(move |line| {
+                            if copy_to_clipboard(&line)
+                                && let Some(d) = dw.upgrade()
+                            {
+                                flash_copied_hint(&d, |w, m| w.set_copied_hint(m), "Copied!");
+                            }
+                        });
+                    }
+                    {
+                        let dw = win.as_weak();
+                        win.on_copy_all(move || {
+                            let Some(d) = dw.upgrade() else { return };
+                            if copy_to_clipboard(&d.get_full_text()) {
+                                flash_copied_hint(&d, |w, m| w.set_copied_hint(m), "Copied all!");
+                            }
+                        });
+                    }
+                    let _ = win.show();
+                    DIAGWIN.with(|slot| *slot.borrow_mut() = Some(win));
+                });
+            });
         });
     }
 
@@ -1323,10 +1815,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let w = ui.as_weak();
+        ui.on_copy_line(move |line| {
+            let ui = w.unwrap();
+            if copy_to_clipboard(&line) {
+                set_status(&ui, "Copied line");
+            } else {
+                set_status(&ui, "Couldn't access the clipboard");
+            }
+        });
+    }
+    {
+        let w = ui.as_weak();
         ui.on_clear_log(move || {
             let ui = w.unwrap();
             RAW_LOG.with(|r| r.borrow_mut().clear());
-            ui.set_log_text("(cleared — press Refresh to reload from the journal)".into());
+            ui.set_log_lines(one_line_model(
+                "(cleared — press Refresh to reload from the journal)",
+            ));
         });
     }
 
@@ -1555,90 +2060,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
         }
-        // ---- About → Check for updates: the manual path that works even when
-        // the automatic startup check is disabled. Runs off the UI thread. ----
-        {
-            let aw = about.as_weak();
-            about.on_check_updates(move || {
-                if let Some(a) = aw.upgrade() {
-                    a.set_update_status("Checking for updates…".into());
-                }
-                let aw = aw.clone();
-                std::thread::spawn(move || {
-                    let msg = match update::check() {
-                        Ok(Some(info)) => {
-                            format!("Update available: v{} → v{}", info.current, info.latest)
-                        }
-                        Ok(None) => "You're on the latest version.".to_string(),
-                        Err(_) => "Couldn't check for updates (offline?).".to_string(),
-                    };
-                    let aw = aw.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(a) = aw.upgrade() {
-                            a.set_update_status(msg.into());
-                        }
-                    });
-                });
-            });
-        }
+        // ---- About → "Check for updates": open the unified Updates window
+        // (current version, status, changelog, and the update actions). ----
+        about.on_show_update(show_update_window);
         let _ = about.show();
         ABOUTWIN.with(|slot| *slot.borrow_mut() = Some(about));
     });
 
-    // ---- Auto-update: main-window banner [Update now] + manual re-check ----
-    {
-        let w = ui.as_weak();
-        ui.on_do_update(move || {
-            let ui = w.unwrap();
-            set_status(&ui, "Downloading and verifying the update…");
-            let w = ui.as_weak();
-            std::thread::spawn(move || {
-                let result = update::download_and_verify().and_then(|dir| update::apply(&dir));
-                let (status, banner) = match result {
-                    Ok(()) => (
-                        "Update installed.".to_string(),
-                        Some("Updated — restart wireguard-gui to apply".to_string()),
-                    ),
-                    Err(e) => (format!("Update failed: {e}"), None),
-                };
-                let w = w.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = w.upgrade() {
-                        set_status(&ui, status);
-                        if let Some(b) = banner {
-                            ui.set_update_banner(b.into());
-                        }
-                    }
-                });
-            });
-        });
-    }
-    {
-        let w = ui.as_weak();
-        ui.on_check_updates(move || {
-            let ui = w.unwrap();
-            set_status(&ui, "Checking for updates…");
-            let w = ui.as_weak();
-            std::thread::spawn(move || {
-                let found = update::check();
-                let w = w.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(ui) = w.upgrade() else { return };
-                    match found {
-                        Ok(Some(info)) => {
-                            ui.set_update_banner(
-                                format!("Update available: v{} → v{}", info.current, info.latest)
-                                    .into(),
-                            );
-                            ui.set_update_available(true);
-                        }
-                        Ok(None) => set_status(&ui, "You're on the latest version."),
-                        Err(_) => set_status(&ui, "Couldn't check for updates (offline?)."),
-                    }
-                });
-            });
-        });
-    }
+    // ---- Help window (in-app guide) ----
+    ui.on_show_help(show_help_window);
+
+    // ---- Updates window (status + changelog) ----
+    ui.on_show_update(show_update_window);
 
     // ---- copy the live running config (wg showconf) ----
     {
@@ -1763,6 +2196,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Duration::from_secs(1),
             move || {
                 let Some(ui) = w.upgrade() else { return };
+                // Live status only matters on the Tunnels tab. Skip the apply +
+                // repaint on the Log/Backup tabs so the per-second redraw never
+                // churns the Log view — that churn made dragging a text
+                // selection there feel laggy/janky.
+                if ui.get_active_tab() != 0 {
+                    return;
+                }
                 let Some(live) = LIVE.lock().unwrap().take() else {
                     return;
                 };
@@ -1773,10 +2213,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(d) = live.detail
                     && live.name == current
                 {
+                    // "Active but not connected": up, yet no recent handshake
+                    // (none ever, or older than 3 min). Drives the amber banner.
+                    let stuck = d.active && d.handshake_age.is_none_or(|a| a > 180);
                     let mut det = to_slint_detail(d);
                     det.speed = live.speed.clone().into();
                     ui.set_detail(det);
                     ui.set_has_selection(true);
+                    ui.set_conn_warning(
+                        if stuck {
+                            "Not connected: no handshake yet. Click Diagnose for why."
+                        } else {
+                            ""
+                        }
+                        .into(),
+                    );
                 }
                 let model = ui.get_tunnels();
                 for i in 0..model.row_count() {
@@ -1961,5 +2412,92 @@ fn select_by_name(ui: &MainWindow, name: &str) {
             load_detail(ui, name);
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod md_tests {
+    use super::{md_items, strip_inline_md};
+
+    /// Find the kind tag a given line text was assigned.
+    fn kind_of<'a>(items: &'a [super::DocItem], text: &str) -> Option<&'a str> {
+        items
+            .iter()
+            .find(|i| i.text == text)
+            .map(|i| i.kind.as_str())
+    }
+
+    #[test]
+    fn strips_bold_code_italic_markers() {
+        assert_eq!(strip_inline_md("**bold** and `code`"), "bold and code");
+        assert_eq!(strip_inline_md("an *italic* word"), "an italic word");
+        // A standalone marker just vanishes (display-only, lenient).
+        assert_eq!(strip_inline_md("a ** b"), "a  b");
+    }
+
+    #[test]
+    fn rewrites_links_to_their_label() {
+        assert_eq!(
+            strip_inline_md("see [Keep a Changelog](https://example.com) here"),
+            "see Keep a Changelog here"
+        );
+        // An unmatched bracket is left verbatim.
+        assert_eq!(strip_inline_md("an [open bracket"), "an [open bracket");
+    }
+
+    #[test]
+    fn preserves_non_ascii_text() {
+        // Em dash and bullet glyphs must round-trip untouched.
+        assert_eq!(strip_inline_md("a — b • c"), "a — b • c");
+    }
+
+    #[test]
+    fn classifies_headings_rules_and_blanks() {
+        let items = md_items("# Title\n## Sub\n### SubSub\n\n---\nplain line");
+        assert_eq!(kind_of(&items, "Title"), Some("h1"));
+        assert_eq!(kind_of(&items, "Sub"), Some("h2"));
+        assert_eq!(kind_of(&items, "SubSub"), Some("h3"));
+        // A blank and a rule both carry empty text; check by position/count.
+        assert!(items.iter().any(|i| i.kind == "blank"));
+        assert!(items.iter().any(|i| i.kind == "rule"));
+        assert_eq!(kind_of(&items, "plain line"), Some("normal"));
+    }
+
+    #[test]
+    fn bullets_get_markers_and_nesting() {
+        let items = md_items("- top\n  - nested\n* star top");
+        assert_eq!(kind_of(&items, "• top"), Some("bullet"));
+        assert_eq!(kind_of(&items, "  ◦ nested"), Some("bullet"));
+        assert_eq!(kind_of(&items, "• star top"), Some("bullet"));
+    }
+
+    #[test]
+    fn quote_strips_marker() {
+        let items = md_items("> a quoted **note**");
+        assert_eq!(kind_of(&items, "a quoted note"), Some("quote"));
+    }
+
+    #[test]
+    fn fenced_code_is_verbatim_and_skips_fences() {
+        let items = md_items("```\nlet x = **not bold**;\n```\nafter");
+        // The fence lines are dropped; the body keeps its markers verbatim.
+        assert_eq!(kind_of(&items, "let x = **not bold**;"), Some("code"));
+        assert!(!items.iter().any(|i| i.text.starts_with("```")));
+        assert_eq!(kind_of(&items, "after"), Some("normal"));
+    }
+
+    #[test]
+    fn real_docs_parse_without_panicking() {
+        // Smoke: the embedded docs must parse and produce styled rows.
+        let help = md_items(super::HELP_TEXT);
+        let changelog = md_items(super::CHANGELOG_TEXT);
+        assert!(help.iter().any(|i| i.kind == "h1"));
+        assert!(changelog.iter().any(|i| i.kind == "h2"));
+        // No emitted (non-code) line should still contain a literal `**`.
+        assert!(
+            !help
+                .iter()
+                .any(|i| i.kind != "code" && i.text.contains("**"))
+        );
     }
 }

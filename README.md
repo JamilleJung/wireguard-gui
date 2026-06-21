@@ -371,6 +371,18 @@ not log private keys.
 
 ## 🐛 Troubleshooting
 
+- **The tunnel says "active" but nothing connects (no handshake, `0 B received`).**
+  Nine times out of ten your **clock is wrong**, not the server. WireGuard stamps
+  every handshake with the current time; if your PC's clock leaps into the future
+  (hello, dual-boot Windows and dying CMOS batteries), the server records that
+  future timestamp and then — thanks to its replay protection — politely ignores
+  every *correctly-timed* handshake you send afterwards. Your packets cheerfully
+  leave the building; the server just refuses to talk to a time traveller who
+  keeps trying to "replay" tomorrow. Fix: sync the clock (`timedatectl set-ntp
+  true`, or install chrony), and if it already drifted, the server's peer needs a
+  reset (on wg-easy: `docker restart wg-easy`). The **Diagnose** button now catches
+  this in one click — a feature lovingly forged during one very long evening of
+  staring at `0 B received` and slowly losing our minds. 🕰️🛸
 - `wg-quick` fails with `resolvconf: command not found`: install `openresolv` or
   use systemd-resolved.
 - The helper prompts every time: run `./install.sh` or `./install.sh --polkit`

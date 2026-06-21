@@ -6,6 +6,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-06-21
+
+### Added
+- **Connection diagnostics.** A new **Diagnose** button — plus an at-a-glance amber
+  banner when a tunnel is "active" but has no handshake — runs a quick checklist
+  (system clock sync → tunnel up → handshake completing → endpoint reachable → DNS)
+  and tells you *why* a tunnel isn't actually connecting instead of leaving you to
+  guess. The clock check also joins Setup / the system check, because a skewed
+  clock silently breaks WireGuard handshakes via the server's replay protection.
+- **In-app Help** (a "?" button and a Help menu entry): a plain-language guide to
+  what WireGuard actually is — the interface/peer model, what every key and field
+  means, full vs split tunnel, and how to drive the app — so you don't have to
+  guess what to type. The editor links straight to it.
+- **Updates window** (Help menu → Updates): shows your installed version, checks
+  GitHub for a newer release, lets you update in place, and shows the full
+  changelog right in the app so you can see what changed.
+
+### Changed
+- **No more hidden "Advanced mode".** The global Easy/Advanced toggle is gone — it
+  only ever hid buttons with no hint they existed. The expert per-tunnel actions
+  (kill switch, show running config, save live state) now live in a collapsible
+  **Advanced ▾** section right on the tunnel card: always visible, expand it when
+  you want it, and it remembers your choice. Nothing is silently hidden anymore,
+  and export-all is always available.
+- **The tunnel editor is far less intimidating.** Every field now has a one-line
+  plain-language hint underneath (what an Endpoint is, what AllowedIPs do, …), the
+  rarely-needed fields (listen port, MTU) tuck into an **Advanced fields ▾**
+  disclosure, and a **? Help** link opens the new guide.
+
+### Fixed
+- **Only one window now.** Launching WireGuard while it is already running raises
+  the existing window instead of opening a second copy (which also added a second
+  tray icon). Uses a per-user single-instance lock.
+- **The app shows its own icon** in the dock / task switcher again. The Wayland
+  app-id (and X11 `WM_CLASS`) is now set to match the installed `.desktop`, so the
+  compositor stops falling back to a generic placeholder icon.
+- **The Log tab no longer stutters while selecting text.** The once-a-second live
+  status refresh (and its repaint) now pauses while you are on the Log or Backup
+  tab, so dragging a selection stays smooth.
+
 ## [1.7.2] - 2026-06-21
 
 ### Fixed

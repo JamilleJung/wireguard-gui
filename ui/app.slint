@@ -33,6 +33,15 @@ export struct BackupRow {
     count: string,
 }
 
+// One styled line of a lightweight-rendered markdown doc (Help / changelog).
+// `kind` selects the MdRow styling: "h1" "h2" "h3" "bullet" "quote" "code"
+// "rule" "blank" "normal". `text` is already stripped of markdown markers in
+// Rust (md_items), so MdRow only styles — it never re-parses.
+export struct DocItem {
+    text: string,
+    kind: string,
+}
+
 export struct TunnelDetail {
     name: string,
     active: bool,
@@ -51,7 +60,15 @@ export struct TunnelDetail {
 
 // ---- small reusable pieces -------------------------------------------------
 
-
+// Drives the single top-level tooltip overlay in MainWindow. Hovering a button
+// reports its label + window-space geometry here; the overlay renders above all
+// other content (so it can never be clipped by, or bleed across, neighbours).
+global TooltipState {
+    in-out property <string> text;
+    in-out property <length> ax;   // hovered button's left edge, window coords
+    in-out property <length> ay;   // hovered button's top edge, window coords
+    in-out property <length> aw;   // hovered button's width
+}
 
 // A Windows-style push button. Icons are drawn (vector) so they render
 // regardless of the system font.
@@ -108,24 +125,25 @@ component PushButton inherits Rectangle {
         }
     }
 
-    if root.tooltip != "" && ta.has-hover: Rectangle {
-        x: root.tooltip-align == "right" ? parent.width - self.width : 0px;
-        y: -self.height - 4px;
-        width: tip.preferred-width + 14px;
-        height: tip.preferred-height + 8px;
-        background: #2f2f2f;
-        border-radius: 4px;
-        tip := Text {
-            x: 7px;
-            y: 4px;
-            text: root.tooltip;
-            color: white;
-            font-size: 11px;
+    // Report hover into the top-level TooltipState global, which drives a single
+    // overlay in MainWindow that renders above everything (so it never clips or
+    // bleeds across neighbours, unlike a child Rectangle would).
+    property <bool> tip-hover: ta.has-hover;
+    changed tip-hover => {
+        if (root.tooltip != "") {
+            if (root.tip-hover) {
+                TooltipState.text = root.tooltip;
+                TooltipState.ax = root.absolute-position.x;
+                TooltipState.ay = root.absolute-position.y;
+                TooltipState.aw = root.width;
+            } else if (TooltipState.text == root.tooltip) {
+                TooltipState.text = "";
+            }
         }
     }
 }
 
-// A small square icon button. kind = "delete", "new", or "export".
+// A small square icon button. kind = "delete", "new", "export", or "menu".
 component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <string> kind: "delete";
@@ -166,6 +184,18 @@ component IconButton inherits Rectangle {
         stroke-width: 1.5px;
         commands: "M 6.5 1.5 L 6.5 11.5 M 1.5 6.5 L 11.5 6.5";
     }
+    // menu: a hamburger — three evenly-spaced horizontal bars
+    if root.kind == "menu": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 11px;
+        viewbox-width: 14;
+        viewbox-height: 11;
+        stroke: root.enabled ? #444444 : #bcbcbc;
+        stroke-width: 1.6px;
+        commands: "M 1 1.5 L 13 1.5 M 1 5.5 L 13 5.5 M 1 9.5 L 13 9.5";
+    }
     if root.kind == "export": Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -188,19 +218,20 @@ component IconButton inherits Rectangle {
         }
     }
 
-    if root.tooltip != "" && ta.has-hover: Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: -self.height - 4px;
-        width: tip.preferred-width + 14px;
-        height: tip.preferred-height + 8px;
-        background: #2f2f2f;
-        border-radius: 4px;
-        tip := Text {
-            x: 7px;
-            y: 4px;
-            text: root.tooltip;
-            color: white;
-            font-size: 11px;
+    // Report hover into the top-level TooltipState global (see PushButton): the
+    // single MainWindow overlay renders above everything, so it never clips or
+    // bleeds across buttons the way a child Rectangle did.
+    property <bool> tip-hover: ta.has-hover;
+    changed tip-hover => {
+        if (root.tooltip != "") {
+            if (root.tip-hover) {
+                TooltipState.text = root.tooltip;
+                TooltipState.ax = root.absolute-position.x;
+                TooltipState.ay = root.absolute-position.y;
+                TooltipState.aw = root.width;
+            } else if (TooltipState.text == root.tooltip) {
+                TooltipState.text = "";
+            }
         }
     }
 }
@@ -335,6 +366,90 @@ component MenuItem inherits Rectangle {
     }
 }
 
+// One line in a virtualized doc view (Log / changelog / Help / Diagnostics).
+// Click-to-copy: clicking the row copies its text via the `copy` callback and
+// shows a subtle hover highlight, restoring copy without a laggy whole-document
+// TextEdit.
+component DocLine inherits Rectangle {
+    in property <string> text;
+    callback copy(string);
+    height: 16px;
+    background: line-touch.has-hover ? #eef3fc : transparent;
+    line-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.copy(root.text); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        Text {
+            text: root.text;
+            font-family: "monospace";
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: clip;
+        }
+    }
+}
+
+// One lightly-styled line of a rendered-markdown doc (Help / changelog). Mirrors
+// DocLine's click-to-copy + hover highlight, but styles the row by `item.kind`
+// (headings/bullets/quotes/code/rules). The text is wrapped (word-wrap) and the
+// row height is CONTENT-driven, so long wrapped lines stay fully visible — these
+// docs are bounded (Help ~150 lines, changelog ~120), unlike the Log.
+component MdRow inherits Rectangle {
+    in property <DocItem> item;
+    callback copy(string);
+    // Non-interactive spacers don't get a pointer/hover (blank & rule).
+    property <bool> interactive: item.kind != "blank" && item.kind != "rule";
+    // Size the row to its content. A bare Rectangle does NOT auto-size to its
+    // children, so WITHOUT a height every row collapses to 0px and the whole
+    // view renders blank (the bug we hit). The max() gives a guaranteed non-zero
+    // floor per kind AND grows to fit word-wrapped lines.
+    height: max(item.kind == "blank" ? 8px : (item.kind == "rule" ? 14px : 18px), body.preferred-height);
+    background: row-touch.has-hover && interactive ? #eef3fc
+        : (item.kind == "code" ? #f3f3f3 : transparent);
+    row-touch := TouchArea {
+        mouse-cursor: interactive ? pointer : default;
+        enabled: interactive;
+        clicked => { root.copy(item.text); }
+    }
+
+    body := VerticalLayout {
+        // A rule renders as a thin hairline; a blank line as a small spacer.
+        if item.kind == "rule": HorizontalLayout {
+            padding-top: 7px;
+            padding-bottom: 7px;
+            padding-left: 8px;
+            padding-right: 8px;
+            Rectangle { height: 1px; background: #e0e0e0; }
+        }
+        if item.kind == "blank": Rectangle { height: 8px; }
+
+        if item.kind != "rule" && item.kind != "blank": HorizontalLayout {
+            padding-top: item.kind == "h1" ? 8px : (item.kind == "h2" ? 6px : 3px);
+            padding-bottom: 3px;
+            // Indent bullets and quotes; "  ◦ " nested bullets carry their own
+            // leading spaces, so the base indent stays the same.
+            padding-left: item.kind == "bullet" ? 22px : (item.kind == "quote" ? 26px : 8px);
+            padding-right: 10px;
+            Text {
+                text: item.text;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                font-family: item.kind == "code" ? "monospace" : "Noto Sans";
+                font-size: item.kind == "h1" ? 20px
+                    : (item.kind == "h2" ? 16px
+                    : (item.kind == "h3" ? 14px
+                    : (item.kind == "code" ? 12px : 13px)));
+                font-weight: item.kind == "h1" || item.kind == "h2" || item.kind == "h3" ? 700 : 400;
+                color: item.kind == "h3" ? #444444
+                    : (item.kind == "quote" ? #6a6a6a
+                    : (item.kind == "code" ? #b23b3b : #1b1b1b));
+            }
+        }
+    }
+}
+
 // A top tab (Tunnels / Log), Windows-style with an accent underline.
 component TabButton inherits Rectangle {
     in property <string> text;
@@ -383,10 +498,18 @@ export component MainWindow inherits Window {
     in property <bool> has-selection: false;
     in property <TunnelDetail> detail;
     in property <string> status: "";
+    // Set when the selected tunnel is active but not actually connected (no
+    // handshake) — drives the amber stuck-handshake banner in the detail card.
+    in property <string> conn-warning: "";
 
     // tabs (0 = Tunnels, 1 = Log, 2 = Backup) + log contents
     in-out property <int> active-tab: 0;
-    in property <string> log-text: "";
+    // The log is shown as a virtualized ListView of one Text per line (fed a
+    // [string] model from Rust) instead of a single huge read-only TextEdit —
+    // TextEdit/ScrollView aren't virtualized, so the whole buffer was relaid
+    // out + reshaped every frame while scrolling (and a focused read-only
+    // TextEdit runs a repeating blink-caret Timer that repaints when idle).
+    in property <[string]> log-lines;
     // Log management: a substring filter and a "this tunnel only" toggle that
     // Rust applies to the raw journal text.
     in-out property <string> log-filter: "";
@@ -396,9 +519,10 @@ export component MainWindow inherits Window {
     in property <[BackupRow]> backups;
     in-out property <int> backup-sel: -1;
 
-    // Easy mode hides expert/raw runtime actions. Creating a tunnel stays
-    // available because it is a normal first-run workflow.
-    in-out property <bool> easy-mode: true;
+    // Progressive disclosure for expert/raw runtime actions in the detail card:
+    // they live under an always-visible "Advanced ▾" header the user can expand
+    // per need. No global mode — nothing is silently hidden.
+    in-out property <bool> show-advanced: false;
 
     // Auto-update: a thin banner above the tab bar, shown only when a newer
     // release was detected. Rust fills in the message and flips the flag.
@@ -406,10 +530,11 @@ export component MainWindow inherits Window {
     in property <string> update-banner: "";
 
     // ---- callbacks into Rust ----
-    callback toggle-easy();
+    callback persist-advanced(bool);
     callback select(int);
     callback activate(string);
     callback deactivate(string);
+    callback diagnose-conn(string);
     callback import-file();
     callback add-empty();
     callback delete-tunnel(string);
@@ -423,12 +548,15 @@ export component MainWindow inherits Window {
     callback copy-value(string);
     callback copy-raw(string);
     callback show-about();
+    callback show-help();
+    callback show-update();
     callback persist-live(string);
     callback show-running(string);
     // Log management
     callback apply-log-filter();
     callback save-log();
     callback copy-log();
+    callback copy-line(string);
     callback clear-log();
     // Backup management
     callback refresh-backups();
@@ -436,9 +564,6 @@ export component MainWindow inherits Window {
     callback backup-restore(string);
     callback backup-delete(string);
     callback backup-export(string);
-    // Auto-update
-    callback do-update();
-    callback check-updates();
 
     // Force the light palette app-wide (Palette is a global). Without this,
     // GNOME dark mode gives std-widgets near-white fills that vanish on our
@@ -471,7 +596,7 @@ export component MainWindow inherits Window {
                     PushButton {
                         text: "Update now";
                         primary: true;
-                        clicked => { root.do-update(); }
+                        clicked => { root.show-update(); }
                     }
                 }
             }
@@ -547,34 +672,40 @@ export component MainWindow inherits Window {
                             PushButton {
                                 text: "Add Tunnel";
                                 arrow: true;
-                                tooltip: "Add, import, or scan a tunnel";
+                                tooltip: "Import or create a tunnel";
                                 clicked => { add-popup.show(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                kind: "menu";
+                                tooltip: "Help, updates & about";
+                                clicked => { menu-popup.show(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "?";
+                                tooltip: "Help guide";
+                                clicked => { root.show-help(); }
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
                             IconButton {
-                                kind: "new";
-                                enabled: true;
-                                tooltip: "Create a new tunnel";
-                                clicked => { root.add-empty(); }
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            IconButton {
                                 enabled: root.has-selection;
-                                tooltip: "Remove the selected tunnel";
+                                tooltip: "Delete this tunnel";
                                 clicked => { root.delete-tunnel(root.detail.name); }
                             }
                         }
                         VerticalLayout {
                             alignment: center;
-                            visible: !root.easy-mode;
                             IconButton {
                                 kind: "export";
-                                tooltip: "Export all tunnels to a zip";
+                                tooltip: "Export all tunnels";
                                 clicked => { root.export-zip(); }
                             }
                         }
@@ -582,9 +713,9 @@ export component MainWindow inherits Window {
 
                     add-popup := PopupWindow {
                         x: 8px;
-                        y: -146px;
+                        y: -116px;
                         width: 244px;
-                        height: 140px;
+                        height: 110px;
                         Rectangle {
                             background: white;
                             border-color: #b9b9b9;
@@ -605,9 +736,37 @@ export component MainWindow inherits Window {
                                     text: "Create tunnel…";
                                     chosen => { add-popup.close(); root.add-empty(); }
                                 }
+                            }
+                        }
+                    }
+
+                    // App-level menu (Help / Updates / About) — kept separate
+                    // from "Add Tunnel", which only creates tunnels. Anchored to
+                    // the "≡" button.
+                    menu-popup := PopupWindow {
+                        x: 108px;
+                        y: -116px;
+                        width: 200px;
+                        height: 110px;
+                        Rectangle {
+                            background: white;
+                            border-color: #b9b9b9;
+                            border-width: 1px;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: #00000030;
+                            VerticalLayout {
+                                padding: 1px;
+                                MenuItem {
+                                    text: "Help…";
+                                    chosen => { menu-popup.close(); root.show-help(); }
+                                }
+                                MenuItem {
+                                    text: "Check for updates…";
+                                    chosen => { menu-popup.close(); root.show-update(); }
+                                }
                                 MenuItem {
                                     text: "About…";
-                                    chosen => { add-popup.close(); root.show-about(); }
+                                    chosen => { menu-popup.close(); root.show-about(); }
                                 }
                             }
                         }
@@ -716,6 +875,36 @@ export component MainWindow inherits Window {
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
+                        // Stuck-handshake banner: the tunnel is up but no
+                        // handshake has completed, so it's not actually
+                        // connected. A thin amber row that points at Diagnose.
+                        if root.conn-warning != "": Rectangle {
+                            background: #fff6e0;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #e6c560;
+                            HorizontalLayout {
+                                padding: 8px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.conn-warning;
+                                    color: #6a5300;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    PushButton {
+                                        text: "Diagnose";
+                                        tooltip: "Check why this tunnel isn't connecting";
+                                        clicked => { root.diagnose-conn(root.detail.name); }
+                                    }
+                                }
+                            }
+                        }
+
                         if root.detail.active && root.detail.speed != "": DetailRow {
                             label: "Speed:";
                             value: root.detail.speed;
@@ -760,26 +949,6 @@ export component MainWindow inherits Window {
                             Rectangle { horizontal-stretch: 1; }
                         }
 
-                        if !root.easy-mode: HorizontalLayout {
-                            spacing: 8px;
-                            Text { text: ""; width: 132px; }
-                            CheckBox {
-                                text: "Kill switch";
-                                checked: root.detail.killswitch;
-                                enabled: root.detail.active;
-                                toggled => {
-                                    root.set-killswitch(root.detail.name, self.checked);
-                                }
-                            }
-                            Text {
-                                text: root.detail.active ? "blocks non-local traffic outside this tunnel" : "requires an active tunnel";
-                                color: #6a6a6a;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                        }
-
                         // Activate / Deactivate + Show QR — below the details,
                         // aligned under the value column (matches the Windows client).
                         HorizontalLayout {
@@ -799,19 +968,81 @@ export component MainWindow inherits Window {
                                 }
                             }
                             PushButton {
+                                text: "Diagnose";
+                                tooltip: "Check why this tunnel isn't connecting";
+                                clicked => { root.diagnose-conn(root.detail.name); }
+                            }
+                            PushButton {
                                 text: "Show QR";
                                 tooltip: "Show as a QR code to scan on a phone";
                                 clicked => { root.show-qr(root.detail.name); }
                             }
-                            if root.detail.active && !root.easy-mode: PushButton {
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        // ---- Advanced (progressive disclosure) ----
+                        // An always-visible, subtly-styled disclosure header. The
+                        // expert/raw runtime actions below only show once expanded,
+                        // so the user can SEE they exist instead of a hidden mode.
+                        Rectangle {
+                            height: 28px;
+                            adv-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.show-advanced = !root.show-advanced;
+                                    root.persist-advanced(root.show-advanced);
+                                }
+                            }
+                            HorizontalLayout {
+                                Text { text: ""; width: 132px; }
+                                Text {
+                                    text: root.show-advanced ? "Advanced ▴" : "Advanced ▾";
+                                    color: adv-touch.has-hover ? #4a4a4a : #8a8a8a;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+
+                        if root.show-advanced: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: ""; width: 132px; }
+                            CheckBox {
+                                text: "Kill switch";
+                                checked: root.detail.killswitch;
+                                enabled: root.detail.active;
+                                toggled => {
+                                    root.set-killswitch(root.detail.name, self.checked);
+                                }
+                            }
+                            Text {
+                                text: root.detail.active ? "blocks non-local traffic outside this tunnel" : "requires an active tunnel";
+                                color: #6a6a6a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        if root.show-advanced: HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { width: 132px; }
+                            if root.detail.active: PushButton {
                                 text: "Running cfg";
                                 tooltip: "Copy the live running config (wg showconf)";
                                 clicked => { root.show-running(root.detail.name); }
                             }
-                            if root.detail.active && !root.easy-mode: PushButton {
+                            if root.detail.active: PushButton {
                                 text: "Save live";
                                 tooltip: "Save the running state to disk (wg-quick save)";
                                 clicked => { root.persist-live(root.detail.name); }
+                            }
+                            if !root.detail.active: Text {
+                                text: "Activate the tunnel to access live runtime actions.";
+                                color: #6a6a6a;
+                                font-size: 12px;
+                                vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
@@ -858,7 +1089,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ---- bottom-right action bar: Easy/Advanced toggle + Edit ----
+            // ---- bottom-right action bar: Edit ----
             Rectangle {
                 height: 46px;
                 background: #fafafa;
@@ -867,15 +1098,6 @@ export component MainWindow inherits Window {
                     padding: 8px;
                     spacing: 8px;
                     Rectangle { horizontal-stretch: 1; }
-                    VerticalLayout {
-                        alignment: center;
-                        PushButton {
-                            text: root.easy-mode ? "Easy mode" : "Advanced mode";
-                            tooltip: "Easy mode hides expert tools - click to switch";
-                            tooltip-align: "right";
-                            clicked => { root.toggle-easy(); }
-                        }
-                    }
                     if root.has-selection: VerticalLayout {
                         alignment: center;
                         PushButton {
@@ -896,16 +1118,31 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
             background: white;
             VerticalLayout {
-                // The log view. A bare TextEdit (it scrolls on its own) sized by
-                // the layout via vertical-stretch — NOT a ScrollView with an
-                // absolutely-positioned TextEdit, which collapses to 0x0 and
-                // renders nothing (the cause of the "blank Log" bug).
-                TextEdit {
+                // The log view. A virtualized ListView of one Text per line
+                // (only visible rows render, no editor caret/Timer) — replaces
+                // the old whole-buffer read-only TextEdit that relaid-out the
+                // entire log every frame while scrolling.
+                ListView {
                     vertical-stretch: 1;
-                    text: root.log-text;
-                    font-family: "monospace";
-                    font-size: 12px;
-                    read-only: true;
+                    horizontal-stretch: 1;
+                    for line in root.log-lines: DocLine {
+                        text: line;
+                        copy(t) => { root.copy-line(t); }
+                    }
+                }
+                // Discoverability hint for the per-line click-to-copy interaction.
+                Rectangle {
+                    height: 20px;
+                    background: #fafafa;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        Text {
+                            text: "Tip: click a line to copy it · Copy for everything";
+                            color: #8a8a8a;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
                 Rectangle {
                     height: 46px;
@@ -1079,6 +1316,27 @@ export component MainWindow inherits Window {
             }
         }
     }
+
+    // ===================== tooltip overlay =====================
+    // The VERY LAST child of the window root, so it renders on top of every
+    // panel/popup region and is never clipped. Driven by TooltipState, which any
+    // hovered PushButton/IconButton populates. Centered over the hovered button,
+    // clamped inside the window, and floated just above it.
+    if TooltipState.text != "": Rectangle {
+        x: min(root.width - self.width - 6px, max(6px, TooltipState.ax + TooltipState.aw / 2 - self.width / 2));
+        y: max(4px, TooltipState.ay - self.height - 6px);
+        width: tip-label.preferred-width + 16px;
+        height: tip-label.preferred-height + 10px;
+        background: #2f2f2f;
+        border-radius: 4px;
+        tip-label := Text {
+            x: 8px;
+            y: 5px;
+            text: TooltipState.text;
+            color: white;
+            font-size: 11px;
+        }
+    }
 }
 
 import { Button as StdButton } from "std-widgets.slint";
@@ -1088,27 +1346,39 @@ import { Button as StdButton } from "std-widgets.slint";
 // paint, so its text-input widgets render immediately — unlike an in-place
 // overlay, which on this Wayland setup stays blank until clicked.
 // ===========================================================================
-// A single labelled field used by the structured (form) editor view.
+// A single labelled field used by the structured (form) editor view. An
+// optional one-line `hint` is shown muted underneath to explain the field in
+// plain words (progressive inline guidance).
 component FormField {
     in property <string> label;
     in property <string> placeholder;
+    in property <string> hint: "";
     in-out property <string> value;
     callback edited;
-    height: 30px;
-    HorizontalLayout {
-        spacing: 8px;
-        Text {
-            text: root.label;
-            width: 120px;
-            color: #6a6a6a;
-            font-size: 12px;
-            vertical-alignment: center;
+    VerticalLayout {
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.label;
+                width: 120px;
+                color: #6a6a6a;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            LineEdit {
+                horizontal-stretch: 1;
+                text <=> root.value;
+                placeholder-text: root.placeholder;
+                edited => { root.edited(); }
+            }
         }
-        LineEdit {
-            horizontal-stretch: 1;
-            text <=> root.value;
-            placeholder-text: root.placeholder;
-            edited => { root.edited(); }
+        if root.hint != "": Text {
+            x: 128px;
+            text: root.hint;
+            color: #8a8a8a;
+            font-size: 11px;
+            wrap: word-wrap;
         }
     }
 }
@@ -1128,6 +1398,10 @@ export component EditWindow inherits Window {
     // Form view: structured fields. `form-mode` toggles between the form and
     // the raw config text; peer-index/peer-count drive multi-peer navigation.
     in-out property <bool> form-mode: false;
+    // Progressive disclosure inside the form: the rarely-touched interface
+    // fields (Listen port, MTU) live under an "Advanced fields ▾" header that
+    // starts collapsed, so the default form shows only the common path.
+    in-out property <bool> show-advanced-fields: false;
     in-out property <int> peer-index: 0;
     in property <int> peer-count: 1;
     in property <string> peer-label: "1 of 1";
@@ -1156,6 +1430,7 @@ export component EditWindow inherits Window {
     callback create-preset(string);
     callback copy(string);
     callback save-and-activate(string, string);
+    callback show-help();
 
     // Force the light palette so the text inputs use dark-text-on-light fills —
     // which is what makes them visible on a white background. (No `min-height`
@@ -1168,11 +1443,25 @@ export component EditWindow inherits Window {
             padding: 18px;
             spacing: 12px;
 
-            Text {
-                text: root.is-new ? "Create new tunnel" : ("Edit “" + root.tunnel-name + "”");
-                font-size: 16px;
-                font-weight: 700;
-                color: #1b1b1b;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.is-new ? "Create new tunnel" : ("Edit “" + root.tunnel-name + "”");
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: #1b1b1b;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    PushButton {
+                        text: "? Help";
+                        tooltip: "Open the in-app help guide";
+                        tooltip-align: "right";
+                        clicked => { root.show-help(); }
+                    }
+                }
             }
 
             HorizontalLayout {
@@ -1303,30 +1592,49 @@ export component EditWindow inherits Window {
                     FormField {
                         label: "Private key";
                         placeholder: "base64 private key";
+                        hint: "Your secret — never share it; use Generate keypair";
                         value <=> root.f-private-key;
                         edited => { root.fields-changed(); }
                     }
                     FormField {
                         label: "Address";
                         placeholder: "10.0.0.2/32, fd00::2/128";
+                        hint: "Your IP inside the tunnel, e.g. 10.100.0.17/24";
                         value <=> root.f-address;
                         edited => { root.fields-changed(); }
                     }
                     FormField {
                         label: "DNS";
                         placeholder: "1.1.1.1, 8.8.8.8";
+                        hint: "DNS server while connected (optional), e.g. 1.1.1.1";
                         value <=> root.f-dns;
                         edited => { root.fields-changed(); }
                     }
-                    FormField {
+
+                    // ---- Advanced interface fields (collapsed by default) ----
+                    TouchArea {
+                        height: 22px;
+                        mouse-cursor: pointer;
+                        clicked => { root.show-advanced-fields = !root.show-advanced-fields; }
+                        Text {
+                            x: 0;
+                            text: (root.show-advanced-fields ? "▾ " : "▸ ") + "Advanced fields";
+                            color: #5a5a5a;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if root.show-advanced-fields: FormField {
                         label: "Listen port";
                         placeholder: "optional";
+                        hint: "Local UDP port to listen on (optional, usually auto)";
                         value <=> root.f-listen-port;
                         edited => { root.fields-changed(); }
                     }
-                    FormField {
+                    if root.show-advanced-fields: FormField {
                         label: "MTU";
                         placeholder: "optional";
+                        hint: "Packet size (optional); lower to e.g. 1380 on flaky links";
                         value <=> root.f-mtu;
                         edited => { root.fields-changed(); }
                     }
@@ -1370,30 +1678,35 @@ export component EditWindow inherits Window {
                     FormField {
                         label: "Public key";
                         placeholder: "peer's base64 public key";
+                        hint: "The server's public key";
                         value <=> root.f-peer-public-key;
                         edited => { root.fields-changed(); }
                     }
                     FormField {
                         label: "Preshared key";
                         placeholder: "optional";
+                        hint: "Optional extra shared secret; use Generate PSK";
                         value <=> root.f-preshared-key;
                         edited => { root.fields-changed(); }
                     }
                     FormField {
                         label: "Allowed IPs";
                         placeholder: "0.0.0.0/0, ::/0";
+                        hint: "What routes into the tunnel — 0.0.0.0/0 = everything (full tunnel)";
                         value <=> root.f-allowed-ips;
                         edited => { root.fields-changed(); }
                     }
                     FormField {
                         label: "Endpoint";
                         placeholder: "host:51820";
+                        hint: "Where to reach the server: host:port, e.g. 1.2.3.4:51820";
                         value <=> root.f-endpoint;
                         edited => { root.fields-changed(); }
                     }
                     FormField {
                         label: "Persistent keepalive";
                         placeholder: "optional, e.g. 25";
+                        hint: "Keep-alive seconds (25 is typical behind NAT)";
                         value <=> root.f-keepalive;
                         edited => { root.fields-changed(); }
                     }
@@ -1491,73 +1804,343 @@ export component QrWindow inherits Window {
 }
 
 // ===========================================================================
-// About window.
+// Connection diagnostics window: a read-only monospace report explaining why a
+// tunnel that reads "active" may not actually be connected.
 // ===========================================================================
-export component AboutWindow inherits Window {
-    title: "About WireGuard GUI";
-    width: 440px;
-    height: 340px;
-    in property <string> version;
-    in property <string> update-status: "";
-    callback open-url(string);
+export component DiagWindow inherits Window {
+    title: "Connection diagnostics";
+    width: 560px;
+    height: 380px;
+    in property <[string]> report-lines;
+    in property <string> full-text;
+    in-out property <string> copied-hint: "";
     callback close-me();
-    callback check-updates();
+    callback copy-line(string);
+    callback copy-all();
 
     init => { Palette.color-scheme = ColorScheme.light; }
     background: white;
 
     VerticalLayout {
-        padding: 24px;
+        padding: 16px;
         spacing: 10px;
+
+        // Virtualized ListView of one Text per line (was a whole-document
+        // read-only TextEdit, which relaid out every frame while scrolling).
+        // Each row is click-to-copy via DocLine.
+        ListView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            for line in root.report-lines: DocLine {
+                text: line;
+                copy(t) => { root.copy-line(t); }
+            }
+        }
+
+        Text {
+            text: "Tip: click a line to copy it · Copy all for everything";
+            color: #8a8a8a;
+            font-size: 11px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Copy all";
+                tooltip: "Copy the whole report to the clipboard";
+                clicked => { root.copy-all(); }
+            }
+            Text {
+                text: root.copied-hint;
+                color: #2f7d32;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Help window: a scrollable, read-only view of the in-app guide (docs/help.md,
+// embedded at build time and passed in from Rust). Slint has no markdown
+// renderer, so the Rust side (md_items) tags each line with a kind and MdRow
+// styles it — headings, bullets, code, and rules render cleanly, virtualized,
+// still click-to-copy.
+// ===========================================================================
+export component HelpWindow inherits Window {
+    title: "WireGuard — Help";
+    width: 720px;
+    height: 640px;
+    in property <[DocItem]> items;
+    in property <string> full-text;
+    in-out property <string> copied-hint: "";
+    callback close-me();
+    callback copy-line(string);
+    callback copy-all();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    background: white;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        // Virtualized ListView of one styled MdRow per markdown line (was a
+        // whole-document read-only TextEdit, which relaid out every frame while
+        // scrolling). Each row is click-to-copy.
+        ListView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            for it in root.items: MdRow {
+                item: it;
+                copy(t) => { root.copy-line(t); }
+            }
+        }
+
+        Text {
+            text: "Tip: click a line to copy it · Copy all for everything";
+            color: #8a8a8a;
+            font-size: 11px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Copy all";
+                tooltip: "Copy the whole guide to the clipboard";
+                clicked => { root.copy-all(); }
+            }
+            Text {
+                text: root.copied-hint;
+                color: #2f7d32;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Updates window: shows the installed version, a live status line, a
+// [Check for updates] / [Update now] pair, and the embedded changelog.
+// ===========================================================================
+export component UpdateWindow inherits Window {
+    title: "Updates";
+    width: 640px;
+    height: 600px;
+    in property <string> installed: "";
+    in property <string> status: "";
+    in property <bool> update-available: false;
+    in property <[DocItem]> changelog-items;
+    in property <string> changelog-text;
+    in-out property <string> copied-hint: "";
+    callback check-updates();
+    callback do-update();
+    callback close-me();
+    callback copy-line(string);
+    callback copy-all();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    background: white;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        Text {
+            text: "Updates";
+            font-size: 18px;
+            font-weight: 800;
+            color: #1b1b1b;
+        }
+        Text {
+            text: "Installed: v" + root.installed;
+            color: #444444;
+            font-size: 13px;
+        }
+        Text {
+            visible: root.status != "";
+            text: root.status;
+            color: #6a5300;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Check for updates";
+                clicked => { root.check-updates(); }
+            }
+            PushButton {
+                text: "Update now";
+                primary: true;
+                visible: root.update-available;
+                enabled: root.update-available;
+                clicked => { root.do-update(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Text {
+            text: "Changelog";
+            font-size: 13px;
+            font-weight: 700;
+            color: #1b1b1b;
+        }
+        // Virtualized ListView of one styled MdRow per changelog line (was a
+        // whole-document read-only TextEdit, which relaid out every frame while
+        // scrolling). Each row is click-to-copy.
+        ListView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            for it in root.changelog-items: MdRow {
+                item: it;
+                copy(t) => { root.copy-line(t); }
+            }
+        }
+
+        Text {
+            text: "Tip: click a line to copy it · Copy all for everything";
+            color: #8a8a8a;
+            font-size: 11px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Copy all";
+                tooltip: "Copy the whole changelog to the clipboard";
+                clicked => { root.copy-all(); }
+            }
+            Text {
+                text: root.copied-hint;
+                color: #2f7d32;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// About window.
+// ===========================================================================
+export component AboutWindow inherits Window {
+    title: "About WireGuard GUI";
+    width: 460px;
+    height: 420px;
+    in property <string> version;
+    callback open-url(string);
+    callback close-me();
+    callback show-update();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    background: white;
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 0px;
         alignment: start;
+
+        // ---- Brand: monogram tile + name + version ----
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 64px;
+                height: 64px;
+                border-radius: 14px;
+                background: #0078d4;
+                Text {
+                    text: "WG";
+                    color: white;
+                    font-size: 26px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle { height: 14px; }
 
         Text {
             text: "WireGuard GUI";
-            font-size: 22px;
+            font-size: 23px;
             font-weight: 800;
             color: #1b1b1b;
             horizontal-alignment: center;
         }
+        Rectangle { height: 3px; }
         Text {
             text: "Version " + root.version;
             color: #6a6a6a;
             font-size: 13px;
             horizontal-alignment: center;
         }
+
+        Rectangle { height: 12px; }
+
+        // ---- Tagline ----
         Text {
-            text: "A native Linux GUI for plain WireGuard configs, wg, wg-quick, and a small privileged helper.";
+            text: "A native Linux GUI for plain WireGuard configs — wg, wg-quick, and a small privileged helper.";
             color: #444444;
             font-size: 13px;
             wrap: word-wrap;
             horizontal-alignment: center;
         }
 
-        Rectangle { height: 6px; }
+        Rectangle { height: 18px; }
 
+        // ---- Hairline separator ----
+        Rectangle {
+            height: 1px;
+            background: #ececec;
+        }
+
+        Rectangle { height: 18px; }
+
+        // ---- Links ----
         HorizontalLayout {
             alignment: center;
             spacing: 8px;
             PushButton {
                 text: "GitHub";
+                tooltip: "View the source on GitHub";
                 clicked => { root.open-url("https://github.com/JamilleJung/wireguard-gui"); }
             }
             PushButton {
                 text: "Check for updates";
-                clicked => { root.check-updates(); }
+                clicked => { root.show-update(); }
             }
             PushButton {
                 text: "Buy me a coffee";
+                tooltip: "Support development";
+                tooltip-align: "right";
                 clicked => { root.open-url("https://www.buymeacoffee.com/jamillejung"); }
             }
         }
 
-        if root.update-status != "": Text {
-            text: root.update-status;
-            color: #6a5300;
-            font-size: 12px;
-            wrap: word-wrap;
-            horizontal-alignment: center;
-        }
+        // ---- Push the legal fine print + Close to the bottom ----
+        Rectangle { vertical-stretch: 1; min-height: 16px; }
 
         Text {
             text: "MIT License · Built with Rust + Slint";
@@ -1565,6 +2148,7 @@ export component AboutWindow inherits Window {
             font-size: 11px;
             horizontal-alignment: center;
         }
+        Rectangle { height: 4px; }
         Text {
             text: "WireGuard is a registered trademark of Jason A. Donenfeld. This is an independent, unofficial client.";
             color: #a0a0a0;
@@ -1573,7 +2157,7 @@ export component AboutWindow inherits Window {
             horizontal-alignment: center;
         }
 
-        Rectangle { vertical-stretch: 1; }
+        Rectangle { height: 16px; }
 
         HorizontalLayout {
             alignment: center;

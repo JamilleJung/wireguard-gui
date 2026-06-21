@@ -71,6 +71,17 @@ impl Report {
     }
 }
 
+/// Whether the system clock is disciplined by NTP. `None` if it can't be told.
+/// Read-only adjtimex (modes stays 0) — never changes the clock.
+pub fn clock_synced() -> Option<bool> {
+    let mut tx: libc::timex = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::adjtimex(&mut tx) };
+    if ret == -1 {
+        return None;
+    }
+    Some((tx.status & libc::STA_UNSYNC) == 0)
+}
+
 /// Is `cmd` on PATH (or in a standard bin dir)? Read-only, no root.
 pub fn which(cmd: &str) -> bool {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
@@ -394,6 +405,31 @@ pub fn system_check() -> Report {
         } else {
             Some(install_resolvconf_hint())
         },
+        critical: false,
+    });
+
+    // A wrong system clock makes the server reject WireGuard handshakes via the
+    // TAI64N anti-replay timestamp: the tunnel comes up but never connects. Not
+    // critical (only matters once a tunnel is active), but a common silent cause.
+    let (clock_status, clock_detail, clock_fix) = match clock_synced() {
+        Some(true) => (Status::Ok, "system clock is NTP-synced".to_string(), None),
+        Some(false) => (
+            Status::Warning,
+            "clock not NTP-synced — can break WireGuard handshakes (server anti-replay)"
+                .to_string(),
+            Some("enable NTP: timedatectl set-ntp true (or install chrony)".to_string()),
+        ),
+        None => (
+            Status::Unknown,
+            "could not read clock-sync status".to_string(),
+            None,
+        ),
+    };
+    checks.push(Check {
+        name: "System clock (NTP)",
+        status: clock_status,
+        detail: clock_detail,
+        fix: clock_fix,
         critical: false,
     });
 
