@@ -4,9 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [1.8.0] - 2026-06-21
+## [1.8.0] - 2026-06-23
 
 ### Added
 - **Connection diagnostics.** A new **Diagnose** button — plus an at-a-glance amber
@@ -45,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Log tab no longer stutters while selecting text.** The once-a-second live
   status refresh (and its repaint) now pauses while you are on the Log or Backup
   tab, so dragging a selection stays smooth.
+- **RPM packaging fixed for Fedora 40+.** The spec now includes the four build
+  dependencies Slint needs on Fedora: `mesa-libEGL-devel`, `wayland-devel`,
+  `libxkbcommon-x11-devel`, and `pkgconf-pkg-config`. `install.sh` dnf package
+  list also updated. `ExclusiveArch` extended to `x86_64 aarch64`.
 
 ## [1.7.2] - 2026-06-21
 
@@ -696,7 +698,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release pipeline (GitHub Actions): `.deb`, AppImage and a binary tarball with
   `SHA256SUMS`, plus CI running rustfmt, clippy and a release build.
 
-[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/JamilleJung/wireguard-gui/compare/v1.8.0...HEAD
 [1.5.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/JamilleJung/wireguard-gui/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/JamilleJung/wireguard-gui/compare/v1.3.5...v1.4.0

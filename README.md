@@ -159,6 +159,13 @@ The release page normally includes:
 - `SHA256SUMS.minisig` when signing is configured
 - `minisign.pub`
 
+**Fedora / RHEL / Rocky** — install from COPR:
+
+```sh
+dnf copr enable jamillejung/wireguard-gui
+sudo dnf install wireguard-gui
+```
+
 On Debian, Ubuntu, and Mint, the `.deb` is the simplest path because it installs
 the binary, helper, desktop entry, icon, and polkit rule.
 

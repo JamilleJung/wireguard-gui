@@ -32,6 +32,11 @@ For **COPR**: create a project, add this spec (or a SCM build pointing at the
 repo + `Source0` tarball), and COPR builds RPMs for Fedora/EPEL automatically on
 each tag. Bump `Version` per release.
 
+The spec includes the full set of build dependencies for Fedora 40+:
+`mesa-libEGL-devel`, `wayland-devel`, `libxkbcommon-x11-devel`, and
+`pkgconf-pkg-config` (in addition to the base C/Rust toolchain and
+`fontconfig-devel` / `libxkbcommon-devel` / `dbus-devel` / `mesa-libGL-devel`).
+
 ## Debian / Ubuntu (.deb)
 
 Already produced by the release workflow via `cargo deb`
