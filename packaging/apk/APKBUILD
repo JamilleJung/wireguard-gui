@@ -1,6 +1,6 @@
 # Maintainer: downstream packager <packager@example.invalid>
 pkgname=wireguard-gui
-pkgver=1.5.5
+pkgver=1.8.0
 pkgrel=0
 pkgdesc="Native Linux GUI for plain WireGuard tunnels"
 url="https://github.com/JamilleJung/wireguard-gui"
