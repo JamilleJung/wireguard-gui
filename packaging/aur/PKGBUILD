@@ -6,8 +6,8 @@ pkgdesc="A native Linux GUI for managing plain WireGuard tunnels with wg and wg-
 arch=('x86_64' 'aarch64')
 url="https://github.com/JamilleJung/wireguard-gui"
 license=('MIT')
-depends=('wireguard-tools' 'fontconfig' 'libxkbcommon' 'libglvnd' 'dbus' 'polkit')
-makedepends=('cargo')
+depends=('wireguard-tools' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'wayland' 'dbus' 'polkit')
+makedepends=('cargo' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'wayland' 'dbus')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')  # `updpkg --sums` (or `makepkg -g`) before publishing to the AUR
 

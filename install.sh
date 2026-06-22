@@ -190,23 +190,23 @@ done
 # (fontconfig + xkbcommon), an OpenGL runtime, plus curl/git and wireguard-tools.
 case "$PM" in
     apt-get)
-        PKGS="build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 libdbus-1-dev curl git wireguard-tools" ;;
+        PKGS="build-essential pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1 libegl1 libegl1-mesa-dev libwayland-dev libdbus-1-dev curl git wireguard-tools" ;;
     dnf|yum)
         PKGS="gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel libxkbcommon-x11-devel mesa-libGL mesa-libEGL mesa-libEGL-devel wayland-devel dbus-devel curl git wireguard-tools" ;;
     pacman)
-        PKGS="base-devel fontconfig libxkbcommon libglvnd dbus curl git wireguard-tools" ;;
+        PKGS="base-devel fontconfig libxkbcommon libxkbcommon-x11 libglvnd wayland dbus curl git wireguard-tools" ;;
     zypper)
-        PKGS="gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel Mesa-libGL1 Mesa-libEGL1 dbus-1-devel curl git wireguard-tools" ;;
+        PKGS="gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-devel libxkbcommon-x11-devel Mesa-libGL1 Mesa-libEGL1 Mesa-libEGL-devel wayland-devel dbus-1-devel curl git wireguard-tools" ;;
     apk)
-        PKGS="build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-gl mesa-egl dbus-dev curl git wireguard-tools" ;;
+        PKGS="build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-dev wayland-dev dbus-dev curl git wireguard-tools" ;;
     xbps-install)
-        PKGS="base-devel fontconfig-devel libxkbcommon-devel MesaLib dbus-devel curl git wireguard-tools" ;;
+        PKGS="base-devel fontconfig-devel libxkbcommon-devel MesaLib MesaLib-devel wayland-devel dbus-devel curl git wireguard-tools" ;;
     eopkg)
-        PKGS="system.devel fontconfig-devel libxkbcommon-devel mesalib-devel dbus-devel curl git wireguard-tools" ;;
+        PKGS="system.devel fontconfig-devel libxkbcommon-devel mesalib-devel wayland-devel dbus-devel curl git wireguard-tools" ;;
     *)
         PM=""
         warn "Could not detect a supported package manager."
-        warn "Please install manually: a C compiler, pkg-config, fontconfig + libxkbcommon dev headers, an OpenGL runtime, curl, git, and wireguard-tools." ;;
+        warn "Please install manually: a C compiler, pkg-config, fontconfig + libxkbcommon dev headers (including x11), OpenGL + EGL dev headers, wayland dev headers, curl, git, and wireguard-tools." ;;
 esac
 
 install_pkgs() {
@@ -296,10 +296,11 @@ verify_build_deps() {
     if [ -z "$PKGCONF" ]; then
         warn "pkg-config not found."; missing=1
     else
-        # dev headers Slint + ksni link against (fontconfig, xkbcommon, dbus).
-        # Also check EGL (Slint's femtovg renderer) and wayland-client (arboard
-        # clipboard crate with wayland-data-control feature).
-        for lib in fontconfig xkbcommon dbus-1 egl wayland-client; do
+        # dev headers Slint + ksni link against.  Check every system library
+        # the binary links: fontconfig, xkbcommon + x11, GL/EGL (femtovg
+        # renderer), wayland-client (arboard clipboard + winit backend), and
+        # dbus-1 (ksni tray).
+        for lib in fontconfig xkbcommon xkbcommon-x11 egl wayland-client dbus-1; do
             "$PKGCONF" --exists "$lib" 2>/dev/null || { warn "Dev headers for '$lib' not found ($PKGCONF)."; missing=1; }
         done
     fi
