@@ -192,7 +192,7 @@ case "$PM" in
     apt-get)
         PKGS="build-essential pkg-config libfontconfig-dev libxkbcommon-dev libgl1 libegl1 libdbus-1-dev curl git wireguard-tools" ;;
     dnf|yum)
-        PKGS="gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel mesa-libGL mesa-libEGL dbus-devel curl git wireguard-tools" ;;
+        PKGS="gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel libxkbcommon-devel libxkbcommon-x11-devel mesa-libGL mesa-libEGL mesa-libEGL-devel wayland-devel dbus-devel curl git wireguard-tools" ;;
     pacman)
         PKGS="base-devel fontconfig libxkbcommon libglvnd dbus curl git wireguard-tools" ;;
     zypper)
@@ -296,8 +296,10 @@ verify_build_deps() {
     if [ -z "$PKGCONF" ]; then
         warn "pkg-config not found."; missing=1
     else
-        # dev headers Slint + ksni link against
-        for lib in fontconfig xkbcommon dbus-1; do
+        # dev headers Slint + ksni link against (fontconfig, xkbcommon, dbus).
+        # Also check EGL (Slint's femtovg renderer) and wayland-client (arboard
+        # clipboard crate with wayland-data-control feature).
+        for lib in fontconfig xkbcommon dbus-1 egl wayland-client; do
             "$PKGCONF" --exists "$lib" 2>/dev/null || { warn "Dev headers for '$lib' not found ($PKGCONF)."; missing=1; }
         done
     fi
