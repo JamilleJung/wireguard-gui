@@ -1,5 +1,5 @@
 Name:           wireguard-gui
-Version:        1.8.0
+Version:        1.9.0
 Release:        1%{?dist}
 Summary:        A native Linux GUI for managing WireGuard tunnels
 
@@ -23,6 +23,7 @@ BuildRequires:  wayland-devel
 
 Requires:       wireguard-tools
 Requires:       polkit
+Recommends:     systemd-resolved
 
 %description
 A native Linux GUI for managing plain WireGuard tunnels through wg and wg-quick:
@@ -57,6 +58,11 @@ install -Dm0644 packaging/49-wireguard-gui.rules %{buildroot}%{_datadir}/polkit-
 %{_datadir}/polkit-1/rules.d/49-wireguard-gui.rules
 
 %changelog
+* Mon Jul 27 2026 jamillejung <izeystudio@gmail.com> - 1.9.0-1
+- Version 1.9.0: detect an inactive resolvectl shim on RHEL-family hosts, so
+  tunnels with a 'DNS =' line no longer fail after a healthy-looking check.
+- Recommends: systemd-resolved.
+
 * Mon Jun 23 2026 jamillejung <izeystudio@gmail.com> - 1.8.0-1
 - Version 1.8.0: connection diagnostics, in-app help, updates window.
 - Add BuildRequires: mesa-libEGL-devel, wayland-devel, libxkbcommon-x11-devel,

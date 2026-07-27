@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-07-27
+
+### Fixed
+- **RHEL-family DNS activation.** A `resolvconf` that is really the `resolvectl`
+  compatibility shim is now checked against the `systemd-resolved` service
+  behind it. Rocky/RHEL ship that shim with the service disabled, so the system
+  check reported DNS as healthy while tunnels with a `DNS =` line still failed
+  to come up. The check now warns, **Fix automatically** offers to enable the
+  service, and the resulting activation error is explained in plain language.
+
+### Security
+- Updated `anyhow`, `crossbeam-epoch` and `memmap2`, clearing RUSTSEC-2026-0190,
+  -0204 and -0186.
+
 ## [1.8.0] - 2026-06-23
 
 ### Added
