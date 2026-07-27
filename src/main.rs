@@ -2356,10 +2356,20 @@ fn show_setup_wizard(main: &MainWindow) {
             {
                 steps.push(c);
             }
-            if !doctor::dns_ok()
-                && let Some(c) = doctor::install_resolvconf_command()
-            {
-                steps.push(c);
+            // A `DNS =` line needs both a `resolvconf` command and, when that
+            // command is the resolvectl shim, a running systemd-resolved. An
+            // install can only be judged once it has happened, so a freshly
+            // installed-but-inactive shim is picked up by the next Re-check.
+            match doctor::dns_setup_action(doctor::dns_resolver_state()) {
+                Some(doctor::DnsSetupAction::EnableResolved) => {
+                    steps.push(doctor::enable_resolved_command().to_string());
+                }
+                Some(doctor::DnsSetupAction::InstallProvider) => {
+                    if let Some(c) = doctor::install_resolvconf_command() {
+                        steps.push(c);
+                    }
+                }
+                None => {}
             }
             if !std::path::Path::new("/etc/wireguard").is_dir() {
                 steps.push("install -d -m 700 /etc/wireguard".to_string());

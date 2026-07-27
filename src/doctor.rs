@@ -82,15 +82,36 @@ pub fn clock_synced() -> Option<bool> {
     Some((tx.status & libc::STA_UNSYNC) == 0)
 }
 
-/// Is `cmd` on PATH (or in a standard bin dir)? Read-only, no root.
-pub fn which(cmd: &str) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DnsResolverState {
+    NativeResolvconf,
+    ResolvectlActive,
+    ResolvectlInactive,
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DnsSetupAction {
+    InstallProvider,
+    EnableResolved,
+}
+
+/// Resolve `cmd` on PATH (or in a standard bin dir). Read-only, no root.
+fn command_path(cmd: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     for d in ["/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/bin"] {
         dirs.push(PathBuf::from(d));
     }
-    dirs.iter().any(|d| d.join(cmd).exists())
+    dirs.into_iter()
+        .map(|dir| dir.join(cmd))
+        .find(|path| path.exists())
+}
+
+/// Is `cmd` on PATH (or in a standard bin dir)? Read-only, no root.
+pub fn which(cmd: &str) -> bool {
+    command_path(cmd).is_some()
 }
 
 /// The first installed package manager we recognise.
@@ -185,29 +206,73 @@ pub fn install_tools_hint() -> String {
     }
 }
 
-/// systemd-resolved running? Cheap file check (no subprocess). When it's up,
-/// modern wg-quick applies `DNS =` through it (resolvectl) - no resolvconf needed.
-fn systemd_resolved_active() -> bool {
-    std::path::Path::new("/run/systemd/resolve").is_dir()
-}
-
-/// The package providing a working `resolvconf` for wg-quick's `DNS =` here.
-/// On a systemd-resolved + Debian/Ubuntu system the correct shim is
-/// `systemd-resolvconf` (wires `resolvconf` -> systemd-resolved); everywhere
-/// else `openresolv` is the portable standalone provider (incl. non-systemd
-/// distros like Alpine/Void).
-fn resolvconf_pkg() -> &'static str {
-    if systemd_resolved_active() && pkg_manager() == Some("apt-get") {
-        "systemd-resolvconf"
+fn classify_dns_resolver(
+    canonical_resolvconf: Option<&std::path::Path>,
+    resolved_active: bool,
+) -> DnsResolverState {
+    let Some(path) = canonical_resolvconf else {
+        return DnsResolverState::Missing;
+    };
+    if path.file_name().is_some_and(|name| name == "resolvectl") {
+        if resolved_active {
+            DnsResolverState::ResolvectlActive
+        } else {
+            DnsResolverState::ResolvectlInactive
+        }
     } else {
-        "openresolv"
+        DnsResolverState::NativeResolvconf
     }
 }
 
-/// True when `DNS =` lines in configs will apply (a `resolvconf` command exists,
-/// or systemd-resolved is handling DNS). Read-only.
+/// Whether systemd-resolved is running. Prefer systemd's actual service state;
+/// only use its runtime directory on systems without `systemctl`.
+fn systemd_resolved_active() -> bool {
+    if let Some(systemctl) = command_path("systemctl") {
+        return Command::new(systemctl)
+            .args(["is-active", "--quiet", "systemd-resolved.service"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    }
+    std::path::Path::new("/run/systemd/resolve").is_dir()
+}
+
+/// Classify the resolver integration that `wg-quick` will actually execute.
+pub fn dns_resolver_state() -> DnsResolverState {
+    let canonical =
+        command_path("resolvconf").map(|path| std::fs::canonicalize(&path).unwrap_or(path));
+    classify_dns_resolver(canonical.as_deref(), systemd_resolved_active())
+}
+
+pub fn dns_setup_action(state: DnsResolverState) -> Option<DnsSetupAction> {
+    match state {
+        DnsResolverState::Missing => Some(DnsSetupAction::InstallProvider),
+        DnsResolverState::ResolvectlInactive => Some(DnsSetupAction::EnableResolved),
+        DnsResolverState::NativeResolvconf | DnsResolverState::ResolvectlActive => None,
+    }
+}
+
+fn resolvconf_pkg_for(manager: Option<&str>, resolved_active: bool) -> &'static str {
+    match manager {
+        Some("dnf" | "yum") => "systemd-resolved",
+        Some("apt-get") if resolved_active => "systemd-resolvconf",
+        _ => "openresolv",
+    }
+}
+
+/// The package providing a working `resolvconf` command on this system.
+fn resolvconf_pkg() -> &'static str {
+    resolvconf_pkg_for(pkg_manager(), systemd_resolved_active())
+}
+
+/// True when `DNS =` lines in configs can be applied by `wg-quick`. Read-only.
 pub fn dns_ok() -> bool {
-    which("resolvconf") || systemd_resolved_active()
+    matches!(
+        dns_resolver_state(),
+        DnsResolverState::NativeResolvconf | DnsResolverState::ResolvectlActive
+    )
 }
 
 /// A copy-pasteable command to install a resolvconf provider (for `DNS =` lines).
@@ -216,6 +281,14 @@ pub fn install_resolvconf_hint() -> String {
         Some(c) => with_priv(&c),
         None => "install 'openresolv' (or another resolvconf provider)".to_string(),
     }
+}
+
+pub fn enable_resolved_command() -> &'static str {
+    "systemctl enable --now systemd-resolved"
+}
+
+pub fn enable_resolved_hint() -> String {
+    with_priv(enable_resolved_command())
 }
 
 /// Non-interactive root install command for `pkg`; `None` on an unknown distro.
@@ -247,6 +320,16 @@ pub fn install_resolvconf_command() -> Option<String> {
 /// common, confusing failures (e.g. the missing-resolvconf one on Debian).
 pub fn friendly_error(raw: &str) -> String {
     let r = raw.trim();
+    let resolved_unavailable = r.contains("org.freedesktop.resolve1")
+        || (r.contains("Failed to set DNS configuration")
+            && (r.contains("resolvectl") || r.contains("systemd-resolved")));
+    if resolved_unavailable {
+        return format!(
+            "this tunnel's 'DNS =' reached the resolvectl shim, but \
+             systemd-resolved is unavailable - run: {}",
+            enable_resolved_hint()
+        );
+    }
     if r.contains("resolvconf") && r.contains("not found") {
         return format!(
             "this tunnel's 'DNS =' needs a resolvconf provider - install it: {}",
@@ -361,6 +444,39 @@ pub fn critical_blockers() -> Vec<String> {
     v
 }
 
+fn dns_check(state: DnsResolverState) -> Check {
+    let (status, detail, fix) = match state {
+        DnsResolverState::NativeResolvconf => (
+            Status::Ok,
+            "native resolvconf provider available".to_string(),
+            None,
+        ),
+        DnsResolverState::ResolvectlActive => (
+            Status::Ok,
+            "resolvectl shim available; systemd-resolved is active".to_string(),
+            None,
+        ),
+        DnsResolverState::ResolvectlInactive => (
+            Status::Warning,
+            "resolvectl shim is installed, but systemd-resolved is inactive".to_string(),
+            Some(enable_resolved_hint()),
+        ),
+        DnsResolverState::Missing => (
+            Status::Warning,
+            "resolvconf compatibility command is missing; tunnels with 'DNS =' will fail"
+                .to_string(),
+            Some(install_resolvconf_hint()),
+        ),
+    };
+    Check {
+        name: "DNS for tunnels (resolvconf)",
+        status,
+        detail,
+        fix,
+        critical: false,
+    }
+}
+
 /// Run all checks. Read-only; does not require root and never modifies anything.
 pub fn system_check() -> Report {
     let mut checks = Vec::new();
@@ -386,27 +502,8 @@ pub fn system_check() -> Report {
         critical: true,
     });
 
-    // wg-quick needs a `resolvconf` (or systemd-resolved) to apply a config's
-    // `DNS =` line; without it such tunnels fail to come up (common on minimal
-    // Debian). Not critical, since DNS-less configs work fine.
-    let dns = dns_ok();
-    checks.push(Check {
-        name: "DNS for tunnels (resolvconf)",
-        status: if dns { Status::Ok } else { Status::Warning },
-        detail: if which("resolvconf") {
-            "resolvconf available".to_string()
-        } else if systemd_resolved_active() {
-            "via systemd-resolved".to_string()
-        } else {
-            "missing - tunnels with a 'DNS =' line will fail to connect".to_string()
-        },
-        fix: if dns {
-            None
-        } else {
-            Some(install_resolvconf_hint())
-        },
-        critical: false,
-    });
+    // DNS integration is optional because DNS-less tunnels work without it.
+    checks.push(dns_check(dns_resolver_state()));
 
     // A wrong system clock makes the server reject WireGuard handshakes via the
     // TAI64N anti-replay timestamp: the tunnel comes up but never connects. Not
@@ -511,6 +608,86 @@ pub fn system_check() -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn classifies_dns_resolver_capabilities() {
+        assert_eq!(
+            classify_dns_resolver(None, false),
+            DnsResolverState::Missing
+        );
+        assert_eq!(
+            classify_dns_resolver(Some(Path::new("/usr/sbin/openresolv")), false),
+            DnsResolverState::NativeResolvconf
+        );
+        assert_eq!(
+            classify_dns_resolver(Some(Path::new("/usr/bin/resolvectl")), true),
+            DnsResolverState::ResolvectlActive
+        );
+        assert_eq!(
+            classify_dns_resolver(Some(Path::new("/usr/bin/resolvectl")), false),
+            DnsResolverState::ResolvectlInactive
+        );
+    }
+
+    #[test]
+    fn missing_resolvconf_is_missing_even_when_resolved_is_active() {
+        assert_eq!(classify_dns_resolver(None, true), DnsResolverState::Missing);
+    }
+
+    #[test]
+    fn resolver_setup_action_matches_state() {
+        assert_eq!(
+            dns_setup_action(DnsResolverState::Missing),
+            Some(DnsSetupAction::InstallProvider)
+        );
+        assert_eq!(
+            dns_setup_action(DnsResolverState::ResolvectlInactive),
+            Some(DnsSetupAction::EnableResolved)
+        );
+        assert_eq!(dns_setup_action(DnsResolverState::NativeResolvconf), None);
+        assert_eq!(dns_setup_action(DnsResolverState::ResolvectlActive), None);
+    }
+
+    #[test]
+    fn resolver_package_policy_matches_package_manager() {
+        assert_eq!(resolvconf_pkg_for(Some("dnf"), false), "systemd-resolved");
+        assert_eq!(resolvconf_pkg_for(Some("yum"), false), "systemd-resolved");
+        assert_eq!(
+            resolvconf_pkg_for(Some("apt-get"), true),
+            "systemd-resolvconf"
+        );
+        assert_eq!(resolvconf_pkg_for(Some("apt-get"), false), "openresolv");
+        assert_eq!(resolvconf_pkg_for(Some("pacman"), false), "openresolv");
+    }
+
+    #[test]
+    fn inactive_resolvectl_is_a_warning_with_enable_hint() {
+        let check = dns_check(DnsResolverState::ResolvectlInactive);
+        assert!(matches!(check.status, Status::Warning));
+        assert!(check.detail.contains("inactive"));
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.contains("systemctl enable --now systemd-resolved"))
+        );
+    }
+
+    #[test]
+    fn friendly_error_explains_inactive_systemd_resolved() {
+        let raw = "resolvconf -a wg0 -m 0 -x: Could not activate remote peer \
+                   'org.freedesktop.resolve1': activation request failed: unknown unit";
+        let friendly = friendly_error(raw);
+        assert!(friendly.contains("systemd-resolved"));
+        assert!(friendly.contains("systemctl enable --now systemd-resolved"));
+    }
+
+    #[test]
+    fn friendly_error_preserves_unknown_errors() {
+        let raw = "wg-quick up wg0: RTNETLINK answers: File exists";
+        assert_eq!(friendly_error(raw), raw);
+    }
 
     #[test]
     fn report_exit_codes() {
