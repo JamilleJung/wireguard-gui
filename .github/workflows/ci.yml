@@ -111,10 +111,23 @@ jobs:
         # pre-existing informational warnings (unmaintained / unsound) in
         # transitive build/UI dependencies (Slint's tree) with no upstream fix
         # yet — accepted knowingly; drop an entry once its upstream updates.
+        #
+        # quick-xml (0194/0195) are real DoS advisories, but the crate only
+        # reaches us through the wayland-scanner proc-macro, which parses the
+        # protocol XML shipped inside the wayland-* crates at build time. The
+        # parser never sees runtime or attacker-controlled input, and the
+        # fixed 0.41 is gated behind wayland-scanner's own bump.
+        #
+        # rustybuzz (0206) / ttf-parser (0192) are unmaintained-only notices on
+        # crates pulled in by resvg/usvg inside Slint; no fixed version exists.
         run: |
           cargo audit --deny warnings \
             --ignore RUSTSEC-2021-0139 \
             --ignore RUSTSEC-2024-0375 \
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2021-0145
+            --ignore RUSTSEC-2021-0145 \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195 \
+            --ignore RUSTSEC-2026-0206 \
+            --ignore RUSTSEC-2026-0192
