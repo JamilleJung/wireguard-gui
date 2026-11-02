@@ -38,7 +38,7 @@ for arg in "$@"; do
         --polkit)     AUTH_MODE="polkit" ;;
         --sudoers)    AUTH_MODE="sudoers" ;;
         --allow-root) ALLOW_ROOT=1 ;;
-        *) ;;
+        *) printf 'Unknown installer option: %s\n' "$arg" >&2; exit 2 ;;
     esac
 done
 
@@ -141,7 +141,11 @@ as_user() {
 # independent of the `sudo` group) - but it needs the `sudo` binary present. So
 # "no sudo -> install sudo", then set it up. Skipped for an explicit --polkit.
 ensure_sudo() {
-    [ "$AUTH_MODE" = "polkit" ] && return 0
+    if [ "$AUTH_MODE" = "polkit" ]; then
+        command -v pkexec >/dev/null 2>&1 \
+            || die "--polkit requires pkexec/polkit. Install it first or use --sudoers; existing authorization kept."
+        return 0
+    fi
     command -v sudo >/dev/null 2>&1 && return 0
     say "Installing sudo (so the app can use a passwordless helper drop-in)"
     case "$PM" in
@@ -275,7 +279,8 @@ build_app() {
     # A root install (--allow-root) must not drop a Rust toolchain into /root or
     # run build scripts as root: reuse an existing prebuilt binary when present.
     if [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" = "root" ] \
-            && [ -f "$HERE/target/release/wireguard-gui" ]; then
+            && [ -f "$HERE/target/release/wireguard-gui" ] \
+            && [ -f "$HERE/target/release/wg-helper" ]; then
         ok "Using the existing prebuilt binary (skipping the build as root)."
         return 0
     fi
@@ -297,7 +302,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     . "$HOME/.cargo/env"
 fi
 cd "$HERE"
-cargo build --release
+cargo build --release --locked
 BUILD
     [ -f "$HERE/target/release/wireguard-gui" ] || die "Build did not produce a binary."
     ok "Built."
@@ -316,7 +321,8 @@ verify_build_deps() {
     # When a root install will reuse the prebuilt binary, there is nothing to
     # build, so don't fail on a missing compiler/headers.
     if [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" = "root" ] \
-            && [ -f "$HERE/target/release/wireguard-gui" ]; then
+            && [ -f "$HERE/target/release/wireguard-gui" ] \
+            && [ -f "$HERE/target/release/wg-helper" ]; then
         return 0
     fi
     say "Checking the build toolchain"
@@ -355,24 +361,65 @@ verify_runtime_deps() {
         || warn "wireguard-tools (wg/wg-quick) not found — the app needs them at runtime. Install the 'wireguard-tools' package."
 }
 
-# wg-quick needs a resolvconf provider to apply a config's `DNS =` line. Install
-# one (best-effort) when it's missing and systemd-resolved isn't handling DNS -
-# the fix for minimal Debian, where tunnels with DNS= otherwise fail to connect.
+resolvconf_uses_resolvectl() {
+    local resolver_path resolver_target
+    command -v resolvconf >/dev/null 2>&1 || return 1
+    resolver_path="$(command -v resolvconf)"
+    resolver_target="$(readlink -f "$(command -v resolvconf)" 2>/dev/null || printf '%s' "$resolver_path")"
+    [ "$(basename "$resolver_target")" = "resolvectl" ]
+}
+
+systemd_resolved_active() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active --quiet systemd-resolved.service
+    else
+        [ -d /run/systemd/resolve ]
+    fi
+}
+
+warn_enable_resolved() {
+    warn "resolvconf is the resolvectl shim, but systemd-resolved is inactive."
+    warn "Run: sudo systemctl enable --now systemd-resolved"
+}
+
+# wg-quick needs a working resolvconf compatibility command to apply a config's
+# `DNS =` line. Install one best-effort when missing, but never enable a network
+# service silently.
 ensure_resolvconf() {
-    command -v resolvconf >/dev/null 2>&1 && return 0
-    [ -d /run/systemd/resolve ] && return 0   # systemd-resolved already handles DNS=
+    if command -v resolvconf >/dev/null 2>&1; then
+        if resolvconf_uses_resolvectl && ! systemd_resolved_active; then
+            warn_enable_resolved
+        else
+            ok "resolvconf provider available."
+        fi
+        return 0
+    fi
+
     say "Installing a resolvconf provider (so tunnels with 'DNS =' can connect)"
     case "$PM" in
-        apt-get)      as_root apt-get install -y openresolv || true ;;
-        dnf|yum)      as_root "$PM" install -y openresolv || true ;;
+        apt-get)
+            if systemd_resolved_active; then
+                as_root apt-get install -y systemd-resolvconf || true
+            else
+                as_root apt-get install -y openresolv || true
+            fi
+            ;;
+        dnf|yum)      as_root "$PM" install -y systemd-resolved || true ;;
         pacman)       as_root pacman -Sy --noconfirm openresolv || true ;;
         zypper)       as_root zypper --non-interactive install openresolv || true ;;
         apk)          as_root apk add openresolv || true ;;
         xbps-install) as_root xbps-install -Sy openresolv || true ;;
         eopkg)        as_root eopkg install -y openresolv || true ;;
     esac
-    command -v resolvconf >/dev/null 2>&1 && ok "resolvconf provider installed." \
-        || warn "Could not install a resolvconf provider; tunnels with 'DNS =' may fail until you install 'openresolv'."
+
+    if ! command -v resolvconf >/dev/null 2>&1; then
+        warn "Could not install a resolvconf provider; tunnels with a 'DNS =' line"
+        warn "may fail until a compatible provider is installed."
+    elif resolvconf_uses_resolvectl && ! systemd_resolved_active; then
+        warn_enable_resolved
+    else
+        ok "resolvconf provider installed."
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -401,49 +448,57 @@ command -v update-desktop-database >/dev/null 2>&1 && \
     as_root update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
 ok "Files installed."
 
-if [ "$AUTH_MODE" = "polkit" ]; then
-    say "Installing polkit rule (passwordless for the 'wireguard' group)"
-    as_root rm -f "$SUDOERS"
-    # Gate the root helper on a dedicated group so it is NOT exposed to every
-    # active-local user (who could otherwise read another user's private keys
-    # via the helper's read/showconf/dump verbs).
-    as_root groupadd -f wireguard 2>/dev/null \
-        || as_root addgroup wireguard 2>/dev/null || true
-    if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] \
-            && printf '%s' "$REAL_USER" | grep -qE '^[a-zA-Z_][a-zA-Z0-9_-]*$' \
-            && id "$REAL_USER" >/dev/null 2>&1; then
-        as_root usermod -aG wireguard "$REAL_USER" 2>/dev/null \
-            || as_root gpasswd -a "$REAL_USER" wireguard 2>/dev/null \
-            || as_root adduser "$REAL_USER" wireguard 2>/dev/null || true
-        ok "Added $REAL_USER to the 'wireguard' group (log out and back in for it to take effect)."
+configure_authorization() {
+    if [ "$AUTH_MODE" = "polkit" ]; then
+        say "Installing polkit rule (passwordless for the 'wireguard' group)"
+        # Gate the root helper on a dedicated group so it is NOT exposed to every
+        # active-local user (who could otherwise read another user's private keys
+        # via the helper's read/showconf/dump verbs).
+        as_root groupadd -f wireguard 2>/dev/null \
+            || as_root addgroup wireguard 2>/dev/null \
+            || die "Could not create the wireguard authorization group; existing authorization kept."
+        if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] \
+                && printf '%s' "$REAL_USER" | grep -qE '^[a-zA-Z_][a-zA-Z0-9_-]*$' \
+                && id "$REAL_USER" >/dev/null 2>&1; then
+            as_root usermod -aG wireguard "$REAL_USER" 2>/dev/null \
+                || as_root gpasswd -a "$REAL_USER" wireguard 2>/dev/null \
+                || as_root adduser "$REAL_USER" wireguard 2>/dev/null \
+                || die "Could not enroll $REAL_USER in wireguard; existing authorization kept."
+            ok "Added $REAL_USER to the 'wireguard' group (log out and back in for it to take effect)."
+        else
+            warn "Couldn't add a user to the 'wireguard' group automatically."
+            warn "Add yours with: sudo usermod -aG wireguard <your-username>  (then re-login)."
+        fi
+        as_root install -d /etc/polkit-1/rules.d
+        as_root install -m644 "$HERE/packaging/49-wireguard-gui.rules" "$POLKIT_RULE" \
+            || die "Could not install polkit rule; existing authorization kept."
+        as_root rm -f "$SUDOERS" || die "Could not remove the previous sudoers grant."
+        ok "polkit rule installed at $POLKIT_RULE (limited to the 'wireguard' group)"
+    elif [ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ]; then
+        warn "Couldn't determine the invoking user - skipping the passwordless drop-in."
+        warn "Run wireguard-gui as root, re-run as that user, or pass WG_REAL_USER=<name>."
+    elif ! printf '%s' "$REAL_USER" | grep -qE '^[a-zA-Z_][a-zA-Z0-9_-]*$' \
+            || ! id "$REAL_USER" >/dev/null 2>&1; then
+        # Reject anything that isn't a real, plain username - visudo alone does NOT
+        # catch an injected spec like "u ALL=(ALL) NOPASSWD: ALL #".
+        die "Refusing to write a sudoers rule for an invalid/unknown user: '$REAL_USER'."
     else
-        warn "Couldn't add a user to the 'wireguard' group automatically."
-        warn "Add yours with: sudo usermod -aG wireguard <your-username>  (then re-login)."
+        say "Granting passwordless access to the wg-helper for $REAL_USER (sudoers)"
+        tmp="$(mktemp)"
+        printf '%s ALL=(root) NOPASSWD: %s\n' "$REAL_USER" "$HELPER" > "$tmp"
+        if as_root visudo -cf "$tmp" >/dev/null 2>&1; then
+            as_root install -m440 "$tmp" "$SUDOERS" || { rm -f "$tmp"; die "Could not install sudoers grant; existing authorization kept."; }
+            as_root rm -f "$POLKIT_RULE" || { rm -f "$tmp"; die "Could not remove the previous polkit grant."; }
+            ok "Passwordless helper set up for $REAL_USER (works even without sudo-group membership)."
+        else
+            rm -f "$tmp"
+            die "sudoers validation failed; existing authorization kept. Re-run with --polkit or fix sudo."
+        fi
+        rm -f "$tmp"
     fi
-    as_root install -d /etc/polkit-1/rules.d
-    as_root install -m644 "$HERE/packaging/49-wireguard-gui.rules" "$POLKIT_RULE"
-    ok "polkit rule installed at $POLKIT_RULE (limited to the 'wireguard' group)"
-elif [ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ]; then
-    warn "Couldn't determine the invoking user - skipping the passwordless drop-in."
-    warn "Run wireguard-gui as root, re-run as that user, or pass WG_REAL_USER=<name>."
-elif ! printf '%s' "$REAL_USER" | grep -qE '^[a-zA-Z_][a-zA-Z0-9_-]*$' \
-        || ! id "$REAL_USER" >/dev/null 2>&1; then
-    # Reject anything that isn't a real, plain username - visudo alone does NOT
-    # catch an injected spec like "u ALL=(ALL) NOPASSWD: ALL #".
-    die "Refusing to write a sudoers rule for an invalid/unknown user: '$REAL_USER'."
-else
-    say "Granting passwordless access to the wg-helper for $REAL_USER (sudoers)"
-    as_root rm -f "$POLKIT_RULE"
-    tmp="$(mktemp)"
-    printf '%s ALL=(root) NOPASSWD: %s\n' "$REAL_USER" "$HELPER" > "$tmp"
-    if as_root visudo -cf "$tmp" >/dev/null 2>&1; then
-        as_root install -m440 "$tmp" "$SUDOERS"
-        ok "Passwordless helper set up for $REAL_USER (works even without sudo-group membership)."
-    else
-        warn "sudoers validation failed; skipping. Run as root, or re-run: ./install.sh --polkit"
-    fi
-    rm -f "$tmp"
-fi
+}
+
+configure_authorization
 
 printf "\n${G}${B}Done!${N} Launch ${B}WireGuard${N} from your app menu, or run: ${B}wireguard-gui${N}\n"
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then

@@ -42,6 +42,8 @@ fn curl(url: &str) -> Result<Vec<u8>, String> {
             "-fsSL",
             "--proto",
             "=https",
+            "--proto-redir",
+            "=https",
             "--tlsv1.2",
             "--max-time",
             "8",
@@ -71,6 +73,8 @@ fn curl_to(url: &str, dest: &Path) -> Result<(), String> {
         .args([
             "-fsSL",
             "--proto",
+            "=https",
+            "--proto-redir",
             "=https",
             "--tlsv1.2",
             "--max-time",
@@ -185,25 +189,97 @@ pub fn check() -> Result<Option<UpdateInfo>, String> {
 
 /// Best CPU architecture token for the tarball name, matching the release
 /// workflow's asset suffixes.
-fn arch_token() -> &'static str {
-    if cfg!(target_arch = "aarch64") {
-        "aarch64"
-    } else {
-        "x86_64"
+fn arch_token() -> Result<&'static str, String> {
+    architecture_token(std::env::consts::ARCH)
+}
+
+fn architecture_token(arch: &str) -> Result<&'static str, String> {
+    match arch {
+        "x86_64" => Ok("x86_64"),
+        "aarch64" => Ok("aarch64"),
+        _ => Err(format!("no release build for this architecture ({arch})")),
     }
+}
+
+/// Owns the private download directory until the installer has finished.
+/// Failed downloads, failed staging and cancelled/failed installs all clean up.
+pub struct VerifiedUpdate {
+    workdir: PathBuf,
+    directory: PathBuf,
+}
+
+impl Drop for VerifiedUpdate {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.workdir);
+    }
+}
+
+fn stage_bundle(update: &mut VerifiedUpdate, application: &str) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata =
+        std::fs::symlink_metadata(&update.directory).map_err(|e| format!("update bundle: {e}"))?;
+    if !metadata.file_type().is_dir() {
+        return Err("unexpected tarball directory".into());
+    }
+    let required = [
+        application.to_string(),
+        "wg-helper".to_string(),
+        "install.sh".to_string(),
+        format!("packaging/{REPO}.desktop"),
+        format!("packaging/{REPO}.svg"),
+        format!("packaging/49-{REPO}.rules"),
+    ];
+    for relative in required {
+        // Check every component as well as the leaf; staging must not follow a
+        // tar entry symlink through packaging/, target/ or the bundle root.
+        let mut current = update.directory.clone();
+        for component in Path::new(&relative).components() {
+            current.push(component);
+            let md = std::fs::symlink_metadata(&current)
+                .map_err(|e| format!("missing update asset {relative}: {e}"))?;
+            if md.file_type().is_symlink() || (!md.is_file() && !md.is_dir()) {
+                return Err(format!("invalid update asset: {relative}"));
+            }
+        }
+        let md = std::fs::symlink_metadata(&current).map_err(|e| e.to_string())?;
+        if !md.is_file() || md.nlink() != 1 {
+            return Err(format!("invalid update asset: {relative}"));
+        }
+    }
+    let target = update.directory.join("target");
+    // Release bundles have no Cargo build directory. Reject a pre-existing
+    // target rather than copying through archive-provided links or stale files.
+    std::fs::create_dir(&target).map_err(|e| format!("stage target: {e}"))?;
+    let release = target.join("release");
+    std::fs::create_dir(&release).map_err(|e| format!("stage release: {e}"))?;
+    for bin in [application, "wg-helper"] {
+        let dest = release.join(bin);
+        std::fs::copy(update.directory.join(bin), &dest)
+            .map_err(|e| format!("stage {bin}: {e}"))?;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("stage permissions: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Download the latest tarball + `SHA256SUMS` + `SHA256SUMS.minisig`, verify
 /// them, unpack, and stage the prebuilt binaries so the installer can reuse
-/// them. Returns the unpacked tarball directory (containing `install.sh`).
-pub fn download_and_verify() -> Result<PathBuf, String> {
+/// them. Returns an owner that retains the verified bundle until installation ends.
+pub fn download_and_verify() -> Result<VerifiedUpdate, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("automatic release updates are supported on Linux only".into());
+    }
     let latest = latest_tag()?;
-    let arch = arch_token();
+    let arch = arch_token()?;
     let tarname = format!("{REPO}-{latest}-{arch}-linux.tar.gz");
     let base = format!("https://github.com/{OWNER}/{REPO}/releases/download/v{latest}");
 
     // A private scratch dir under the user's runtime/tmp dir.
-    let workdir = private_workdir()?;
+    let mut update = VerifiedUpdate {
+        workdir: private_workdir()?,
+        directory: PathBuf::new(),
+    };
+    let workdir = &update.workdir;
 
     curl_to(&format!("{base}/{tarname}"), &workdir.join(&tarname))?;
     curl_to(&format!("{base}/SHA256SUMS"), &workdir.join("SHA256SUMS"))?;
@@ -212,12 +288,12 @@ pub fn download_and_verify() -> Result<PathBuf, String> {
         &workdir.join("SHA256SUMS.minisig"),
     )?;
 
-    verify_release(&workdir, &tarname)?;
+    verify_release(workdir, &tarname)?;
 
     // Unpack the verified tarball.
     let st = Command::new("tar")
         .args(["-xzf", &tarname])
-        .current_dir(&workdir)
+        .current_dir(workdir)
         .status()
         .map_err(|e| format!("tar spawn: {e}"))?;
     if !st.success() {
@@ -228,18 +304,9 @@ pub fn download_and_verify() -> Result<PathBuf, String> {
         return Err("unexpected tarball layout".into());
     }
 
-    // install.sh reuses target/release/<bin> when WG_USE_PREBUILT=1 (skipping a
-    // compile), so stage the unpacked binaries there.
-    let rel = tardir.join("target").join("release");
-    fs::create_dir_all(&rel).map_err(|e| format!("mkdir: {e}"))?;
-    for bin in ["wireguard-gui", "wg-helper"] {
-        let src = tardir.join(bin);
-        if src.exists() {
-            fs::rename(&src, rel.join(bin)).map_err(|e| format!("stage {bin}: {e}"))?;
-        }
-    }
-
-    Ok(tardir)
+    update.directory = tardir;
+    stage_bundle(&mut update, "wireguard-gui")?;
+    Ok(update)
 }
 
 /// Authenticate the downloaded artifact against the baked-in trust anchor.
@@ -326,7 +393,8 @@ fn tarball_checksum(sums: &str, tarball: &str) -> Result<String, String> {
 ///     so the per-user helper grant still targets the human;
 ///   * otherwise — fail with a clear message (no non-interactive way to escalate
 ///     from a tty-less desktop session).
-pub fn apply(tardir: &Path) -> Result<(), String> {
+pub fn apply(update: &VerifiedUpdate) -> Result<(), String> {
+    let tardir = &update.directory;
     let installer = tardir.join("install.sh");
     if !installer.exists() {
         return Err("verified tarball has no install.sh".into());
@@ -349,7 +417,7 @@ pub fn apply(tardir: &Path) -> Result<(), String> {
         // $HERE resolves to tardir and finds the staged target/release/). The env
         // vars are passed through `env KEY=VAL` so they survive pkexec's env
         // sanitization. WG_REAL_USER keeps the per-user helper grant on the human.
-        let user = invoking_user();
+        let user = invoking_user()?;
         let installer_abs =
             fs::canonicalize(&installer).map_err(|e| format!("resolve install.sh path: {e}"))?;
         Command::new("pkexec")
@@ -361,9 +429,11 @@ pub fn apply(tardir: &Path) -> Result<(), String> {
             .status()
             .map_err(|e| format!("pkexec spawn: {e}"))?
     } else {
-        return Err("cannot escalate privileges automatically — run install.sh \
-                    manually to finish the update"
-            .into());
+        return Err(
+            "cannot escalate privileges automatically — install pkexec/polkit or \
+                    install the signed release manually"
+                .into(),
+        );
     };
 
     if !st.success() {
@@ -375,18 +445,38 @@ pub fn apply(tardir: &Path) -> Result<(), String> {
 /// The login name of the user who invoked us, for `WG_REAL_USER` so the
 /// installer's per-user helper grant targets the human. Resolves via
 /// `getpwuid(getuid())`, falling back to `$USER`.
-fn invoking_user() -> String {
-    unsafe {
-        let pw = libc::getpwuid(libc::getuid());
-        if !pw.is_null()
-            && !(*pw).pw_name.is_null()
-            && let Ok(name) = std::ffi::CStr::from_ptr((*pw).pw_name).to_str()
-            && !name.is_empty()
-        {
-            return name.to_string();
+fn invoking_user() -> Result<String, String> {
+    // getpwuid returns a shared static buffer and can race other GUI threads.
+    // Resolve the real invoking uid into caller-owned storage instead.
+    let mut size = 4096;
+    while size <= 1024 * 1024 {
+        let mut buffer = vec![0u8; size];
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut result = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                &mut entry,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE {
+            size *= 2;
+            continue;
         }
+        if rc == 0 && !result.is_null() && !entry.pw_name.is_null() {
+            let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) }
+                .to_str()
+                .map_err(|_| "invoking account name is not UTF-8".to_string())?;
+            if !name.is_empty() {
+                return Ok(name.to_string());
+            }
+        }
+        break;
     }
-    std::env::var("USER").unwrap_or_default()
+    Err("cannot resolve the invoking account for update authorization".into())
 }
 
 /// Whether `prog` is on `$PATH`.
@@ -454,6 +544,7 @@ fn try_install_minisign() {
 fn state_path(name: &str) -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("wireguard-gui").join(name))
 }
@@ -469,6 +560,77 @@ pub fn disabled() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsupported_gui_cpu_has_no_mismatched_update() {
+        assert_eq!(super::architecture_token("x86_64").unwrap(), "x86_64");
+        assert_eq!(super::architecture_token("aarch64").unwrap(), "aarch64");
+        assert!(super::architecture_token("arm").is_err());
+        assert!(super::architecture_token("x86").is_err());
+        assert!(super::architecture_token("riscv64").is_err());
+    }
+
+    #[test]
+    fn invoking_account_resolves_without_environment_fallback() {
+        assert!(!super::invoking_user().unwrap().is_empty());
+    }
+
+    fn bundle_fixture() -> VerifiedUpdate {
+        let workdir = private_workdir().unwrap();
+        let directory = workdir.join("bundle");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(directory.join("packaging")).unwrap();
+        for file in [
+            "wireguard-gui".to_string(),
+            "wg-helper".into(),
+            "install.sh".into(),
+            format!("packaging/{REPO}.desktop"),
+            format!("packaging/{REPO}.svg"),
+            format!("packaging/49-{REPO}.rules"),
+        ] {
+            std::fs::write(directory.join(file), b"fixture").unwrap();
+        }
+        VerifiedUpdate { workdir, directory }
+    }
+
+    #[test]
+    fn update_requires_complete_bundle_before_staging() {
+        let mut update = bundle_fixture();
+        let path = update.workdir.clone();
+        std::fs::remove_file(update.directory.join("wg-helper")).unwrap();
+        assert!(stage_bundle(&mut update, "wireguard-gui").is_err());
+        assert!(!update.directory.join("target").exists());
+        drop(update);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn update_staging_and_lifetime_cleanup() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut update = bundle_fixture();
+        let path = update.workdir.clone();
+        stage_bundle(&mut update, "wireguard-gui").unwrap();
+        for bin in ["wireguard-gui", "wg-helper"] {
+            let file = update.directory.join("target/release").join(bin);
+            assert_eq!(std::fs::read(&file).unwrap(), b"fixture");
+            assert_eq!(
+                std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+        drop(update);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn update_rejects_archive_links_and_existing_build_tree() {
+        let mut update = bundle_fixture();
+        std::fs::remove_file(update.directory.join("wg-helper")).unwrap();
+        std::os::unix::fs::symlink("install.sh", update.directory.join("wg-helper")).unwrap();
+        assert!(stage_bundle(&mut update, "wireguard-gui").is_err());
+        let mut update = bundle_fixture();
+        std::os::unix::fs::symlink("packaging", update.directory.join("target")).unwrap();
+        assert!(stage_bundle(&mut update, "wireguard-gui").is_err());
+    }
     use super::*;
 
     #[test]
