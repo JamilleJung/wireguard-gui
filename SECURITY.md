@@ -2,184 +2,195 @@
 
 ## 📧 Reporting a vulnerability
 
-Please report security issues **privately** - do not open a public issue for
-anything exploitable.
+Report exploitable issues privately through
+[GitHub private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new)
+or **izeystudio@gmail.com**. Include the version/commit, distro, reproduction
+steps and impact. Do not send real private keys or production configs.
 
-- Preferred: GitHub **[Private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new)**
-  (Security → Report a vulnerability).
-- Or email: **izeystudio@gmail.com**
-
-Please include the version (or commit), your distro + package manager, repro
-steps, and impact. Do **not** include real private keys or production configs.
-Coordinated disclosure is appreciated - you'll get an acknowledgement as soon as
-possible and be kept updated on a fix.
-
-## 📋 Supported versions
-
-This is an early project; only the latest release (and `main`) receive fixes.
-If you are running an older version, please upgrade before reporting.
+Only the latest release and `main` receive fixes. The current published release
+is **1.9.1**; upgrade older installations when evaluating a reported issue.
 
 ## 🔍 Threat model
 
-`wireguard-gui` manages WireGuard tunnels under `/etc/wireguard`, which requires
-root. The design goal is to keep the part that runs as root as small and
-auditable as possible, and to keep everything else unprivileged.
+The project aims to constrain privileged operations to managing plain WireGuard
+configs, interfaces, boot settings and its own firewall rules. It validates
+untrusted imports and names before saving, rejects managed script hooks, keeps
+secrets out of ordinary action logs, and uses private config/export permissions.
 
-**In scope** (things we actively defend against):
+This is not per-user tunnel isolation. A user authorized to invoke the helper
+can read all managed private keys, replace/delete tunnels, alter host networking,
+change boot enablement and affect host outbound traffic. Grant sudoers access
+or `wireguard` group membership only to users trusted with that capability.
+A compromised account holding this grant has the same capability.
 
-- A bug or hijacked environment in the **unprivileged UI** escalating to root.
-- A user who can run the **helper** (via the passwordless grant) escalating
-  beyond "manage WireGuard tunnels" to arbitrary root code execution.
-- The privileged helper being tricked into touching files outside
-  `/etc/wireguard` (path traversal) or running attacker-chosen commands.
-- A malicious or malformed `.conf`/QR import corrupting existing tunnels or
-  smuggling code that would run as root.
-- Another local user reading your private keys through the helper.
-- Truncated/lost configs from interrupted writes.
+The app cannot protect against an already privileged administrator, a compromised
+kernel/WireGuard toolchain, display/screen capture, or clipboard history. Import
+validation and dependency audits reduce specific risks; they are not a guarantee
+that every configuration or dependency is safe.
 
-**Out of scope** (cannot be defended against here):
+## 🔒 Privilege and authorization
 
-- An attacker who is **already root**, or who can already run code **as your
-  user** (they can read your keys directly; pinning a binary path doesn't help).
-- The security of WireGuard itself, the kernel module, or `wg`/`wg-quick`.
-- Physical access / a compromised display server / your clipboard history.
+Run the GUI as a normal desktop user. Its helper client executes the helper
+directly if the process is already root, otherwise tests a `sudo -n` grant and
+falls back to `pkexec`. Root execution is supported, but is not needed for normal
+use. The source/bundle installer requires an explicit `--allow-root` override
+when launched from a direct root login without an invoking normal user.
 
-## 🔒 The privilege boundary
+The helper is not the only possible privileged process: after a user chooses
+Setup's automatic fixes or Update now, package-manager commands or the verified
+release installer can also run with administrator authorization.
 
-The GUI runs as your normal user. **The only thing that runs as root is one
-small Rust helper binary**, `wg-helper` (`src/bin/wg-helper.rs` in source),
-invoked as `sudo -n wg-helper <verb> [name]` (sudoers mode) or
-`pkexec wg-helper ...` (polkit / fallback). The GUI binary itself never runs as
-root.
+| Installation | Helper | Authorization installed |
+|---|---|---|
+| `install.sh` default | `/usr/local/lib/wireguard-gui/wg-helper` | `/etc/sudoers.d/wireguard-gui`, scoped to the installing user and helper path |
+| `install.sh --polkit` | `/usr/local/lib/wireguard-gui/wg-helper` | `/etc/polkit-1/rules.d/49-wireguard-gui.rules`; attempts group creation/membership |
+| Release `.deb` | `/usr/lib/wireguard-gui/wg-helper` | Same rule under `/etc/polkit-1/rules.d`; no group-creation/user-enrollment script |
+| AUR/RPM/APK/Void recipes | `/usr/lib/wireguard-gui/wg-helper` | Rule under `/usr/share/polkit-1/rules.d`; no user-enrollment hooks in these recipes |
 
-Authorisation is scoped to **exactly that one helper path**:
+The polkit rule matches only the `/usr/local/lib/...` and `/usr/lib/...` helper
+paths, an **active local session**, and membership in **`wireguard`**. An SSH
+session alone does not meet the active-local condition. If the rule does not
+match, normal polkit policy applies; authentication may be requested or denied.
+It does not automatically grant every logged-in user access.
 
-- the **sudoers** drop-in grants passwordless execution of only
-  `/usr/local/lib/wireguard-gui/wg-helper` for the installing user;
-- the **polkit** rule allows `pkexec` of only that program, and only for a user
-  who is both in an **active local session** *and* a member of the **`wireguard`
-  group**. `install.sh --polkit` (and the `.deb`) create the group and add the
-  intended user. This is deliberate: the helper can read configs that contain
-  private keys, so a passwordless grant must not be handed to *every* logged-in
-  user. Until a user is in the group the rule denies and `pkexec` falls back to
-  asking for the admin password (fail closed).
-
-Because the grant is bound to the absolute helper path, pointing the app at a
-different program (e.g. via `$WG_HELPER`) cannot silently gain root - it would
-fall outside the sudoers/polkit grant and prompt or fail. In release builds the
-helper-path override is additionally refused unless `WG_ALLOW_UNSAFE_HELPER=1`
-is set and the target is an absolute, root-owned, non-world-writable file.
-
-### 🛡️ Helper hardening
-
-The helper itself:
-
-- exports a **fixed `PATH`** (`/usr/sbin:/usr/bin:/sbin:/bin`) so a hijacked
-  caller `PATH` can't redirect the `wg`/`wg-quick`/`logger` it runs as root;
-- **validates every tunnel name** against `^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`
-  and rejects `.`, `..`, `/`, `\`, so `"$WG_DIR/<name>.conf"` can never escape
-  `/etc/wireguard`;
-- **rejects `PostUp` / `PreUp` / `PostDown` / `PreDown` script hooks** in any
-  config it saves (see below) - these are blocked *at the privilege boundary*,
-  not just warned about in the UI;
-- **no `sh -c`** - all subprocess calls use argv arrays directly;
-- **timeouts** - every external call has a `Duration` bound;
-- writes configs **atomically** (temp file with `O_EXCL` + `fsync` + `rename`,
-  mode `600`) and keeps a **timestamped 0600 backup** before any overwrite,
-  rename, or delete;
-- validates the saved config shape in the helper before save/rename, in
-  addition to the unprivileged frontend validation (second check inside the
-  privileged boundary);
-- **logs every mutating action** (with the invoking user) to the journal
-  (`logger -t wireguard-gui`), with private/preshared keys redacted.
-
-### 🚫 Script hooks are blocked
-
-WireGuard configs may contain `PostUp` / `PreUp` / `PostDown` / `PreDown`
-directives, which **`wg-quick` runs as root** when the tunnel is activated. Left
-unchecked, a config saved through the helper could therefore run arbitrary root
-commands - turning the narrow "manage tunnels" grant into full root.
-
-To keep the privilege boundary meaningful, **the helper refuses to save or
-rename any config that contains those directives** (the editor surfaces the
-error). If you genuinely need a hook, edit the file under `/etc/wireguard`
-directly as root - outside this constrained helper.
-
-### 🔌 Kill switch scope
-
-The helper can add/remove tunnel-scoped firewall rules for an active `wg-quick`
-tunnel, preferring **nftables** (`inet filter`) with an iptables/ip6tables
-fallback. The rules allow loopback, the tunnel interface, the tunnel's fwmark
-(WireGuard's own encrypted egress) and - when `$SSH_CONNECTION` is set -
-established SSH return traffic, and reject everything else. On the iptables
-fallback it **fails closed** if the host has IPv6 but `ip6tables` is missing,
-rather than silently leaving IPv6 unprotected.
-
-The kill switch is **not persistent**: it installs no daemon and the rules live
-only as long as the helper-managed tunnel does. They are torn down on
-deactivate/delete/rename. If a tunnel is stopped by some *other* path (a manual
-`wg-quick down`, a service restart, a reboot of just the unit), the rules can
-linger until you next use the app - re-activating or toggling the kill switch
-off clears them. Do not rely on it as a permanent system firewall.
-
-## 🔑 Private keys and QR codes
-
-- A tunnel `.conf` contains the interface **private key**. Files are written
-  `0600`; backups are `0600` in `/etc/wireguard/.backup`. The directory itself
-  is mode `0700` and root-owned.
-- The **editor** displays the config including the private key in clear text
-  by design (same as any WireGuard tool). The app does not log it.
-- **Show QR** renders the full config - *including the private key* - as a QR
-  code. Anyone who photographs your screen gets the key. Only display it when
-  it is safe to do so.
-- **Export** writes every tunnel's `.conf` into a `.zip`; that archive contains
-  private keys. It is created `0600` and refuses to follow a symlink at the
-  destination. Store it somewhere safe and delete it when done.
-- **Copying the running config** copies the full `[Interface]` block, *including
-  the private key*, to your clipboard. Clipboard managers may keep history;
-  clear it when done.
-
-## ✅ Supply chain and verifying a download
-
-- Prebuilt release artifacts ship with a `SHA256SUMS` file that is **signed
-  with minisign** (`SHA256SUMS.minisig`; public key `minisign.pub`). Signing is
-  **fail-closed**: the release aborts rather than publish unsigned artifacts.
-- **All** GitHub Actions are pinned to commit SHAs (including first-party
-  `actions/*`); `cargo-deb` and `linuxdeploy` are pinned to exact versions, and
-  `linuxdeploy` is SHA-256-verified before it runs.
-- The release token is **least-privilege**: read-only everywhere except the one
-  job that publishes.
-- CI runs `cargo audit` against the RUSTSEC advisory DB, and Dependabot watches
-  the crate and Action pins.
-- Verify a download with:
+For a package installation, an administrator can explicitly enroll a trusted
+user (run these from that user's normal session, then log out and back in):
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing
-minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
+sudo groupadd -f wireguard
+sudo usermod -aG wireguard "$USER"
 ```
 
-When in doubt, **build from source** - `cargo build --release` is reproducible
-on any supported distro with the Rust toolchain and Slint dev libraries.
+Use the corresponding group-management tools on distros without those commands.
+Membership is security-sensitive because it grants access to tunnel secrets.
 
-### 🧾 Dependency advisories (accepted, documented)
+A helper-path override does not create authorization for the new path. Debug
+builds accept `WG_HELPER` for development; release builds require
+`WG_ALLOW_UNSAFE_HELPER=1` and an absolute, root-owned regular file with neither
+group nor other write permission. Installed helper discovery normally uses the
+two standard prefixes, then an adjacent binary or development build fallback.
 
-`cargo audit --deny warnings` runs in CI and before release publication.
-The shared `.cargo/audit.toml` policy accepts five unmaintained notices with no
-upstream fixed version: `bincode`, `ttf-parser`, and the `zvariant`, `zbus_names`,
-`zvariant_derive` family still required by ksni's zbus 5 dependency. These notices
-include runtime dependencies; they are not a guarantee that dependencies cannot
-contain bugs. Actual vulnerabilities, unsoundness and new advisories fail the
-audit gate. Remove the exceptions as upstream migrations become available.
-Release binaries embed SBOM data through `cargo auditable build`, allowing
-`cargo audit bin <binary>` to inspect the compiled dependency set.
+## 🛡️ Helper hardening
 
+- Tools are resolved from `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`, and child
+  commands receive that fixed PATH. The helper exposes fixed verbs and uses
+  argument arrays rather than caller-controlled shell expansion.
+- A tunnel name is 1–15 ASCII bytes, begins with a letter or number, and otherwise
+  contains only letters, digits, `_`, `.` or `-`. Names containing `..` or ending
+  in `.conf` are rejected. Callers supply a name, not a destination path.
+- Save/rename validate config shape again inside the privileged boundary and
+  reject `PreUp`, `PostUp`, `PreDown` and `PostDown` directives.
+- Config writes use a new exclusive `0600` temporary file, file sync, rename and
+  best-effort directory sync. Overwrite, rename, delete and Save live create a
+  timestamped backup under `/etc/wireguard/.backup` first. This does not make a
+  multi-config restore transactional.
+- Command output is drained while the child runs. On timeout the helper kills
+  its process group, including descendants that might hold pipes open.
+- Mutating actions use `logger`; config-like private/preshared-key lines are
+  redacted in errors/log text. Treat arbitrary user-provided text as sensitive
+  when adding new logging paths.
 
-## 📝 Notes
+### Script hooks
 
-- The privileged surface is the `wg-helper` binary only. The GUI binary runs
-  unprivileged and never escalates.
-- Treat the `sudoers`/`polkit` grant as "this local user may control WireGuard
-  without a password" - equivalent to the trust you'd place in `wg-quick`,
-  minus script hooks (which the helper blocks).
-- Config files contain private keys in clear text (same as upstream WireGuard
-  tools). They are stored `0600`, root-owned, in `/etc/wireguard` (mode `0700`).
+`wg-quick` can run script directives as root. The helper refuses to save/rename
+configs containing them, and backup restore rejects them before any writes.
+An editor warning is not permission to bypass that rejection.
+
+An administrator can place files directly under `/etc/wireguard`. Activation
+then invokes `wg-quick` normally, including any administrator-installed hooks;
+`up` does not sanitize those existing files. Review such configs as root code.
+
+### Kill-switch scope and lifetime
+
+The helper prefers nftables (`inet filter` output chain) when `nft` exists,
+otherwise iptables/ip6tables. It allows loopback, the selected tunnel's output
+and fwmark, plus established SSH return traffic only if `SSH_CONNECTION` reaches
+the helper. A missing fwmark can be set at runtime without modifying the file.
+Do not assume a remote SSH session will remain reachable after firewall changes.
+
+Rejection is inserted ahead of existing accept rules. With non-loopback IPv6
+present, the iptables fallback refuses to enable without `ip6tables`. These
+rules affect host outbound traffic, including LAN destinations outside a split
+tunnel, and can interact with existing firewall rules or other kill switches.
+They are not a complete policy manager or a general no-leak guarantee.
+
+No daemon or firewall-persistence service is installed. Helper down/delete/rename
+attempt rule cleanup. Stopping a tunnel through another service or tool can leave
+rules blocking traffic; quitting/restarting the GUI or activating the interface
+alone does not rebuild or remove them. Reactivate if necessary to enable the UI
+checkbox, then turn the kill switch off, or ask an administrator to run the
+installed helper's `killswitch-disable <name>` verb. A system reboot normally
+loses runtime rules unless another firewall service restores them.
+
+Upgrading binaries to 1.9.1 does not replace existing rules. Reapply an active
+kill switch once by turning it off/on to use corrected rule ordering and exact
+comment matching. Plan for the brief unprotected interval while doing so.
+
+## 🔑 Configs, backups, QR and clipboard
+
+Saved tunnel files and helper backups are root-owned `0600`; the helper creates
+or tightens `/etc/wireguard` and its `.backup` directory to `0700`.
+
+The Backup tab stores ZIPs in `$XDG_DATA_HOME/wireguard/backups` (absolute paths
+only), or `~/.local/share/wireguard/backups`. Newly created directories use `0700`;
+archives and exports use `0600` and refuse a symlink at the final destination.
+These archives are unencrypted and contain private/preshared keys.
+
+Restore preflights all selected top-level `.conf` entries before saving: unique
+valid names, valid config text, no script hooks, at most 1 MiB per config,
+16 MiB total config text and 1,024 configs. Non-config entries/directories are
+skipped; nested/traversal config paths are rejected. Saves then run sequentially,
+so a later filesystem or helper failure can still leave a partial restore.
+
+The editor, Show QR, Copy config, Running cfg, ZIP exports and backups expose
+private keys by design. Clipboard managers and screenshots can retain them.
+The system must protect the user's session and exported files as well as the
+root config directory. Export includes readable saved configs; read failures
+can cause individual configs to be omitted, so check the reported count.
+
+## ✅ Downloads, updates and dependencies
+
+The current release workflow signs `SHA256SUMS` with minisign and refuses to
+publish without a valid signature. The updater verifies it using a public key
+compiled into the application, selects exactly the requested archive's signed
+checksum, then stages downloads in an exclusive private temporary directory.
+No installer is run before signature/checksum verification succeeds.
+
+Startup update checks and the Updates window contact GitHub over HTTPS using
+`curl`; update requests include the application version in the User-Agent.
+The update request does not upload tunnel configs. Diagnostics may send ICMP
+pings and DNS queries. Setup/install may contact distro package repositories,
+and source builds fetch Rust tools/crates when needed.
+
+Set `WG_NO_UPDATE_CHECK=1` or create
+`${XDG_CONFIG_HOME:-$HOME/.config}/wireguard-gui/no-update` to disable the startup
+update check. Manual opening of Updates still checks. See
+[download verification](README.md#verify-a-download) and the
+[update guide](docs/TUTORIAL.md#updates).
+
+GitHub Actions use pinned commits; release packaging tools are version-pinned
+and linuxdeploy's download is checksum-verified. CI tokens are read-only except
+for the release publishing job's content permission. Locked dependency builds
+improve repeatability, but the project does not promise bit-for-bit identical
+binaries on every distro.
+
+`cargo audit --deny warnings` runs in CI and release workflows. The shared
+[.cargo/audit.toml](.cargo/audit.toml) accepts five unmaintained notices without
+upstream fixed versions: `bincode`, `ttf-parser`, `zvariant`, `zbus_names` and
+`zvariant_derive`. The zvariant family is still required through ksni/zbus 5 and
+includes runtime dependencies. Vulnerabilities, unsoundness and new advisories
+remain failures; remove exceptions as upstream migrations become available.
+
+Releases are built with `cargo auditable`, then tarball and `.deb` binaries are
+UPX-compressed. To inspect their embedded dependency data, decompress a **copy**:
+
+```sh
+cp wireguard-gui wireguard-gui.audit
+upx -d wireguard-gui.audit
+cargo audit bin wireguard-gui.audit
+```
+
+Direct auditing of the packed executable does not expose its auditable ELF
+section. The AppImage is assembled from uncompressed copies; extract it before
+inspecting its embedded binaries. A source `cargo auditable build --release
+--locked` also produces uncompressed auditable binaries.

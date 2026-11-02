@@ -1,131 +1,125 @@
 # WireGuard, explained
 
-A friendly guide to what WireGuard is, what every field means, and how to use
-this app. You don't need to be a network engineer — read the first two sections
-and you can set up a tunnel.
+A short guide to the current desktop application. Repository documentation may
+include corrections made after a binary was released; a binary's Help text is
+embedded when it is built.
 
----
+## 1. Interface, peers and keys
 
-## 1. The 60-second mental model
+A WireGuard interface is this machine's end of an encrypted network. It has a
+private key, tunnel addresses and optional DNS settings. It can have one or more
+peers: other machines identified by their public keys, AllowedIPs and, when
+needed, an endpoint such as `vpn.example.com:51820` or `[2001:db8::2]:51820`.
 
-A **WireGuard tunnel** is an encrypted point-to-point link between two machines.
-Think of it as a private cable plugged between you and a server: anything that
-goes through the cable is encrypted and looks, to the rest of your network, like
-it's coming from the machine at the other end.
+Keep your private key secret. Give the server your public key and configure its
+public key here. An optional preshared key must match at both ends. Importing a
+provider's config is usually simpler than generating a new identity: a newly
+generated public key must be registered on the other end before it can work.
 
-Each tunnel has exactly two halves:
+AllowedIPs selects destinations for a peer. `0.0.0.0/0` covers all IPv4;
+`::/0` covers all IPv6. `10.100.0.0/24` covers only that subnet. Persistent
+keepalive is optional; 25 seconds is a common choice when maintaining a NAT
+mapping is necessary, not a requirement for every connection.
 
-- **The Interface** = *you* (this machine). It has a private key, an address
-  inside the tunnel, and optionally a DNS server to use while connected.
-- **The Peer** = *the other machine* (usually your VPN server). It has a public
-  key, a public address (the **endpoint**) to reach it at, and a list of which
-  traffic should go through it (**AllowedIPs**).
+## 2. Add and edit a tunnel
 
-When you **activate** a tunnel, the two halves do a quick **handshake** (a
-cryptographic hello) and, once that succeeds, traffic flows. If the handshake
-never completes, you're "active" but not actually connected — press **Diagnose**
-to find out why.
+Use **Add Tunnel**:
 
----
+- **Import tunnel(s) from file…** accepts `.conf` files. One file opens for
+  review; several files are imported with unique names and invalid ones skipped.
+- **Import from QR code…** reads a PNG or JPEG image, not a live camera.
+- **Create tunnel…** opens a preset with a generated key. Choose Interface only,
+  Full tunnel or Split tunnel, then fill in real addresses and peer details.
 
-## 2. The keys (this is the whole security model)
+Name becomes the Linux interface and config filename: 1–15 ASCII letters,
+digits, `_`, `.` or `-`, starting with a letter/digit, with no `..` or `.conf`
+suffix. Use **Create** to save or **Create & Activate** to save and connect.
+Existing tunnels use **Edit** then **Save**; changing Name renames the tunnel.
 
-WireGuard uses **public-key cryptography**. Every machine has a **key pair**:
+**Edit fields** shows common Interface/Peer fields. **Advanced fields** exposes
+Listen port and MTU. Use Prev/Next, Add peer and Remove for multiple peers.
+**Config text** keeps the raw file. Comments, repeated directives, unknown keys,
+Table and SaveConfig remain in raw text so the form cannot discard them.
+Inline `#` comments are accepted by config validation.
 
-- **Private key** — your secret. It *never* leaves this machine and you never
-  share it. Generate it with **Generate keypair** in the editor.
-- **Public key** — derived from the private key. You *do* share this; it's how the
-  server identifies you. The app shows it for you to copy.
+The helper rejects saving/renaming `PreUp`, `PostUp`, `PreDown` and `PostDown`
+script hooks even if the editor shows a warning. Such commands would execute
+as root through wg-quick. Administrator-managed files require separate review.
 
-The rule is symmetric: **the server must know your public key, and you must know
-the server's public key.** That's it. If the server doesn't have your public key
-in its peer list, it will silently ignore your handshakes (a very common cause of
-"it won't connect").
+Saving an active tunnel attempts a live WireGuard sync. Address, DNS, MTU,
+Table and routing changes still require reconnecting. Renaming stops an active
+old interface; the renamed tunnel is not activated automatically.
 
-- **Preshared key (PSK)** — *optional* extra symmetric secret added on top, for
-  post-quantum belt-and-suspenders. If your config has one, the server must have
-  the *same* PSK or the handshake fails. Generate it with **Generate PSK**.
+## 3. Day-to-day controls
 
-> You usually don't create keys by hand: download a config from your provider /
-> server (e.g. wg-easy) and import it — the keys are already filled in and already
-> registered on the server.
+Select a tunnel on the left. **Activate / Deactivate** brings its interface
+up/down. Interface-up status is not proof of a handshake or working routes.
+The app displays recent handshake health, transfer totals and throughput;
+an idle peer can have an old handshake without being broken.
 
----
+Click a copyable value or its trailing **⧉** icon to copy it. **Show QR** exposes
+the full saved config, including its private key, for scanning on another device.
+Use it only where screen access is trusted.
 
-## 3. Every field, in plain words
+**Start on boot** enables a systemd `wg-quick@<name>` service for boot, not login.
+It needs systemd; OpenRC/runit require their own service setup.
 
-**Interface (you):**
+**Advanced ▾** on the tunnel card reveals:
 
-- **Name** — just a label for the tunnel (e.g. `home`, `work`). Becomes the
-  `wg0`-style interface name.
-- **Private key** — your secret (see above).
-- **Address** — your IP *inside* the tunnel, e.g. `10.100.0.17/24`. The server
-  assigns this; it is not your normal LAN/IP.
-- **DNS** — which DNS server(s) to use while the tunnel is up, e.g.
-  `1.1.1.1`. Optional; needs a resolvconf provider on your system.
-- **Listen port / MTU** — advanced, usually left blank (auto). MTU sometimes needs
-  lowering (e.g. `1380`) on flaky links.
+- **Kill switch:** host output firewall rules for an active tunnel. Loopback,
+  tunnel output and its fwmark are allowed; other output can be blocked,
+  including LAN traffic outside a split tunnel. SSH handling is conditional,
+  not a guarantee against locking yourself out. Rules are not persistent and
+  external service changes can leave them behind.
+- **Running cfg:** copy live WireGuard configuration, including private keys.
+- **Save live:** back up and write runtime state to disk with wg-quick save;
+  this can replace hand-written file content.
 
-**Peer (the server):**
+There is no global Easy/Advanced mode. The expansion choice is remembered.
+After upgrading to 1.9.1, reapply an enabled kill switch once (off, then on) so
+existing rules use the corrected ordering. Plan for the brief interval without
+those rules. Restarting the app or activating alone does not reapply them.
 
-- **Public key** — the server's public key (identifies it).
-- **Preshared key** — optional shared secret (see above).
-- **Endpoint** — where to reach the server: `host:port`, e.g.
-  `82.26.104.2:51820` or `[2001:db8::2]:51820`. This is the only address that goes
-  out over your *normal* internet.
-- **AllowedIPs** — which destinations get routed *into* the tunnel:
-  - `0.0.0.0/0` = **full tunnel** — *all* your IPv4 traffic goes through the VPN.
-  - `10.100.0.0/24` = **split tunnel** — only that subnet uses the VPN; everything
-    else stays on your normal connection.
-- **Persistent keepalive** — send a tiny packet every N seconds (commonly `25`) to
-  keep the connection alive through NAT/firewalls. Recommended if you're behind a
-  home router.
+## 4. Logs and backups
 
----
+**Log** loads recent helper/wg-quick journal output on opening or Refresh. Use
+Filter, This tunnel, Copy or Save. Click a row to copy one line. Clear only
+clears the displayed buffer; it does not erase the system journal.
 
-## 4. Using this app
+**Backup → New backup** archives readable saved configs. ZIPs are unencrypted,
+mode 0600, under `$XDG_DATA_HOME/wireguard/backups` or
+`~/.local/share/wireguard/backups`, shared with the terminal sibling. Select one
+to Restore, Export or Delete. The bottom export icon separately exports all
+readable saved tunnel configs to a ZIP destination.
 
-**Get a tunnel in:**
+Restore accepts only valid, unique, flat `.conf` entries and preflights them all
+before saving: no script hooks, at most 1 MiB per config, 16 MiB total config
+text and 1,024 configs. It skips unrelated files. Matching saved tunnels are
+overwritten, extra saved tunnels remain, and running interfaces are not synced.
+A later save failure can leave earlier files restored; there is no rollback.
+Protect all archives and clipboard copies as carefully as the private keys.
 
-- **Import tunnel(s) from file…** — the usual way: a `.conf` from your provider.
-- **Import from QR code…** — point it at a QR image.
-- **Create tunnel…** — start from a preset (Interface only / Full tunnel / Split
-  tunnel); it generates a key pair for you. You then fill in the peer's public key
-  and endpoint (from your server) and Save.
+## 5. When something is wrong
 
-**Day to day:**
+**Diagnose** checks clock-sync status, interface/handshake state, endpoint ping
+and basic DNS. It gives troubleshooting hints, not a conclusive server test;
+ICMP can be blocked and routing/firewall issues still need investigation.
+Check that the other peer knows your public key, endpoint and AllowedIPs.
 
-- Select a tunnel on the left to see its live status (handshake, transfer, speed).
-- **Activate / Deactivate** brings the tunnel up/down (`wg-quick`).
-- The **⧉** icons copy a value (public key, endpoint, …) to your clipboard.
-- **Start on boot** makes it connect automatically at login (systemd).
-- **Advanced ▾** on the tunnel card reveals expert actions — **Kill switch**
-  (block all traffic if the tunnel drops, no leaks), **Running cfg** (show the
-  live config), **Save live** (write the running state back to disk).
+A `DNS =` line needs a working resolvconf command. If that command is the
+resolvectl shim, systemd-resolved must also be active. The startup Setup window
+appears for critical missing tools/helper authorization. Show commands explains
+fixes; automatic fixes can install prerequisites, create the config directory,
+or enable a detected inactive resolver service with administrator authorization.
+It does not install the helper or connect tunnels.
 
-**The other tabs:**
+The menu button offers Help, Check for updates and About. Startup/manual update
+checks contact GitHub. Disable startup checks with `WG_NO_UPDATE_CHECK=1` or a
+`wireguard-gui/no-update` file under your XDG config directory; manual Updates
+still checks. Update now verifies signed checksums, then runs the release
+installer and requires restart. Package-managed installs should normally update
+through their package manager.
 
-- **Log** — recent WireGuard / app activity from the journal. Filter it, copy it,
-  save it.
-- **Backup** — snapshot every tunnel config; restore/export/delete later.
-
-**When something's wrong:** press **Diagnose**. It checks, in order of how often
-each is the culprit: your **system clock** (a wrong clock silently breaks
-handshakes — really), the tunnel being up, the handshake completing, the endpoint
-being reachable, and DNS. It tells you which step failed and what to do.
-
----
-
-## 5. Two gotchas worth knowing
-
-- **"Active but nothing loads."** The tunnel interface is up but the handshake
-  isn't completing, so no real traffic flows. Causes, most common first: the
-  system clock is off; the server doesn't have your public key; the endpoint is
-  unreachable. Diagnose pinpoints it.
-- **Don't manage the same tunnel from two places.** If NetworkManager (or another
-  tool) is also handling this interface, they'll fight. Pick one.
-
----
-
-This app never phones home, never sees your keys leave the machine, and only asks
-for privilege to run `wg` / `wg-quick`. Your configs live in `/etc/wireguard`.
+Close hides the window only when a tray host is available; use tray Quit to exit.
+Without a tray host, closing quits. Do not manage the same interface from both
+this application and NetworkManager or another service.

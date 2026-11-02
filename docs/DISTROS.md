@@ -1,220 +1,174 @@
-# 🐧 Per-distro guide: what to install, what to set up, what survives a reboot, and firewall
+# 🐧 Linux installation and system integration
 
-This answers the practical questions for every supported distro:
+This guide describes the current installer and GUI behavior. Distro defaults,
+package availability and local security policy vary; the package manager being
+recognized does not guarantee every release binary works on every version.
+Use the upstream [WireGuard installation guide](https://www.wireguard.com/install/)
+for kernel/tool support on your specific distribution.
 
-- **What do I need to install?**
-- **What has to be set up (and does the app do it for me)?**
-- **Does it stay working after a restart?**
-- **Do I need to touch the firewall?**
+## 1. Choose source, native package or binary bundle
 
-> **Short version for most people:** if you're a **VPN client** (you dial out to a
-> provider or to your own server), you only need `wireguard-tools`, this app, and -
-> *if your config has a `DNS =` line* - a resolvconf provider. **You do not touch
-> the firewall, and you do not enable IP forwarding.** The app's first-run **Setup**
-> window checks all of this and can fix it for you. Everything below the "Client" line
-> is only for a box that *accepts* incoming peers (a **server / gateway**).
+- The GitHub release supplies an x86_64 `.deb`, x86_64/ARM64 Linux tarballs and an
+  optional x86_64 AppImage. See [downloads and verification](../README.md#install).
+- `install.sh` in a source checkout installs C/Rust/graphics build prerequisites,
+  builds the app/helper and installs under `/usr/local` by default.
+- `install.sh` in an extracted binary bundle with adjacent binaries and no
+  Cargo.toml reuses those binaries and installs runtime dependencies without a
+  Rust compiler or development headers.
+- AUR/RPM/APK/Void files are maintainer recipes, not a promise that a published
+  repository package is current. Native packages install under `/usr`.
 
----
+The GUI requires a graphical session and compatible font/input/OpenGL/EGL,
+Wayland/X11 and D-Bus runtime libraries. Release tarballs are native Linux
+builds, not static universal binaries; source/native packages may be necessary
+on a different libc or older runtime. On headless hosts consider the
+[terminal sibling](https://github.com/JamilleJung/wireguard-tui), whose supported
+features and installation details are documented separately.
 
-## 1. Client vs. server - this decides almost everything
+## 2. Package-manager paths used by the installer
 
-| | **Client** (laptop/desktop dialing out) | **Server / gateway** (accepts peers) |
+These are the manager families recognized by `install.sh`. Runtime/build package
+lists are maintained in that script; the commands below only install WireGuard
+tools and require suitable administrator privileges/repositories.
+
+| Family | Tools command | Installer manager |
 |---|---|---|
-| `wireguard-tools` | required | required |
-| resolvconf provider | only if the `.conf` has `DNS =` | usually not |
-| Open a firewall port | **no** | **yes** - the UDP `ListenPort` |
-| IP forwarding (sysctl) | **no** | **yes** |
-| NAT / masquerade | **no** | **yes**, if peers reach the internet through it |
+| Debian / Ubuntu / Mint | `sudo apt-get install wireguard-tools` | `apt-get` |
+| Fedora / RHEL-family | `sudo dnf install wireguard-tools` | `dnf` or `yum` |
+| Arch-family | `sudo pacman -S wireguard-tools` | `pacman` |
+| openSUSE | `sudo zypper install wireguard-tools` | `zypper` |
+| Alpine | `apk add wireguard-tools` as root | `apk` |
+| Void | `sudo xbps-install -S wireguard-tools` | `xbps-install` |
+| Solus | `sudo eopkg install wireguard-tools` | `eopkg` |
 
-The overwhelming majority of users are **clients**. If that's you, sections 2-5 are
-all you need; section 6 (server) does not apply.
+The app does not bundle a kernel module or install a replacement kernel. The
+Setup window does not probe module availability; a system can have `wg` tools
+but still fail to create a WireGuard interface. Check your kernel/distro
+support if interface creation fails.
 
----
+## 3. Helper authorization
 
-## 2. The kernel module - you do *not* install it here
+The source/bundle installer normally writes a user-specific sudoers grant for
+`/usr/local/lib/wireguard-gui/wg-helper`. If usable sudo is unavailable, the
+script can re-execute through `su` for system installation; do not assume the
+presence of a sudo binary proves that your user can use it.
 
-WireGuard has been **in the mainline Linux kernel since 5.6** (early 2020). When you
-activate a tunnel, `wg-quick` runs `modprobe wireguard` automatically - this app
-**never bundles or loads kernel modules**. You only need an out-of-tree module on
-genuinely old kernels (RHEL 7, Debian buster, Ubuntu 18.04 and older), where you'd
-install `wireguard-dkms` / `kmod-wireguard` from your distro. On anything current,
-there is nothing to do.
-
-The first-run Setup window reports your kernel and whether the module is available.
-
----
-
-## 3. What the app sets up for you (and what it deliberately does not)
-
-**It sets up:**
-
-- `wireguard-tools` (`wg` / `wg-quick`) - via `./install.sh`, or the Setup window's
-  **Fix automatically** button.
-- A resolvconf provider when a `DNS =` line would otherwise fail (see section 5).
-- The privileged helper + a passwordless **sudoers** drop-in (or **polkit** rule).
-- `/etc/wireguard` (mode `0700`).
-
-**It never:**
-
-- loads kernel modules (the kernel does, on demand),
-- opens firewall ports,
-- enables IP forwarding,
-- adds NAT/masquerade,
-- auto-connects a tunnel or enables start-on-boot.
-
-Those last items are system-policy decisions and matter only for a server/gateway -
-section 6 shows exactly what to add.
-
----
-
-## 4. Per-distro cheat sheet
-
-`./install.sh` detects your package manager and does the install + setup for you
-(including the GUI/graphics build dependencies). This table is the manual equivalent
-for the WireGuard side, plus the two distro-specific gotchas (**resolvconf provider**
-and **init system**).
-
-| Distro family | Install WireGuard tools | resolvconf provider for `DNS =` | Init system (start-on-boot) | Default firewall |
-|---|---|---|---|---|
-| **Debian / Raspberry Pi OS** | `apt install wireguard-tools` | `apt install openresolv` *(minimal Debian has none - this is the classic failure)* | systemd ✔ | none active (nftables present, empty) |
-| **Ubuntu / Mint / Pop!_OS** | `apt install wireguard-tools` | already covered by **systemd-resolved** (default) | systemd ✔ | `ufw`, installed but **inactive** by default |
-| **Fedora** | `dnf install wireguard-tools` | covered by **systemd-resolved** (default) | systemd ✔ | **firewalld active** ¹ |
-| **RHEL / Rocky / Alma / CentOS Stream** | `dnf install wireguard-tools` | `dnf install systemd-resolvconf` or enable systemd-resolved | systemd ✔ | **firewalld active** ¹ |
-| **Arch / Manjaro / EndeavourOS** | `pacman -S wireguard-tools` | `pacman -S openresolv` (unless using systemd-resolved) | systemd ✔ | none active |
-| **openSUSE Leap / Tumbleweed** | `zypper install wireguard-tools` | `zypper install openresolv` or systemd-resolved | systemd ✔ | **firewalld active** (Leap) |
-| **Alpine** | `apk add wireguard-tools` | `apk add openresolv` | **OpenRC** ✗ (no systemd unit) | none active (`awall`/iptables optional) |
-| **Void** | `xbps-install -S wireguard-tools` | `xbps-install openresolv` | **runit** ✗ (no systemd unit) | none active |
-| **Solus** | `eopkg install wireguard-tools` | `eopkg install openresolv` | systemd ✔ | none active |
-
-**Init-system note (Alpine, Void, and other non-systemd setups):** everything works
-*except* the **Start-on-boot** toggle, which flips the `wg-quick@<name>` systemd unit.
-On OpenRC/runit you enable boot-time tunnels with the distro's own service manager
-(e.g. an OpenRC init script or a runit service that runs `wg-quick up <name>`).
-
-**Desktop note:** the GUI is a windowed app, so on a headless server prefer the
-sibling **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)** - identical
-features in the terminal, with `wg-tui doctor` over SSH.
-
-**NixOS:** out of scope for this file-based tool - manage WireGuard declaratively in
-`configuration.nix` (`networking.wireguard.*`) instead, or run the app only to
-inspect/QR existing tunnels.
-
-**¹ SELinux (Fedora / RHEL):** On systems with SELinux enforcing, the `wg-helper`
-binary installed under `/usr/lib/` may need its context restored:
-`sudo restorecon -v /usr/lib/wireguard-gui/wg-helper` (or
-`/usr/lib/wireguard-tui/wg-helper` for the TUI). If `pkexec` or `sudo` still
-denies execution, check the audit log: `sudo ausearch -m avc -ts recent`.
-
----
-
-## 5. The `DNS =` / resolvconf gotcha (especially minimal Debian)
-
-If a tunnel's `[Interface]` has a `DNS =` line, `wg-quick` calls **`resolvconf`** to
-apply it. On minimal Debian (and bare Arch/Alpine/Void) there is no `resolvconf`
-binary, so activation aborts with:
-
-```
-[#] resolvconf -a wg0 -m 0 -x
-/usr/bin/wg-quick: line 32: resolvconf: command not found
-```
-
-**Fix - install a provider once:**
+`./install.sh --polkit` instead installs a rule and attempts `wireguard` group
+creation/user enrollment. Log out/in after membership changes. The `.deb` and
+other native recipes ship the rule **without** enrollment hooks, so an
+administrator must separately add trusted users:
 
 ```sh
-sudo apt install openresolv        # Debian/Arch/etc.
-# or, if you have no sudo (Debian-minimal):
-su root -c 'apt install openresolv'
+sudo groupadd -f wireguard
+sudo usermod -aG wireguard "$USER"
 ```
 
-If **systemd-resolved** is active (`/run/systemd/resolve` exists - the default on
-Ubuntu and Fedora), it already satisfies this and you need nothing.
+Use the distro's group tools if these commands are unavailable. Group members
+can manage all tunnels and read their keys. Passwordless polkit access also
+requires an active local session; an SSH session does not automatically qualify.
+Normal local policy may request administrator authentication or deny access
+when the rule does not match.
 
-You don't have to remember any of that: the first-run **Setup** window shows a
-**"DNS for tunnels (resolvconf)"** line, **Fix automatically** installs the provider,
-and `./install.sh` installs it automatically on a minimal box. When an activation does
-fail this way, the app explains it in plain language instead of showing the raw error.
-The fix **persists** - it's a normal installed package.
+Source/bundle helpers live under `/usr/local/lib/wireguard-gui`; native-package
+helpers under `/usr/lib/wireguard-gui`. The `.deb` installs the rule under
+`/etc/polkit-1/rules.d`, while AUR/RPM/APK/Void recipes use
+`/usr/share/polkit-1/rules.d`. See [packaging](../packaging/PACKAGING.md).
+Local policy such as SELinux/AppArmor can impose additional restrictions; use
+your distro's security logs when the correct path/grant still fails.
 
----
+## 4. DNS compatibility
 
-## 6. Server / gateway setup (only if this box *accepts* peers)
+A config containing `DNS =` causes `wg-quick` to use a `resolvconf` compatibility
+command. A running systemd-resolved service alone does not prove that this
+command exists. Conversely, a command that resolves to the `resolvectl` shim
+requires its systemd-resolved service to be active.
 
-A client needs none of this. A server (or a gateway that routes peers to your LAN or
-the internet) needs three things. All can be made permanent.
+The GUI's read-only check classifies native resolvconf, an active/inactive
+resolvectl shim, or a missing compatibility command. Its setup command selection
+uses `systemd-resolved` on `dnf`/`yum`, `systemd-resolvconf` on apt-based systems
+with active resolved, and `openresolv` otherwise. Verify availability on your
+particular release; the detector is not a package-repository compatibility test.
 
-### 6.1 Open the listen port (UDP)
-
-Your `[Interface]` has a `ListenPort` (commonly `51820`). Allow it inbound:
+For a Debian-family system that uses openresolv:
 
 ```sh
-# firewalld (Fedora / RHEL / openSUSE):
-sudo firewall-cmd --permanent --add-port=51820/udp
-sudo firewall-cmd --reload
-
-# ufw (Ubuntu):
-sudo ufw allow 51820/udp
-
-# nftables / iptables (Debian/Arch): add an inbound UDP accept rule for 51820.
+sudo apt-get install openresolv
 ```
 
-`--permanent` / `ufw` rules survive a reboot. A raw `iptables`/`nft` rule typed at the
-shell does **not** - save it (`netfilter-persistent save`, `iptables-save`, or an
-`nftables.conf`).
-
-### 6.2 Enable IP forwarding (persistently)
+For an Arch-family system that uses openresolv:
 
 ```sh
-echo 'net.ipv4.ip_forward=1'            | sudo tee /etc/sysctl.d/99-wireguard.conf
-echo 'net.ipv6.conf.all.forwarding=1'   | sudo tee -a /etc/sysctl.d/99-wireguard.conf
-sudo sysctl --system
+sudo pacman -S openresolv
 ```
 
-Writing it under `/etc/sysctl.d/` is what makes it **survive a reboot**; a bare
-`sysctl -w` is lost on restart.
-
-### 6.3 NAT / masquerade (so peers reach the internet through this box)
-
-Either put it in the tunnel's `.conf` as PostUp/PostDown (replace `eth0` with your
-real WAN interface):
-
-```ini
-PostUp   = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
-```
-
-> The app **warns** when a config contains `PostUp`/`PreUp`/`PostDown`/`PreDown` -
-> that warning is expected here; review the commands before activating.
-
-...or with firewalld instead of PostUp lines:
+When using the resolvectl shim, check the actual service:
 
 ```sh
-sudo firewall-cmd --permanent --add-masquerade
-sudo firewall-cmd --reload
+systemctl is-active systemd-resolved.service
 ```
 
----
+Enabling/reconfiguring a resolver changes host DNS policy; review that choice
+with the system administrator. Setup's **Fix automatically** can offer to enable
+an inactive detected shim's service. The current GUI installer has a simpler
+best-effort resolver check: if `resolvconf` already exists it returns, and it
+does not itself diagnose/enable an inactive shim. Re-check DNS after installing.
 
-## 7. "Does it survive a restart?" - the complete checklist
+## 5. What Setup can and cannot fix
 
-| Thing | Persists across reboot? | What makes it persist |
-|---|---|---|
-| `wireguard-tools`, `openresolv` | ✔ | normal installed packages |
-| The helper + sudoers/polkit rule + `/etc/wireguard` | ✔ | files on disk (installed once) |
-| Your tunnel `.conf` files | ✔ | files in `/etc/wireguard` |
-| A tunnel **being connected** | only if you enable it | **Start-on-boot** toggle → `wg-quick@<name>` systemd unit |
-| IP forwarding *(server)* | only if written to `/etc/sysctl.d/` | section 6.2 |
-| Firewall port / masquerade *(server)* | only if made permanent | `--permanent` / `ufw` / saved nft/iptables |
+Setup appears at startup for critical missing requirements. **Show commands**
+shows suggestions; **Re-check** refreshes checks; **Skip for now** opens the app.
+There is no Setup item in the main app menu. Helper/polkit checks use known-file
+presence and a sudo probe, not proof of active-local membership or every path
+chosen later by the backend.
 
-**Rule of thumb:** packages and files are permanent automatically; *runtime state*
-(an active tunnel, a live `sysctl -w`, an un-saved `iptables` rule) is not - use
-Start-on-boot for tunnels and the persistent forms above for server settings.
+After you click **Fix automatically**, it runs selected commands with `pkexec`
+to install tools/a DNS provider, enable a detected inactive resolved service, or
+create `/etc/wireguard` mode 0700. It does not install or authorize the helper,
+create/import a config, connect a tunnel, configure server forwarding/NAT or
+enable a tunnel's boot service.
 
----
+## 6. Boot, logs and persistence
 
-## 8. Quick verification
+**Start on boot** calls systemd to enable/disable `wg-quick@<name>`. It does not
+start a currently inactive interface or configure desktop login autostart.
+On OpenRC/runit or another init system, use that system's own service management;
+the GUI has no alternative boot-service implementation.
 
-The Setup window appears automatically on first run if anything critical is missing,
-and you can re-open it any time something looks off. **Fix automatically** installs
-`wireguard-tools`, a resolvconf provider and `/etc/wireguard`; **Show commands** prints
-the exact commands so you can run them by hand. On a headless server, use the
-terminal sibling's read-only `wg-tui doctor` instead.
+**Log** reads `journalctl` helper and `wg-quick@*` entries. On a system without
+journald, the app cannot provide those journal entries. Log Clear only clears
+the in-app buffer; Copy/Save use the full loaded log, not just filtered rows.
+
+| State | Persistence |
+|---|---|
+| Installed packages/helper/authorization | Files persist until removed or replaced |
+| Saved tunnel configs | Files persist under `/etc/wireguard` |
+| Active interface | Runtime state; use a reviewed boot service if required |
+| Systemd enablement | Boot-service setting persists until disabled |
+| UI ZIP backups | Files in the user's shared `wireguard/backups` data directory |
+| Helper kill-switch rules | Runtime rules; no persistence service is installed |
+
+A helper deactivation/delete/rename attempts kill-switch cleanup. External
+service actions may leave rules blocking traffic. Restarting the app or merely
+activating does not rebuild them. Disable the kill switch through the helper/UI
+when recovering; after upgrading to 1.9.1 reapply enabled rules once (off/on),
+with a planned brief interval without those rules. An external firewall service
+may restore its own saved rules after reboot; the GUI does not control that.
+
+## 7. Client versus server policy
+
+An ordinary outbound VPN client needs correct tools, keys, routes and DNS
+integration. Do not automatically apply server/gateway configuration to it.
+A server/gateway may additionally need a permitted inbound UDP listen port,
+forwarding and NAT/routing appropriate to its network. Those are administrator
+policy decisions; this app is not a server provisioning wizard.
+
+The helper-managed kill switch does change host outbound firewall rules when
+you enable it. It does not configure a server's inbound port or masquerading.
+Manage permanent firewall/forwarding policy with your distro's tools and test
+it against the actual network. The GUI helper rejects saved script hooks, so a
+PostUp/PostDown NAT example cannot be saved through the app. Any root-managed
+hook config remains root code and runs normally when activated by wg-quick.
+
+Avoid configuring the same interface through NetworkManager and this app at the
+same time. Keep declarative distro/service management and direct file edits
+consistent rather than assuming the GUI overrides other system policy.

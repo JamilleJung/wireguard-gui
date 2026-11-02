@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+- Refresh installation, user workflows, embedded Help source, contributing,
+  security, distro integration, packaging and release guides for current 1.9.1
+  behavior; preserve historical release descriptions.
+- Clarify package group enrollment, per-tunnel Advanced controls, backup restore
+  bounds and partial-failure behavior, update network requests/defaults, and
+  auditing UPX-packed binaries through a decompressed copy.
+- Repository documentation updates do not replace Help embedded in already
+  published binaries; rebuilt applications include the updated Help source.
+
 ## [1.9.1] - 2026-11-02
 
 ### Fixed
@@ -17,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejects unsafe names and script hooks, and bounds decompressed config sizes.
 - ZIP backup restore supports the updated zip 9 filename API.
 - Release tarballs preserve installer assets under `packaging/`, and updates
-  launched by root pass the installer's explicit root-install flag.
+  launched by root pass the installer's explicit root-install flag. Direct
+  binary-bundle installs reuse adjacent binaries without a build toolchain.
 
 ### Security
 - Update downloads use exclusive private temporary directories and require one
@@ -26,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Aligned AUR, RPM, Alpine and Void package versions with this release.
+
+### Upgrade notes
+- Existing firewall rules are not rewritten by a binary update. Reapply an
+  enabled kill switch once (off/on) after upgrading to use the corrected rules;
+  plan for the brief interval without those rules.
 
 ## [1.9.0] - 2026-07-27
 

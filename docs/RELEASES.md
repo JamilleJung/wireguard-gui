@@ -1,129 +1,128 @@
 # 📦 Releases
 
-This page explains where to get wireguard-gui, how the downloads are signed and
-verified, how each release is built, and what changed in every version.
+Current published release: **[1.9.1 — 2026-11-02](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.1)**.
+This page describes current release packaging and selected historical changes.
+[CHANGELOG.md](../CHANGELOG.md) is the detailed version record. Documentation
+changes on `main` do not rebuild or replace an already published release.
 
-If you have never touched WireGuard before, that is fine: the short version is
-"download a build, check the signature, run it, and let the first-run Setup
-window walk you through anything that is missing". The detail is below.
+## Where to get releases
 
----
+Use the project's [release list](https://github.com/JamilleJung/wireguard-gui/releases)
+or [latest release](https://github.com/JamilleJung/wireguard-gui/releases/latest).
+The 1.9.1 release contains these seven assets:
 
-## 📥 Where to get releases
+| Artifact | Purpose |
+|---|---|
+| `wireguard-gui_1.9.1-1_amd64.deb` | Debian-family x86_64 application/helper, desktop assets and polkit rule |
+| `wireguard-gui-1.9.1-x86_64-linux.tar.gz` | Native Linux x86_64 application/helper and installer assets |
+| `wireguard-gui-1.9.1-aarch64-linux.tar.gz` | Native Linux ARM64 application/helper and installer assets |
+| `wireguard-gui-1.9.1-x86_64.AppImage` | x86_64 AppImage; optional in the workflow, present in this release |
+| `SHA256SUMS` | SHA-256 digests of binary/package artifacts |
+| `SHA256SUMS.minisig` | minisign signature of the digest manifest |
+| `minisign.pub` | Public signing key, also committed in the repository |
 
-Every version is published on the GitHub **Releases** page:
+GitHub's generated source archives are separate from these binary bundles.
+Tarballs retain adjacent executable binaries, `install.sh`, README/LICENSE and
+`packaging/` desktop/icon/rule files. The installer recognizes a binary bundle
+without Cargo.toml and skips Rust/compiler/development-header setup, while still
+installing runtime dependencies and helper authorization.
 
-- <https://github.com/JamilleJung/wireguard-gui/releases>
-- The newest build is always at <https://github.com/JamilleJung/wireguard-gui/releases/latest>
+Tarballs are native Linux builds and may require a different runtime/libc than
+your host. Use source or a native package when incompatible. The `.deb` installs
+under `/usr`; the source/bundle installer defaults to `/usr/local`. Packages
+ship a group-restricted polkit rule but do not enroll your user. See
+[installation](../README.md#install) and [packaging](../packaging/PACKAGING.md).
 
-Each tagged release is built by GitHub Actions (no hand-built binaries) and
-ships the following artifacts:
+## Verify a download
 
-| Artifact | For |
-|----------|-----|
-| `wireguard-gui_*_amd64.deb` | Debian / Ubuntu / Mint - `sudo apt install ./wireguard-gui_*_amd64.deb` (sets up the polkit rule automatically) |
-| `wireguard-gui-*-x86_64.AppImage` | Any distro - `chmod +x *.AppImage && ./*.AppImage` |
-| `wireguard-gui-*-x86_64-linux.tar.gz` | Portable binary bundle plus `install.sh` |
-| `wireguard-gui-*-aarch64-linux.tar.gz` | Portable Linux aarch64 bundle plus `install.sh` |
-| `SHA256SUMS` | Checksums for all of the above |
-| `SHA256SUMS.minisig` | The minisign signature over `SHA256SUMS` |
-| `minisign.pub` | The minisign public key (also committed in the repo) |
+Verify the manifest signature against the independently trusted project key,
+then verify the **exact artifact** you downloaded against that signed manifest.
+Use the commands in [README verification](../README.md#verify-a-download).
+Do not treat a key downloaded beside the artifact as an independent trust anchor.
+Signature/checksum failure means do not install that artifact.
 
-The release workflow builds portable x86_64 and aarch64 tarballs. The `.deb` and
-AppImage paths remain x86_64-focused. The packages do **not** bundle WireGuard
-itself - they still need your distro's `wireguard-tools` present (the `.deb` is
-the smoothest because it pulls in the desktop and polkit integration).
+The workflow fails closed if signing is unavailable or signature verification
+fails; it does not intentionally publish unsigned releases. AppImage creation
+is optional, so another release may contain six assets rather than seven.
 
----
+## Upgrading
 
-## ✅ How to verify a download (recommended)
+Prefer the existing package manager for a package-managed installation. The
+in-app updater downloads and verifies the matching x86_64/ARM64 tarball, then
+runs its normal installer; it is not a `.deb`/AppImage package updater and can
+create a `/usr/local` installation alongside a `/usr` package. It needs external
+verification/escalation tools and a restart. See the [update tutorial](TUTORIAL.md#updates).
 
-Releases are signed so you can confirm a download is authentic and untampered.
-The chain is: a `SHA256SUMS` file lists the SHA-256 of every artifact, and that
-`SHA256SUMS` file is itself signed with [minisign](https://jedisct1.github.io/minisign/).
+**Kill-switch upgrade step:** replacing binaries does not rewrite firewall rules
+already loaded in the kernel. After upgrading to 1.9.1, reapply an active kill
+switch once (off, then on) to use exact comment matching and corrected ordering.
+Plan for the brief interval without those rules. Restarting the app or merely
+activating an interface does not reapply them.
 
-Download the artifact you want plus `SHA256SUMS` and `SHA256SUMS.minisig` into
-the same folder, then:
+## Relationship to the terminal sibling
+
+[wireguard-tui](https://github.com/JamilleJung/wireguard-tui) is a separate
+terminal application with a related file/helper model. Both currently publish
+1.9.1, but their controls, CLI, supported artifacts and features differ. Read
+each project's own changelog and instructions; a matching number is not a
+promise of feature-identical behavior.
+
+## How releases are built
+
+The current [CI workflow](../.github/workflows/ci.yml) runs for `main` pushes
+and pull requests targeting `main`. It checks formatting, locked clippy with
+warnings denied, locked tests, a release build, CLI startup, headless GUI launch,
+ShellCheck, helper negative validation and sandboxed installer checks. A separate
+job runs `cargo audit --deny warnings`.
+
+The [release workflow](../.github/workflows/release.yml) runs on a pushed `v*`
+tag. Before tagging, wait for the intended commit's CI to pass. The tag must be
+`vMAJOR.MINOR.PATCH` and match Cargo.toml's package version. Release jobs:
+
+1. Audit the lockfile with the shared [.cargo/audit.toml](../.cargo/audit.toml)
+   policy. Five unmaintained notices without fixed upstream versions are
+   documented exceptions; vulnerabilities, unsoundness and new notices fail.
+2. Build/test native ARM64 binaries with `cargo-auditable 0.7.7`, smoke them,
+   compress with UPX, recheck CLI startup and validate/package the ARM64 tarball.
+3. Build/test x86_64 binaries, run helper/shell and headless GUI checks, compress
+   binaries and package the x86_64 tarball and `.deb` with `cargo-deb 3.8.0`.
+   Build the optional AppImage from pristine uncompressed copies.
+4. Collect artifacts, generate SHA-256 checksums, sign with the required
+   `MINISIGN_KEY` secret, verify against the committed public key and publish.
+
+Third-party Actions are commit-pinned. The linuxdeploy binary used for AppImage
+packaging is pinned and checksum-verified. Workflow tokens are read-only except
+for the publishing job's content permission. A missing mandatory artifact or
+signing failure prevents publication; optional AppImage failure does not.
+
+Release binaries are built with embedded auditable dependency data. Tarball and
+`.deb` executables are then UPX-packed; direct `cargo audit bin` cannot read the
+packed ELF metadata. Decompress a copy first:
 
 ```sh
-# 1) Confirm the artifact matches its checksum.
-sha256sum -c SHA256SUMS --ignore-missing
-
-# 2) Confirm the checksum file itself was signed by the project key.
-#    Needs `minisign` installed; the public key also ships as minisign.pub.
-minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
+cp wireguard-gui wireguard-gui.audit
+upx -d wireguard-gui.audit
+cargo audit bin wireguard-gui.audit
 ```
 
-Both commands must succeed. Step 1 proves the bytes you downloaded are the bytes
-that were checksummed; step 2 proves the checksum list came from the project and
-was not swapped out. If you prefer, you can point minisign at the key file
-instead of the inline key:
+The AppImage uses uncompressed copies internally; extract it before inspecting
+its application/helper. Locked sources help repeat builds, but this is not a
+promise of identical binary bytes across every toolchain or distribution.
 
-```sh
-minisign -Vm SHA256SUMS -p minisign.pub
-```
-
-The release workflow refuses to publish a partial release: if the `.deb` or the
-checksums are missing, the job fails rather than shipping something unverifiable.
-
----
-
-## 🔗 Version-aligned with the terminal sibling
-
-wireguard-gui has a sibling, **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)**
-(binary `wg-tui`) - the same tool as a keyboard-driven terminal UI for SSH and
-headless servers. The two apps are deliberately kept **feature-identical and
-version-aligned**: a given version number means the same capabilities and the
-same fixes in both. When you read a version below, the matching `wg-tui` release
-covers the same ground (with the obvious interface differences - menus and a tray
-on the GUI side, key bindings on the TUI side). The current version of both is
-**1.9.1**.
-
----
-
-## 🔧 How releases are built
-
-There are two GitHub Actions workflows.
-
-**Continuous integration (every push / pull request).** Before anything can be
-released, the code has to pass:
-
-- `cargo fmt --check` - formatting is enforced, not suggested.
-- `cargo clippy` - lint warnings are treated as failures.
-- `cargo test` - unit tests run on every push and pull request.
-- a release **build** of the binary.
-- a **smoke test** that `wireguard-gui --version` (or `wg-gui --version`) and `--help` start and exit
-  cleanly without opening a window.
-- shell syntax/lint checks on `install.sh` and helper validation scripts.
-- Rust helper unit tests and negative helper tests that prove traversal-style tunnel names are rejected
-  before any filesystem access.
-
-**Tag-triggered release.** Pushing a version tag (for example `v1.6.0`) kicks off
-the release workflow, which runs the same smoke and shell validation, builds the
-`.deb`, the AppImage and the portable tarball, generates `SHA256SUMS`, signs it with minisign to produce
-`SHA256SUMS.minisig`, attaches `minisign.pub`, and publishes a GitHub Release.
-Supply-chain hygiene is built in: third-party GitHub Actions are pinned to commit
-SHAs, the AppImage tool (`linuxdeploy`) is pinned to a release with a verified
-SHA-256, and the job aborts if the `.deb` or checksums are missing.
-
-CI and release workflows run `cargo audit --deny warnings` against the RUSTSEC
-advisory database. The shared policy in `.cargo/audit.toml` lists five
-unmaintained dependency notices without upstream fixes: optional Slint renderer
-dependencies and the zvariant family required by ksni's zbus 5 dependency.
-Actual vulnerabilities, unsoundness, and new advisories fail the gate. Release
-binaries embed an SBOM through `cargo auditable build`.
-
----
-
-## 📋 Version history
+## Version history
 
 ### 1.9.1 (2026-11-02)
 
-Fixes kill-switch isolation and rule ordering, helper output hangs, inline
-config comments, backup restore validation, and private update staging.
-Dependencies and package versions are current. See [CHANGELOG.md](../CHANGELOG.md)
-for the full change list, including the 1.9.0 DNS fix incorporated in this release.
+Fixes kill-switch comment isolation/rule ordering, helper output deadlocks and
+child timeouts, inline comments, backup preflight and size bounds, and private
+signed-update staging. Restoring a backup validates all selected configs before
+sequential saves, not as an all-or-nothing transaction. Binary bundles preserve
+installer assets and support direct prebuilt installation without a compiler.
+The previously unreleased 1.9.0 resolver-shim fix is included. See
+[the full changelog](../CHANGELOG.md).
 
+The following entries retain their historical wording and interface descriptions;
+use the current README/tutorial for today's controls.
 
 ### 1.6.0 (2026-06-17)
 
@@ -461,20 +460,7 @@ white window, 1.0.0 is the version that fixes it.
 
 ## 📜 Versioning policy
 
-wireguard-gui follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-(`MAJOR.MINOR.PATCH`):
-
-- **MAJOR** - incompatible changes to how you interact with the app or its files.
-- **MINOR** - new, backward-compatible features (for example 1.4.0's live
-  throughput, or 1.5.0's Setup wizard).
-- **PATCH** - backward-compatible bug fixes and hardening (for example the
-  1.5.1-1.5.4 install fixes).
-
-**GUI and TUI move in lockstep.** wireguard-gui and its terminal sibling
-`wireguard-tui` share a version number on purpose: the same number means the same
-feature set and the same fixes in both apps, differing only where the interface
-itself differs (windows, menus and a tray icon here; key bindings and the
-`wg-tui doctor`/`setup` subcommands there). When one app releases a version, the
-other releases the matching version. Tags are `v<version>` (for example
-`v1.6.0`), and the changelog ([CHANGELOG.md](../CHANGELOG.md)) is the
-authoritative per-version record.
+Versions use `MAJOR.MINOR.PATCH` and release tags use `v<version>`.
+The changelog describes the behavior included in each release. GUI/TUI releases
+may coordinate version numbers, but are maintained as separate applications
+with different interfaces, artifact coverage and feature sets.
