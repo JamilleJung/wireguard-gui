@@ -2755,6 +2755,9 @@ fn show_setup_wizard(main: &MainWindow, report: doctor::Report) {
                 s.set_busy("Another operation is still running.".into());
                 return;
             };
+            s.set_busy("Checking setup actions…".into());
+            let sw2 = s.as_weak();
+            std::thread::spawn(move || {
             // Only the safely-automatable steps: install wireguard-tools (+ a
             // resolvconf provider for DNS) and create /etc/wireguard. Never
             // installs the helper or touches configs.
@@ -2782,18 +2785,17 @@ fn show_setup_wizard(main: &MainWindow, report: doctor::Report) {
             if !std::path::Path::new("/etc/wireguard").is_dir() {
                 steps.push("install -d -m 700 /etc/wireguard".to_string());
             }
-            if steps.is_empty() {
-                s.set_busy(
-                    "Nothing to auto-install here. Install the helper via the .deb / AUR / \
-                     ./install.sh, then Re-check."
-                        .into(),
-                );
-                return;
-            }
-            s.set_busy("Working - enter your password in the dialog that appears...".into());
-            let script = steps.join(" && ");
-            let sw2 = s.as_weak();
-            std::thread::spawn(move || {
+                if steps.is_empty() {
+                    let _ = sw2.upgrade_in_event_loop(move |s| {
+                        drop(guard);
+                        s.set_busy("Nothing to auto-install here. Install the helper via the .deb / AUR / ./install.sh, then Re-check.".into());
+                    });
+                    return;
+                }
+                let script = steps.join(" && ");
+                let _ = sw2.upgrade_in_event_loop(|s| {
+                    s.set_busy("Working - enter your password in the dialog that appears...".into());
+                });
                 let ok = std::process::Command::new("pkexec")
                     .arg("sh")
                     .arg("-c")
@@ -2802,8 +2804,8 @@ fn show_setup_wizard(main: &MainWindow, report: doctor::Report) {
                     .map(|st| st.success())
                     .unwrap_or(false);
                 let report = doctor::system_check();
-                drop(guard);
                 let _ = sw2.upgrade_in_event_loop(move |s| {
+                    drop(guard);
                     s.set_checks(build_checks(&report));
                     s.set_commands(commands_text(&report).into());
                     s.set_busy(if ok {
