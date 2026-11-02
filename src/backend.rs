@@ -468,10 +468,6 @@ pub fn try_list_tunnels() -> Result<Vec<Tunnel>, String> {
         .collect())
 }
 
-pub fn list_tunnels() -> Vec<Tunnel> {
-    try_list_tunnels().unwrap_or_default()
-}
-
 /// A collision-free tunnel name based on `base`: returns `base`, else
 /// `base-2`, `base-3`, … (kept within the 15-char interface-name limit).
 pub fn unique_name(base: &str) -> Result<String, String> {
