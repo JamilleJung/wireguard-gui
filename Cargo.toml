@@ -22,7 +22,7 @@ rfd = "0.17"
 libc = "0.2"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 qrcode = { version = "0.14", default-features = false }
-rqrr = "0.10"
+rqrr = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Text-only clipboard (the app only ever calls set_text), so arboard's
 # image-data path is not compiled.
