@@ -209,6 +209,14 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
         if (required_key || optional_key) && !is_wg_key(value) {
             return Err(format!("Invalid {key} in [{section}]."));
         }
+        if value.is_empty()
+            && matches!(
+                (section.as_str(), key.as_str()),
+                ("interface", "address") | ("peer", "allowedips")
+            )
+        {
+            return Err(format!("Empty {key} in [{section}]."));
+        }
     }
 
     let cfg = parse_config(text);
@@ -350,6 +358,18 @@ mod tests {
         }
         let bad = format!("{valid}PresharedKey = bad\nPresharedKey = {KEY}\n");
         assert!(validate_basic_wireguard_config(&bad).is_err());
+    }
+
+    #[test]
+    fn earlier_empty_address_lists_cannot_be_hidden_by_repeated_values() {
+        let valid = format!(
+            "[Interface]\nPrivateKey = {KEY}\nAddress = 10.0.0.2/24\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        for (key, value) in [("Address", "10.0.0.2/24"), ("AllowedIPs", "0.0.0.0/0")] {
+            let line = format!("{key} = {value}");
+            let bad = valid.replace(&line, &format!("{key} =\n{line}"));
+            assert!(validate_basic_wireguard_config(&bad).is_err(), "{key}");
+        }
     }
 
     #[test]
