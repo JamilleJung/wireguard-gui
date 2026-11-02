@@ -195,7 +195,7 @@ pub fn fields_to_config(f: &Fields) -> String {
 mod tests {
     use super::*;
 
-    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
 
     fn single_peer() -> String {
         format!(

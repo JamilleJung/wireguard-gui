@@ -112,7 +112,13 @@ fn command_path(cmd: &str) -> Option<PathBuf> {
     }
     dirs.into_iter()
         .map(|dir| dir.join(cmd))
-        .find(|path| path.exists())
+        .find(|path| is_executable_file(path))
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 /// Is `cmd` on PATH (or in a standard bin dir)? Read-only, no root.
@@ -136,6 +142,41 @@ fn pkg_manager() -> Option<&'static str> {
     .find(|m| which(m))
 }
 
+/// Read-only probes must not freeze startup/Setup when sudo or the service
+/// manager stalls. Drain output concurrently and reap timed-out process groups.
+fn probe_output(command: &mut Command) -> Option<std::process::Output> {
+    probe_with_timeout(command, std::time::Duration::from_secs(2))
+}
+
+fn probe_with_timeout(
+    command: &mut Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::os::unix::process::CommandExt;
+    let child = command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output().ok());
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(output) => output,
+        Err(_) => {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            let _ = rx.recv_timeout(std::time::Duration::from_millis(200));
+            None
+        }
+    }
+}
+
 /// Whether THIS user can actually escalate with `sudo` - not merely whether the
 /// `sudo` binary exists. On many Debian servers the login user isn't in the
 /// sudoers file, so presence of `sudo` is not enough. True for root, when a
@@ -148,21 +189,13 @@ pub fn can_sudo() -> bool {
     if !which("sudo") {
         return false;
     }
-    let probe_ok = Command::new("sudo")
-        .args(["-n", "true"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let probe_ok = probe_output(Command::new("sudo").args(["-n", "true"]))
+        .is_some_and(|output| output.status.success());
     if probe_ok {
         return true;
     }
     // Password-required sudoers won't pass `-n`; fall back to group membership.
-    Command::new("id")
-        .arg("-nG")
-        .output()
-        .ok()
+    probe_output(Command::new("id").arg("-nG"))
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|g| {
             g.split_whitespace()
@@ -234,13 +267,12 @@ fn classify_dns_resolver(
 /// only use its runtime directory on systems without `systemctl`.
 fn systemd_resolved_active() -> bool {
     if let Some(systemctl) = command_path("systemctl") {
-        return Command::new(systemctl)
-            .args(["is-active", "--quiet", "systemd-resolved.service"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
+        return probe_output(Command::new(systemctl).args([
+            "is-active",
+            "--quiet",
+            "systemd-resolved.service",
+        ]))
+        .is_some_and(|output| output.status.success());
     }
     std::path::Path::new("/run/systemd/resolve").is_dir()
 }
@@ -347,15 +379,9 @@ pub fn friendly_error(raw: &str) -> String {
 
 /// The installed helper path, if any (trusted locations only). Read-only.
 pub fn installed_helper_path() -> Option<String> {
-    [
-        "/usr/local/lib/wireguard-tui/wg-helper",
-        "/usr/lib/wireguard-tui/wg-helper",
-        "/usr/local/lib/wireguard-gui/wg-helper",
-        "/usr/lib/wireguard-gui/wg-helper",
-    ]
-    .into_iter()
-    .find(|c| PathBuf::from(c).exists())
-    .map(str::to_string)
+    // Use the same trusted resolver as actual operations, including portable
+    // and debug builds. A sibling application's grant is not this app's grant.
+    crate::backend::helper_path().map(str::to_string)
 }
 
 /// Whether passwordless helper authorization is set up (root/sudoers/polkit).
@@ -372,13 +398,8 @@ fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>, bool
     if unsafe { libc::geteuid() } == 0 {
         return (Status::Ok, "running as root".to_string(), None, false);
     }
-    let sudo_ok = Command::new("sudo")
-        .args(["-n", h, "list"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let sudo_ok = probe_output(Command::new("sudo").args(["-n", h, "list"]))
+        .is_some_and(|output| output.status.success());
     if sudo_ok {
         return (
             Status::Ok,
@@ -388,36 +409,39 @@ fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>, bool
         );
     }
     let pkexec = which("pkexec");
-    let polkit = [
-        "/etc/polkit-1/rules.d/49-wireguard-tui.rules",
+    let rule_present = [
         "/etc/polkit-1/rules.d/49-wireguard-gui.rules",
-        "/usr/share/polkit-1/rules.d/49-wireguard-tui.rules",
         "/usr/share/polkit-1/rules.d/49-wireguard-gui.rules",
     ]
     .iter()
-    .any(|p| PathBuf::from(p).exists());
-    if polkit && pkexec {
-        (Status::Ok, "passwordless (polkit)".to_string(), None, false)
-    } else if polkit {
+    .any(|p| PathBuf::from(p).is_file());
+    polkit_auth_hint(pkexec, rule_present)
+}
+
+/// A rule file is not proof of authorization: its active-local/group conditions
+/// (and local administrator policy) still have to match. Never report green
+/// merely because a rule exists, or probe pkexec in a way that opens a dialog.
+fn polkit_auth_hint(pkexec: bool, rule_present: bool) -> (Status, String, Option<String>, bool) {
+    if !pkexec {
         (
             Status::Missing,
-            "polkit rule is installed, but pkexec is missing".to_string(),
-            Some("install the `polkit` package (for `pkexec`) or set up sudoers".to_string()),
+            "no passwordless sudo and pkexec is unavailable".to_string(),
+            Some("install pkexec/polkit or run ./install.sh to set up sudoers".to_string()),
             true,
         )
-    } else if pkexec {
+    } else if rule_present {
         (
             Status::Warning,
-            "not set up - pkexec will prompt each time".to_string(),
-            Some("./install.sh   (sets up passwordless sudoers)".to_string()),
+            "polkit rule found; current session/group authorization is not verified".to_string(),
+            Some("check wireguard group membership and an active local session; log out/in after enrollment".to_string()),
             false,
         )
     } else {
         (
-            Status::Missing,
-            "no passwordless sudo and pkexec is missing".to_string(),
-            Some("./install.sh   (or install the .deb / AUR / COPR package)".to_string()),
-            true,
+            Status::Warning,
+            "pkexec available; administrator authentication may be required".to_string(),
+            Some("./install.sh   (sets up a per-user helper grant)".to_string()),
+            false,
         )
     }
 }
@@ -615,6 +639,62 @@ pub fn system_check() -> Report {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn read_only_probe_times_out_instead_of_blocking_setup() {
+        let start = std::time::Instant::now();
+        assert!(
+            probe_with_timeout(
+                Command::new("sh").args(["-c", "sleep 30 & wait"]),
+                std::time::Duration::from_millis(100)
+            )
+            .is_none()
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+        let result = probe_output(Command::new("sh").args(["-c", "printf probe"])).unwrap();
+        assert!(result.status.success());
+        assert_eq!(result.stdout, b"probe");
+    }
+
+    #[test]
+    fn polkit_rule_presence_does_not_prove_authorization() {
+        let (status, detail, _, critical) = polkit_auth_hint(true, true);
+        assert!(matches!(status, Status::Warning));
+        assert!(detail.contains("not verified"));
+        assert!(!critical);
+        let (status, _, _, critical) = polkit_auth_hint(false, true);
+        assert!(matches!(status, Status::Missing));
+        assert!(critical);
+        let (status, _, _, critical) = polkit_auth_hint(true, false);
+        assert!(matches!(status, Status::Warning));
+        assert!(!critical);
+    }
+
+    #[test]
+    fn tool_detection_requires_an_executable_regular_file() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let file =
+            std::env::temp_dir().join(format!("wg-doctor-tool-{}-{stamp}", std::process::id()));
+        let handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&file)
+            .unwrap();
+        assert!(!is_executable_file(&file));
+        assert!(!is_executable_file(&std::env::temp_dir()));
+        handle
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        assert!(is_executable_file(&file));
+        drop(handle);
+        std::fs::remove_file(file).unwrap();
+    }
 
     #[test]
     fn classifies_dns_resolver_capabilities() {

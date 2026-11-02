@@ -1938,6 +1938,7 @@ export component HelpWindow inherits Window {
 // ===========================================================================
 export component UpdateWindow inherits Window {
     title: "Updates";
+    in-out property <bool> busy: false;
     width: 640px;
     height: 600px;
     in property <string> installed: "";
@@ -1982,13 +1983,14 @@ export component UpdateWindow inherits Window {
             spacing: 8px;
             PushButton {
                 text: "Check for updates";
+                enabled: !root.busy;
                 clicked => { root.check-updates(); }
             }
             PushButton {
                 text: "Update now";
                 primary: true;
                 visible: root.update-available;
-                enabled: root.update-available;
+                enabled: root.update-available && !root.busy;
                 clicked => { root.do-update(); }
             }
             Rectangle { horizontal-stretch: 1; }

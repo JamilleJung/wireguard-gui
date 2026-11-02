@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use ui_bridge::editor_form::{
     Fields, PeerFields, config_to_fields, fields_to_config, form_representable,
 };
@@ -48,6 +48,7 @@ static LIVE: Mutex<Option<Live>> = Mutex::new(None);
 /// A short live summary for the tray tooltip (active tunnels + throughput),
 /// written by the background thread and read by the tray on demand.
 static TRAY_INFO: Mutex<String> = Mutex::new(String::new());
+static TRAY_TUNNELS: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 
 thread_local! {
     // Keeps the currently-open editor window alive. Replaced (and the old one
@@ -101,21 +102,11 @@ impl ksni::Tray for Tray {
         true
     }
     fn tool_tip(&self) -> ksni::ToolTip {
-        // Live summary (active tunnels + throughput) kept fresh by the poll
-        // thread; falls back to a direct query if it hasn't run yet.
+        // Never query privileged helpers from a DBus menu/tooltip callback.
         let description = {
             let info = TRAY_INFO.lock().unwrap().clone();
             if info.is_empty() {
-                let actives: Vec<String> = backend::list_tunnels()
-                    .into_iter()
-                    .filter(|t| t.active)
-                    .map(|t| t.name)
-                    .collect();
-                if actives.is_empty() {
-                    "No active tunnel".to_string()
-                } else {
-                    format!("Active: {}", actives.join(", "))
-                }
+                "Waiting for tunnel status…".to_string()
             } else {
                 info
             }
@@ -129,12 +120,12 @@ impl ksni::Tray for Tray {
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
-        let tunnels = backend::list_tunnels();
-        let any_active = tunnels.iter().any(|t| t.active);
+        let tunnels = TRAY_TUNNELS.lock().unwrap().clone();
+        let any_active = tunnels.iter().any(|(_, active)| *active);
         let active_names: Vec<String> = tunnels
             .iter()
-            .filter(|t| t.active)
-            .map(|t| t.name.clone())
+            .filter(|(_, active)| *active)
+            .map(|(name, _)| name.clone())
             .collect();
 
         let mut items: Vec<ksni::MenuItem<Self>> = vec![
@@ -166,23 +157,36 @@ impl ksni::Tray for Tray {
         // A "Tunnels" submenu: one checkable toggle per tunnel.
         let toggles: Vec<ksni::MenuItem<Self>> = tunnels
             .iter()
-            .map(|t| {
-                let name = t.name.clone();
+            .map(|(name, active)| {
+                let name = name.clone();
                 CheckmarkItem {
                     label: name.clone(),
-                    checked: t.active,
-                    activate: Box::new(move |_: &mut Self| {
-                        // The tray label can be up to a refresh-interval stale;
-                        // re-check live state at click time so we never run the
-                        // wrong action (or double-activate) on a captured flag.
-                        let up = backend::list_tunnels()
-                            .iter()
-                            .any(|x| x.name == name && x.active);
-                        let _ = if up {
-                            backend::deactivate(&name)
-                        } else {
-                            backend::activate(&name)
-                        };
+                    checked: *active,
+                    activate: Box::new(move |this: &mut Self| {
+                        let name = name.clone();
+                        let _ = this.window.upgrade_in_event_loop(move |ui| {
+                            run_ui_task(
+                                &ui,
+                                "Updating tunnel…",
+                                move || {
+                                    // Cached tray state can be stale. Read errors
+                                    // must never be interpreted as inactive.
+                                    let tunnels = backend::try_list_tunnels()?;
+                                    let tunnel = tunnels
+                                        .iter()
+                                        .find(|t| t.name == name)
+                                        .ok_or_else(|| format!("Tunnel {name} no longer exists"))?;
+                                    if tunnel.active {
+                                        backend::deactivate(&name)?;
+                                        Ok(format!("Deactivated {name}"))
+                                    } else {
+                                        backend::activate(&name)?;
+                                        Ok(format!("Activated {name}"))
+                                    }
+                                },
+                                complete_tray_action,
+                            );
+                        });
                     }),
                     ..Default::default()
                 }
@@ -203,10 +207,28 @@ impl ksni::Tray for Tray {
             StandardItem {
                 label: "Deactivate all".into(),
                 enabled: any_active,
-                activate: Box::new(move |_: &mut Self| {
-                    for n in &active_names {
-                        let _ = backend::deactivate(n);
-                    }
+                activate: Box::new(move |this: &mut Self| {
+                    let _ = this.window.upgrade_in_event_loop(move |ui| {
+                        run_ui_task(
+                            &ui,
+                            "Deactivating tunnels…",
+                            move || {
+                                let tunnels = backend::try_list_tunnels()?;
+                                let mut failed = Vec::new();
+                                for tunnel in tunnels.iter().filter(|t| t.active) {
+                                    if let Err(error) = backend::deactivate(&tunnel.name) {
+                                        failed.push(format!("{}: {error}", tunnel.name));
+                                    }
+                                }
+                                if failed.is_empty() {
+                                    Ok("Deactivated all active tunnels".to_string())
+                                } else {
+                                    Err(format!("Couldn't deactivate {}", failed.join("; ")))
+                                }
+                            },
+                            complete_tray_action,
+                        );
+                    });
                 }),
                 ..Default::default()
             }
@@ -228,6 +250,18 @@ impl ksni::Tray for Tray {
         );
         items
     }
+}
+
+fn complete_tray_action(ui: &MainWindow, result: Result<String, String>) {
+    match result {
+        Ok(message) => set_status(ui, message),
+        Err(error) => {
+            set_status(ui, error);
+            let _ = ui.show();
+            ui.window().set_minimized(false);
+        }
+    }
+    refresh_list(ui);
 }
 
 /// Open a URL in the user's default browser.
@@ -415,18 +449,11 @@ where
 {
     set_hint(win, msg.into());
     let weak = win.as_weak();
-    let timer = Timer::default();
-    timer.start(
-        TimerMode::SingleShot,
-        Duration::from_millis(1500),
-        move || {
-            if let Some(w) = weak.upgrade() {
-                set_hint(&w, SharedString::new());
-            }
-        },
-    );
-    // Leak the timer so it lives long enough to fire (the window outlives it).
-    std::mem::forget(timer);
+    slint::Timer::single_shot(Duration::from_millis(1500), move || {
+        if let Some(w) = weak.upgrade() {
+            set_hint(&w, SharedString::new());
+        }
+    });
 }
 
 /// Open (or re-open) the in-app Help window with the embedded guide.
@@ -468,6 +495,10 @@ fn show_help_window() {
 /// Kick off a background `update::check()` for an open Updates window, posting
 /// the status + update-available flag back on the UI thread.
 fn run_update_check(win: &UpdateWindow) {
+    if win.get_busy() {
+        return;
+    }
+    win.set_busy(true);
     win.set_status("Checking…".into());
     win.set_update_available(false);
     let ww = win.as_weak();
@@ -475,6 +506,7 @@ fn run_update_check(win: &UpdateWindow) {
         let found = update::check();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(w) = ww.upgrade() else { return };
+            w.set_busy(false);
             match found {
                 Ok(Some(info)) => {
                     w.set_status(
@@ -557,18 +589,33 @@ fn show_update_window() {
         let uw = win.as_weak();
         win.on_do_update(move || {
             let Some(u) = uw.upgrade() else { return };
+            if u.get_busy() {
+                return;
+            }
+            let Some(guard) = UiOperation::acquire() else {
+                u.set_status("Another operation is still running.".into());
+                return;
+            };
+            u.set_busy(true);
             u.set_status("Downloading and verifying the update…".into());
             u.set_update_available(false);
             let uw = u.as_weak();
             std::thread::spawn(move || {
-                let result = update::download_and_verify().and_then(|dir| update::apply(&dir));
+                let result = update::download_and_verify().and_then(|dir| {
+                    let version = dir.version().to_string();
+                    update::apply(&dir).map(|()| version)
+                });
                 let msg = match result {
-                    Ok(()) => "Update installed — restart wireguard-gui to apply.".to_string(),
+                    Ok(version) => {
+                        format!("Updated to v{version} — restart wireguard-gui to apply.")
+                    }
                     Err(e) => format!("Update failed: {e}"),
                 };
+                drop(guard);
                 let uw = uw.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(u) = uw.upgrade() {
+                        u.set_busy(false);
                         u.set_status(msg.into());
                     }
                 });
@@ -630,119 +677,77 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
     // Fallback for sessions where the native backend can't own the selection:
     // pipe to whichever clipboard CLI is present (wl-copy / xclip / xsel).
-    copy_via_cli(text)
+    clipboard::copy_via_cli(text)
 }
 
-/// Last-resort clipboard: pipe `text` into a clipboard CLI. Tries the
-/// session-appropriate tool first and never blocks (wl-copy/xclip daemonize to
-/// serve the selection and the foreground process exits immediately).
-fn copy_via_cli(text: &str) -> bool {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let candidates: &[(&str, &[&str])] = if wayland {
-        &[
-            ("wl-copy", &[]),
-            ("xclip", &["-selection", "clipboard"]),
-            ("xsel", &["--clipboard", "--input"]),
-        ]
-    } else {
-        &[
-            ("xclip", &["-selection", "clipboard"]),
-            ("xsel", &["--clipboard", "--input"]),
-            ("wl-copy", &[]),
-        ]
-    };
-
-    for (prog, args) in candidates {
-        let Ok(mut child) = Command::new(prog)
-            .args(*args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            continue;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
-            // Drop stdin to signal EOF so the tool stops reading and serves.
-        }
-        if child.wait().map(|s| s.success()).unwrap_or(false) {
-            return true;
-        }
-    }
-    false
+/// Replace only exact keys inside the intended section. Prefix matching can
+/// overwrite unknown directives, and raw multi-peer editing must not change a
+/// different peer's preshared key.
+fn section_header(line: &str) -> Option<&str> {
+    let line = line.split_once('#').map_or(line, |(line, _)| line).trim();
+    line.strip_prefix('[')?.strip_suffix(']').map(str::trim)
 }
 
-/// Replace (or insert) the `PrivateKey` line in a config with `key`.
-fn set_private_key(config: &str, key: &str) -> String {
-    let mut out = String::new();
+fn set_section_key(
+    config: &str,
+    section: &str,
+    index: usize,
+    key: &str,
+    value: &str,
+) -> Option<String> {
+    let mut lines: Vec<String> = config.lines().map(str::to_string).collect();
+    let start = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            section_header(line).is_some_and(|header| header.eq_ignore_ascii_case(section))
+        })
+        .nth(index)?
+        .0;
+    let end = (start + 1..lines.len())
+        .find(|&i| section_header(&lines[i]).is_some())
+        .unwrap_or(lines.len());
     let mut replaced = false;
-    for line in config.lines() {
-        let t = line.trim_start().to_ascii_lowercase();
-        if !replaced && t.starts_with("privatekey") && line.contains('=') {
-            out.push_str(&format!("PrivateKey = {key}\n"));
-            replaced = true;
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if replaced {
-        return out;
-    }
-    // No PrivateKey line: insert after the first [Interface], else prepend.
-    if let Some(pos) = out.to_ascii_lowercase().find("[interface]") {
-        let nl = out[pos..]
-            .find('\n')
-            .map(|n| pos + n + 1)
-            .unwrap_or(out.len());
-        out.insert_str(nl, &format!("PrivateKey = {key}\n"));
-        out
-    } else {
-        format!("[Interface]\nPrivateKey = {key}\n{out}")
-    }
-}
-
-/// Replace (or insert) the `PresharedKey` line in a config with `key`.
-fn set_psk(config: &str, key: &str) -> String {
-    let mut out = String::new();
-    let mut replaced = false;
-    for line in config.lines() {
-        let t = line.trim_start().to_ascii_lowercase();
-        if !replaced && t.starts_with("presharedkey") && line.contains('=') {
-            out.push_str(&format!("PresharedKey = {key}\n"));
-            replaced = true;
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if replaced {
-        return out;
-    }
-    // Insert right after the first peer's PublicKey line, else append.
-    let mut result = String::new();
-    let mut inserted = false;
-    for line in out.lines() {
-        result.push_str(line);
-        result.push('\n');
-        if !inserted
-            && line
-                .trim_start()
-                .to_ascii_lowercase()
-                .starts_with("publickey")
+    for line in &mut lines[start + 1..end] {
+        let code = line.split_once('#').map_or(line.as_str(), |(code, _)| code);
+        if code
+            .split_once('=')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
         {
-            result.push_str(&format!("PresharedKey = {key}\n"));
-            inserted = true;
+            let comment = line
+                .split_once('#')
+                .map(|(_, comment)| format!(" #{comment}"))
+                .unwrap_or_default();
+            *line = format!("{key} = {value}{comment}");
+            replaced = true;
         }
     }
-    if !inserted {
-        result.push_str(&format!("PresharedKey = {key}\n"));
+    if !replaced {
+        lines.insert(start + 1, format!("{key} = {value}"));
     }
-    result
+    Some(format!("{}\n", lines.join("\n")))
+}
+
+fn set_private_key(config: &str, key: &str) -> String {
+    let interfaces = config
+        .lines()
+        .filter(|line| {
+            section_header(line).is_some_and(|header| header.eq_ignore_ascii_case("Interface"))
+        })
+        .count();
+    if interfaces == 0 {
+        return format!("[Interface]\nPrivateKey = {key}\n{config}");
+    }
+    // WireGuard accepts repeated Interface sections and the last key wins.
+    // Replacing every exact PrivateKey prevents an older effective key from
+    // silently surviving generation, including sections after a Peer.
+    (0..interfaces).fold(config.to_string(), |config, index| {
+        set_section_key(&config, "Interface", index, "PrivateKey", key).unwrap()
+    })
+}
+
+fn set_psk(config: &str, key: &str, peer_index: usize) -> Option<String> {
+    set_section_key(config, "Peer", peer_index, "PresharedKey", key)
 }
 
 /// Push parsed fields into the editor's form properties.
@@ -792,8 +797,8 @@ fn commit_form_to_config(ed: &EditWindow) -> Option<String> {
         return None;
     }
     let cfg = fields_to_config(&read_fields(ed));
-    ed.set_public_key(backend::public_key_for_config(&cfg).into());
     ed.set_config_text(cfg.clone().into());
+    ed.invoke_config_changed(cfg.clone().into());
     Some(cfg)
 }
 
@@ -824,13 +829,11 @@ fn single_peer_fields(ed: &EditWindow) -> Fields {
 }
 
 /// Render a string to a black-on-white QR-code Slint image.
-fn qr_image(text: &str) -> slint::Image {
+fn qr_image(text: &str) -> Result<slint::Image, String> {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
     let (scale, quiet) = (8usize, 4usize);
-    let code = match qrcode::QrCode::new(text.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => return slint::Image::default(),
-    };
+    let code = qrcode::QrCode::new(text.as_bytes())
+        .map_err(|error| format!("Config cannot fit in one QR code: {error}"))?;
     let modules = code.width();
     let colors = code.to_colors();
     let px = (modules + 2 * quiet) * scale;
@@ -850,7 +853,7 @@ fn qr_image(text: &str) -> slint::Image {
             bytes[i + 3] = 255;
         }
     }
-    slint::Image::from_rgba8(buf)
+    Ok(slint::Image::from_rgba8(buf))
 }
 
 /// Open the tunnel editor in its own top-level window. A fresh window paints
@@ -878,7 +881,6 @@ fn open_editor(
                 .into(),
         );
     }
-    ed.set_public_key(backend::public_key_for_config(&text).into());
     ed.set_config_text(text.clone().into());
 
     // New tunnels open in the structured form; existing ones in raw-text mode
@@ -893,11 +895,44 @@ fn open_editor(
     // Live-update the public key as the config is edited.
     {
         let edw = ed.as_weak();
+        let last_key = Rc::new(RefCell::new(None::<String>));
         ed.on_config_changed(move |cfg| {
-            if let Some(ed) = edw.upgrade() {
-                ed.set_public_key(backend::public_key_for_config(&cfg).into());
+            let Some(ed) = edw.upgrade() else { return };
+            let private_key = config::parse_config(&cfg).private_key.unwrap_or_default();
+            if last_key.borrow().as_ref() == Some(&private_key) {
+                return;
             }
+            *last_key.borrow_mut() = Some(private_key.clone());
+            ed.set_public_key("".into());
+            if private_key.is_empty() {
+                return;
+            }
+            // Typing in any form field used to invoke wg synchronously. Only
+            // derive when the private key changes, after a short debounce, and
+            // reject stale worker results if the user edits it again.
+            let weak = ed.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(100), move || {
+                let Some(ed) = weak.upgrade() else { return };
+                let cfg = ed.get_config_text().to_string();
+                if config::parse_config(&cfg).private_key.as_deref() != Some(&private_key) {
+                    return;
+                }
+                let weak = ed.as_weak();
+                std::thread::spawn(move || {
+                    let public_key = backend::public_key_for_config(&cfg);
+                    let _ = weak.upgrade_in_event_loop(move |ed| {
+                        if config::parse_config(&ed.get_config_text())
+                            .private_key
+                            .as_deref()
+                            == Some(&private_key)
+                        {
+                            ed.set_public_key(public_key.into());
+                        }
+                    });
+                });
+            });
         });
+        ed.invoke_config_changed(text.clone().into());
     }
 
     // Form edits: rebuild the raw config (the source of truth for Save) and
@@ -967,8 +1002,8 @@ fn open_editor(
             fields.peers.push(PeerFields::default());
             let idx = fields.peers.len() - 1;
             let cfg = fields_to_config(&fields);
-            ed.set_public_key(backend::public_key_for_config(&cfg).into());
-            ed.set_config_text(cfg.into());
+            ed.set_config_text(cfg.clone().into());
+            ed.invoke_config_changed(cfg.into());
             apply_fields(&ed, &fields, idx);
         });
     }
@@ -987,8 +1022,8 @@ fn open_editor(
             fields.peers.remove(idx);
             let next = idx.min(fields.peers.len() - 1);
             let cfg = fields_to_config(&fields);
-            ed.set_public_key(backend::public_key_for_config(&cfg).into());
-            ed.set_config_text(cfg.into());
+            ed.set_config_text(cfg.clone().into());
+            ed.invoke_config_changed(cfg.into());
             apply_fields(&ed, &fields, next);
         });
     }
@@ -1046,88 +1081,101 @@ fn open_editor(
     let save_handler = Rc::new({
         let edw = ed.as_weak();
         let mainw = main.as_weak();
-        let orig = Rc::new(orig_name);
+        let orig = std::sync::Arc::new(Mutex::new(orig_name));
         move |name: SharedString, text: SharedString, activate_after: bool| {
-            let Some(ed) = edw.upgrade() else { return };
-            ed.set_error("".into());
-            let name = name.to_string();
-            let name = name.trim();
-            if let Err(e) = backend::validate_tunnel_name(name) {
-                ed.set_error(e.into());
+            let (Some(ed), Some(main)) = (edw.upgrade(), mainw.upgrade()) else {
                 return;
-            }
-            let name = name.to_string();
-            let text = text.to_string();
-            if let Err(e) = backend::validate_config(&text) {
-                ed.set_error(e.into());
-                return;
-            }
-            let orig_name = orig.as_str();
-            let renaming = !orig_name.is_empty() && orig_name != name;
-            if (renaming || orig_name.is_empty()) && backend::tunnel_exists(&name) {
-                ed.set_error(format!("A tunnel named “{name}” already exists.").into());
-                return;
-            }
-            let save_result = if renaming {
-                backend::rename_config(orig_name, &name, &text)
-            } else {
-                backend::save_config(&name, &text)
             };
-            if let Err(e) = save_result {
-                ed.set_error(
-                    format!("{} failed: {e}", if renaming { "Rename" } else { "Save" }).into(),
-                );
+            ed.set_error("".into());
+            let name = name.trim().to_string();
+            let text = text.to_string();
+            if let Err(error) =
+                backend::validate_tunnel_name(&name).and_then(|()| backend::validate_config(&text))
+            {
+                ed.set_error(error.into());
                 return;
             }
-            if let Some(main) = mainw.upgrade() {
-                if renaming {
-                    set_status(&main, format!("Renamed {orig_name} → {name}"));
-                } else if activate_after {
-                    match backend::activate(&name) {
-                        Ok(()) => set_status(&main, format!("Created and activated {name}")),
-                        Err(e) => {
-                            set_status(&main, format!("Created {name}, but activation failed: {e}"))
-                        }
+            let prior_selection = selected_name(&main);
+            let original = orig.lock().unwrap().clone();
+            let renaming = !original.is_empty() && original != name;
+            let submitted_name = name.clone();
+            let submitted_text = text.clone();
+            let edw = ed.as_weak();
+            let orig = orig.clone();
+            let started = run_ui_task(
+                &main,
+                "Saving tunnel…",
+                move || {
+                    let tunnels = backend::try_list_tunnels()?;
+                    if (renaming || original.is_empty())
+                        && tunnels.iter().any(|tunnel| tunnel.name == name)
+                    {
+                        return Err(format!("A tunnel named “{name}” already exists."));
                     }
-                } else {
-                    // If the tunnel is up, apply the change live without dropping
-                    // peer sessions (wg syncconf). wg-quick-only fields
-                    // (Address/DNS/MTU/Table) still need a reconnect.
-                    let active = backend::list_tunnels()
+                    if renaming {
+                        backend::rename_config(&original, &name, &text)?;
+                    } else {
+                        backend::save_config(&name, &text)?;
+                    }
+                    let message = if renaming {
+                        format!("Renamed {original} → {name}")
+                    } else if activate_after {
+                        match backend::activate(&name) {
+                            Ok(()) => format!("Created and activated {name}"),
+                            Err(error) => format!("Created {name}, but activation failed: {error}"),
+                        }
+                    } else if tunnels
                         .iter()
-                        .any(|t| t.name == name && t.active);
-                    if active {
+                        .any(|tunnel| tunnel.name == name && tunnel.active)
+                    {
                         match backend::sync_running(&name) {
-                            Ok(()) => set_status(&main, format!("Saved {name} (applied live)")),
-                            Err(_) => set_status(
-                                &main,
-                                format!("Saved {name} — reconnect to apply Address/DNS/MTU/routes"),
+                            Ok(()) => format!(
+                                "Saved {name} (WireGuard settings applied live; reconnect for Address/DNS/MTU/routes)"
                             ),
+                            Err(_) => format!("Saved {name} — reconnect to apply changes"),
                         }
                     } else {
-                        set_status(
-                            &main,
-                            if orig_name.is_empty() {
-                                format!("Created {name}")
+                        format!("Saved {name}")
+                    };
+                    Ok((name, message))
+                },
+                move |main, result: Result<(String, String), String>| match result {
+                    Ok((saved_name, message)) => {
+                        *orig.lock().unwrap() = saved_name.clone();
+                        if let Some(ed) = edw.upgrade() {
+                            if ed.get_tunnel_name().trim() == submitted_name
+                                && ed.get_config_text() == submitted_text
+                            {
+                                let _ = ed.hide();
                             } else {
-                                format!("Saved {name}")
-                            },
-                        );
+                                ed.set_error(
+                                    "Earlier draft saved; your newer edits have not been saved."
+                                        .into(),
+                                );
+                            }
+                        }
+                        set_status(main, message);
+                        refresh_list_after(main, Some((saved_name, prior_selection)));
                     }
-                }
-                refresh_list(&main);
-                select_by_name(&main, &name);
+                    Err(error) => {
+                        if let Some(ed) = edw.upgrade() {
+                            ed.set_error(format!("Save failed: {error}").into());
+                        }
+                    }
+                },
+            );
+            if !started {
+                ed.set_error("Another operation is still running.".into());
             }
-            let _ = ed.hide();
         }
     });
     {
-        let save_handler = save_handler.clone();
-        ed.on_save(move |name, text| save_handler(name, text, false));
+        let handler = save_handler.clone();
+        ed.on_save(move |name, text| handler(name, text, false));
     }
     {
-        let save_handler = save_handler.clone();
-        ed.on_save_and_activate(move |name, text| save_handler(name, text, true));
+        let handler = save_handler.clone();
+        ed.on_save_and_activate(move |name, text| handler(name, text, true));
     }
 
     // Generate keypair: insert a fresh PrivateKey, show the public key.
@@ -1156,7 +1204,9 @@ fn open_editor(
         ed.on_generate_psk(move || {
             let Some(ed) = edw.upgrade() else { return };
             // A preshared key belongs to a [Peer]; without one it would dangle.
-            if !ed.get_config_text().to_ascii_lowercase().contains("[peer]") {
+            if !ed.get_config_text().lines().any(|line| {
+                section_header(line).is_some_and(|header| header.eq_ignore_ascii_case("Peer"))
+            }) {
                 ed.set_error("Add a [Peer] before generating a preshared key.".into());
                 return;
             }
@@ -1173,7 +1223,14 @@ fn open_editor(
                         apply_fields(&ed, &fields, peer_idx);
                         cfg
                     } else {
-                        set_psk(&ed.get_config_text(), &psk)
+                        let Some(updated) = set_psk(&ed.get_config_text(), &psk, idx) else {
+                            ed.set_error(
+                                "Select an existing [Peer] before generating a preshared key."
+                                    .into(),
+                            );
+                            return;
+                        };
+                        updated
                     };
                     ed.set_config_text(updated.into());
                     ed.set_error("".into());
@@ -1242,15 +1299,85 @@ fn to_slint_detail(d: backend::Detail) -> TunnelDetail {
     }
 }
 
+static UI_OPERATION: AtomicBool = AtomicBool::new(false);
+static LIST_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LOG_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DETAIL_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct UiOperation;
+impl UiOperation {
+    fn acquire() -> Option<Self> {
+        UI_OPERATION
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self)
+    }
+}
+impl Drop for UiOperation {
+    fn drop(&mut self) {
+        UI_OPERATION.store(false, Ordering::SeqCst);
+    }
+}
+
+fn ui_idle(ui: &MainWindow) -> bool {
+    if UI_OPERATION.load(Ordering::SeqCst) {
+        set_status(ui, "Another operation is still running.");
+        false
+    } else {
+        true
+    }
+}
+
+fn run_ui_task<T: Send + 'static>(
+    ui: &MainWindow,
+    message: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+    done: impl FnOnce(&MainWindow, T) + Send + 'static,
+) -> bool {
+    let Some(guard) = UiOperation::acquire() else {
+        ui_idle(ui);
+        return false;
+    };
+    ui.set_status(message.into());
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let result = work();
+        drop(guard);
+        let _ = weak.upgrade_in_event_loop(move |ui| done(&ui, result));
+    });
+    true
+}
+
 /// Rebuild the left-hand tunnel list, preserving the selected name if possible.
 fn refresh_list(ui: &MainWindow) {
-    let prev = if ui.get_has_selection() {
-        Some(ui.get_detail().name.to_string())
-    } else {
-        None
-    };
+    refresh_list_after(ui, None);
+}
 
-    let tunnels = backend::list_tunnels();
+fn refresh_list_after(ui: &MainWindow, preferred: Option<(String, Option<String>)>) {
+    let request = LIST_REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let result = backend::try_list_tunnels();
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            if request != LIST_REQUEST.load(Ordering::SeqCst) {
+                return;
+            }
+            match result {
+                Ok(tunnels) => {
+                    let preferred = preferred
+                        .filter(|(_, expected)| selected_name(&ui) == *expected)
+                        .map(|(name, _)| name);
+                    apply_tunnel_list(&ui, tunnels, preferred);
+                }
+                Err(error) => set_status(&ui, format!("Couldn't refresh tunnels: {error}")),
+            }
+        });
+    });
+}
+
+fn apply_tunnel_list(ui: &MainWindow, tunnels: Vec<backend::Tunnel>, preferred: Option<String>) {
+    *TRAY_TUNNELS.lock().unwrap() = tunnels.iter().map(|t| (t.name.clone(), t.active)).collect();
+    let prev = preferred.or_else(|| selected_name(ui));
     let mut new_index = -1i32;
     let items: Vec<TunnelItem> = tunnels
         .iter()
@@ -1326,9 +1453,13 @@ fn apply_log_filter(ui: &MainWindow) {
 /// take a moment) and post the result back to the event loop. This is why
 /// opening the Log tab and pressing Refresh never stutter the UI.
 fn refresh_log_async(w: slint::Weak<MainWindow>) {
+    let request = LOG_REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         let text = backend::get_log();
         let _ = w.upgrade_in_event_loop(move |ui| {
+            if request != LOG_REQUEST.load(Ordering::SeqCst) {
+                return;
+            }
             RAW_LOG.with(|r| *r.borrow_mut() = text);
             apply_log_filter(&ui);
         });
@@ -1351,10 +1482,25 @@ fn populate_backups(ui: &MainWindow) {
 }
 
 fn load_detail(ui: &MainWindow, name: &str) {
-    *SELECTED.lock().unwrap() = Some(name.to_string());
-    let detail = backend::get_detail(name);
-    ui.set_detail(to_slint_detail(detail));
-    ui.set_has_selection(true);
+    let name = name.to_string();
+    let request = DETAIL_REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
+    *SELECTED.lock().unwrap() = Some(name.clone());
+    // Never leave the previous tunnel's buttons/keys visible while fetching a
+    // newly selected tunnel. Read-only polling can fill this same selection.
+    ui.set_has_selection(false);
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let detail = backend::get_detail(&name);
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            if request != DETAIL_REQUEST.load(Ordering::SeqCst)
+                || selected_name(&ui).as_deref() != Some(name.as_str())
+            {
+                return;
+            }
+            ui.set_detail(to_slint_detail(detail));
+            ui.set_has_selection(true);
+        });
+    });
 }
 
 /// Selected-tunnel name from the live model + selected index.
@@ -1386,23 +1532,38 @@ fn set_status(ui: &MainWindow, msg: impl Into<SharedString>) {
 /// process exits — no stale lock files). If another instance already holds it,
 /// nudge that instance to raise its window and return None so we exit quietly.
 /// Otherwise return the listener; the primary keeps it alive and accepts pings.
-fn single_instance_listener() -> Option<std::os::unix::net::UnixListener> {
-    use std::io::Write as _;
+#[cfg(target_os = "linux")]
+fn single_instance_listener() -> std::io::Result<Option<std::os::unix::net::UnixListener>> {
     use std::os::linux::net::SocketAddrExt as _;
-    use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
-
     let uid = unsafe { libc::getuid() };
-    let addr = SocketAddr::from_abstract_name(format!("wireguard-gui-{uid}")).ok()?;
-    match UnixListener::bind_addr(&addr) {
-        Ok(listener) => Some(listener),
-        Err(_) => {
-            // Already running — ask it to show its window, then bow out.
-            if let Ok(mut s) = UnixStream::connect_addr(&addr) {
-                let _ = s.write_all(b"show");
-            }
-            None
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(format!("wireguard-gui-{uid}"))?;
+    bind_instance_listener(&addr)
+}
+
+#[cfg(target_os = "linux")]
+fn bind_instance_listener(
+    addr: &std::os::unix::net::SocketAddr,
+) -> std::io::Result<Option<std::os::unix::net::UnixListener>> {
+    use std::io::Write as _;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    match UnixListener::bind_addr(addr) {
+        Ok(listener) => Ok(Some(listener)),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let mut stream = UnixStream::connect_addr(addr)?;
+            stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+            stream.write_all(b"show")?;
+            Ok(None)
         }
+        Err(error) => Err(error),
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn single_instance_listener() -> std::io::Result<Option<std::os::unix::net::UnixListener>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "wireguard-gui requires Linux",
+    ))
 }
 
 /// NVIDIA's proprietary driver stutters on native Wayland (frame-callback
@@ -1455,7 +1616,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Single-instance: if WireGuard is already running, raise the existing
     // window (the listener thread below) instead of opening a second window and
     // a second tray icon — then exit this launch.
-    let instance = match single_instance_listener() {
+    let instance = match single_instance_listener()? {
         Some(listener) => listener,
         None => return Ok(()),
     };
@@ -1547,44 +1708,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ---- activate / deactivate ----
+    // ---- activate / deactivate: bounded helper work stays off the UI thread ----
     {
-        let w = ui.as_weak();
+        let weak = ui.as_weak();
         ui.on_activate(move |name| {
-            let ui = w.unwrap();
-            match backend::activate(&name) {
-                Ok(()) => {
-                    // A wrong clock makes the server silently reject the handshake
-                    // (TAI64N anti-replay): the tunnel reads "active" but never
-                    // connects. Flag it up front, non-blocking, and point at Diagnose.
+            let Some(ui) = weak.upgrade() else { return; };
+            let name = name.to_string();
+            run_ui_task(&ui, "Activating tunnel…", move || {
+                backend::activate(&name).map(|()| {
                     if doctor::clock_synced() == Some(false) {
-                        set_status(
-                            &ui,
-                            "Activated — but the clock isn't NTP-synced; the handshake may be rejected. Use Diagnose.",
-                        );
-                    } else {
-                        set_status(&ui, format!("Activated {name}"));
-                    }
-                }
-                Err(e) => set_status(
-                    &ui,
-                    format!("Activate failed: {}", doctor::friendly_error(&e)),
-                ),
-            }
-            load_detail(&ui, &name);
-            refresh_list(&ui);
+                        "Activated — clock not NTP-synced; use Diagnose if the handshake fails.".to_string()
+                    } else { format!("Activated {name}") }
+                }).map_err(|error| format!("Activate failed: {}", doctor::friendly_error(&error)))
+            }, |ui, result| {
+                set_status(ui, result.unwrap_or_else(|error| error));
+                refresh_list(ui);
+            });
         });
     }
     {
-        let w = ui.as_weak();
+        let weak = ui.as_weak();
         ui.on_deactivate(move |name| {
-            let ui = w.unwrap();
-            match backend::deactivate(&name) {
-                Ok(()) => set_status(&ui, format!("Deactivated {name}")),
-                Err(e) => set_status(&ui, format!("Deactivate failed: {e}")),
-            }
-            load_detail(&ui, &name);
-            refresh_list(&ui);
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Deactivating tunnel…",
+                move || {
+                    backend::deactivate(&name)
+                        .map(|()| format!("Deactivated {name}"))
+                        .map_err(|error| format!("Deactivate failed: {error}"))
+                },
+                |ui, result| {
+                    set_status(ui, result.unwrap_or_else(|error| error));
+                    refresh_list(ui);
+                },
+            );
         });
     }
 
@@ -1639,81 +1800,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- import from file ----
     {
-        let w = ui.as_weak();
+        let weak = ui.as_weak();
         ui.on_import_file(move || {
-            let ui = w.unwrap();
-            let files = rfd::FileDialog::new()
-                .add_filter("WireGuard config", &["conf"])
-                .set_title("Import tunnel(s) from file")
-                .pick_files();
-            let Some(files) = files else { return };
-
-            let read = |path: &std::path::PathBuf| -> Option<(String, String)> {
-                let content = std::fs::read_to_string(path).ok()?;
-                let stem = path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "tunnel".into());
-                Some((stem, content))
+            let Some(ui) = weak.upgrade() else {
+                return;
             };
-
-            // Single file: open the editor pre-filled so the user can name it
-            // (suggested name is already collision-free), then Save.
-            if files.len() == 1 {
-                match read(&files[0]) {
-                    Some((stem, content)) => {
-                        let suggested = backend::unique_name(&stem);
-                        open_editor(&ui, true, String::new(), suggested, content);
-                    }
-                    None => set_status(&ui, "Couldn't read that file"),
-                }
+            if !ui_idle(&ui) {
                 return;
             }
-
-            // Multiple files: import each with an auto-deduped name (never
-            // overwrites an existing tunnel). Validate each, skip the invalid
-            // ones, and flag any that run root scripts on activation.
-            let mut last = None;
-            let mut count = 0;
-            let mut skipped = 0;
-            let mut scripts = false;
-            for path in &files {
-                let Some((stem, content)) = read(path) else {
-                    skipped += 1;
-                    continue;
-                };
-                if backend::validate_config(&content).is_err() {
-                    skipped += 1;
-                    continue;
-                }
-                scripts |= backend::config_runs_scripts(&content);
-                let name = backend::unique_name(&stem);
-                match backend::save_config(&name, &content) {
-                    Ok(()) => {
-                        last = Some(name);
-                        count += 1;
-                    }
-                    Err(_) => skipped += 1,
-                }
-            }
-            if count > 0 {
-                let warn = if scripts {
-                    " — ⚠ some run scripts as root"
-                } else {
-                    ""
-                };
-                let skip = if skipped > 0 {
-                    format!(", {skipped} skipped (invalid)")
-                } else {
-                    String::new()
-                };
-                set_status(&ui, format!("Imported {count} tunnel(s){skip}{warn}"));
-            } else if skipped > 0 {
-                set_status(&ui, format!("Nothing imported — {skipped} file(s) invalid"));
-            }
-            refresh_list(&ui);
-            if let Some(name) = last {
-                select_by_name(&ui, &name);
+            let Some(files) = rfd::FileDialog::new()
+                .add_filter("WireGuard config", &["conf"])
+                .set_title("Import tunnel(s) from file")
+                .pick_files()
+            else {
+                return;
+            };
+            if files.len() == 1 {
+                let path = files[0].clone();
+                run_ui_task(
+                    &ui,
+                    "Reading tunnel config…",
+                    move || {
+                        let content =
+                            std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+                        let stem = path
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "tunnel".into());
+                        backend::unique_name(&stem).map(|name| (name, content))
+                    },
+                    |ui, result| match result {
+                        Ok((name, content)) => open_editor(ui, true, String::new(), name, content),
+                        Err(error) => set_status(ui, format!("Import failed: {error}")),
+                    },
+                );
+            } else {
+                let expected = selected_name(&ui);
+                run_ui_task(
+                    &ui,
+                    "Importing tunnel configs…",
+                    move || {
+                        let (mut imported, mut skipped, mut last) = (0, 0, None);
+                        let mut first_error = None;
+                        for path in files {
+                            let result = (|| {
+                                let content = std::fs::read_to_string(&path)
+                                    .map_err(|error| error.to_string())?;
+                                backend::validate_config(&content)?;
+                                let stem = path
+                                    .file_stem()
+                                    .map(|stem| stem.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "tunnel".into());
+                                let name = backend::unique_name(&stem)?;
+                                backend::save_config(&name, &content)?;
+                                Ok::<_, String>(name)
+                            })();
+                            match result {
+                                Ok(name) => {
+                                    imported += 1;
+                                    last = Some(name);
+                                }
+                                Err(error) => {
+                                    skipped += 1;
+                                    if first_error.is_none() {
+                                        first_error = Some(error);
+                                    }
+                                }
+                            }
+                        }
+                        (imported, skipped, last, first_error)
+                    },
+                    move |ui, (imported, skipped, last, error)| {
+                        let mut message =
+                            format!("Imported {imported} tunnel(s), {skipped} skipped");
+                        if imported == 0
+                            && let Some(error) = error
+                        {
+                            message.push_str(&format!(": {error}"));
+                        }
+                        set_status(ui, message);
+                        refresh_list_after(ui, last.map(|name| (name, expected)));
+                    },
+                );
             }
         });
     }
@@ -1740,31 +1908,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- delete ----
     {
-        let w = ui.as_weak();
+        let weak = ui.as_weak();
         ui.on_delete_tunnel(move |name| {
-            let ui = w.unwrap();
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
             if name.is_empty() {
                 return;
             }
-            match backend::delete(&name) {
-                Ok(()) => set_status(&ui, format!("Removed {name}")),
-                Err(e) => set_status(&ui, format!("Remove failed: {e}")),
-            }
-            ui.set_has_selection(false);
-            ui.set_selected_index(-1);
-            refresh_list(&ui);
+            run_ui_task(
+                &ui,
+                "Removing tunnel…",
+                move || backend::delete(&name).map(|()| format!("Removed {name}")),
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result.unwrap_or_else(|error| format!("Remove failed: {error}")),
+                    );
+                    refresh_list(ui);
+                },
+            );
         });
     }
 
     // ---- begin edit ----
     {
-        let w = ui.as_weak();
+        let weak = ui.as_weak();
         ui.on_begin_edit(move |name| {
-            let ui = w.unwrap();
-            match backend::read_config(&name) {
-                Ok(text) => open_editor(&ui, false, name.to_string(), name.to_string(), text),
-                Err(e) => set_status(&ui, format!("Open failed: {e}")),
-            }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Loading tunnel for editing…",
+                move || backend::read_config(&name).map(|text| (name, text)),
+                |ui, result| match result {
+                    Ok((name, text)) => open_editor(ui, false, name.clone(), name, text),
+                    Err(error) => set_status(ui, format!("Open failed: {error}")),
+                },
+            );
         });
     }
 
@@ -1828,6 +2012,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let w = ui.as_weak();
         ui.on_clear_log(move || {
             let ui = w.unwrap();
+            LOG_REQUEST.fetch_add(1, Ordering::SeqCst);
             RAW_LOG.with(|r| r.borrow_mut().clear());
             ui.set_log_lines(one_line_model(
                 "(cleared — press Refresh to reload from the journal)",
@@ -1843,30 +2028,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_backup_create(move || {
-            let ui = w.unwrap();
-            match backend::create_backup() {
-                Ok(info) => set_status(&ui, format!("Backed up {} tunnel(s)", info.count)),
-                Err(e) => set_status(&ui, format!("Backup failed: {e}")),
-            }
-            populate_backups(&ui);
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            run_ui_task(
+                &ui,
+                "Creating backup…",
+                backend::create_backup,
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result
+                            .map(|info| format!("Backed up {} tunnel(s)", info.count))
+                            .unwrap_or_else(|error| format!("Backup failed: {error}")),
+                    );
+                    populate_backups(ui);
+                },
+            );
         });
     }
     {
         let w = ui.as_weak();
         ui.on_backup_restore(move |name| {
-            let ui = w.unwrap();
-            let path = match backend::backup_dir() {
-                Ok(d) => d.join(name.as_str()),
-                Err(e) => {
-                    set_status(&ui, format!("Restore failed: {e}"));
-                    return;
-                }
+            let Some(ui) = w.upgrade() else {
+                return;
             };
-            match backend::restore_backup(&path) {
-                Ok(n) => set_status(&ui, format!("Restored {n} tunnel(s) from backup")),
-                Err(e) => set_status(&ui, format!("Restore failed: {e}")),
-            }
-            refresh_list(&ui);
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Restoring backup…",
+                move || {
+                    let path = backend::backup_dir()?.join(name);
+                    backend::restore_backup(&path)
+                },
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result
+                            .map(|count| format!("Restored {count} tunnel(s) from backup"))
+                            .unwrap_or_else(|error| format!("Restore failed: {error}")),
+                    );
+                    refresh_list(ui);
+                },
+            );
         });
     }
     {
@@ -1912,7 +2116,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_export_zip(move || {
-            let ui = w.unwrap();
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            if !ui_idle(&ui) {
+                return;
+            }
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Export tunnels to a zip archive")
                 .set_file_name("wireguard-tunnels.zip")
@@ -1921,10 +2130,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 return;
             };
-            match backend::export_zip(&path) {
-                Ok(n) => set_status(&ui, format!("Exported {n} tunnel(s) to {}", path.display())),
-                Err(e) => set_status(&ui, format!("Export failed: {e}")),
-            }
+            run_ui_task(
+                &ui,
+                "Exporting tunnel configs…",
+                move || {
+                    backend::export_zip(&path)
+                        .map(|count| format!("Exported {count} tunnel(s) to {}", path.display()))
+                },
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result.unwrap_or_else(|error| format!("Export failed: {error}")),
+                    )
+                },
+            );
         });
     }
 
@@ -1932,7 +2151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_import_qr(move || {
-            let ui = w.unwrap();
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            if !ui_idle(&ui) {
+                return;
+            }
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Import tunnel from a QR-code image")
                 .add_filter("Image", &["png", "jpg", "jpeg"])
@@ -1940,17 +2164,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 return;
             };
-            match backend::decode_qr(&path) {
-                Ok(text) => {
+            run_ui_task(
+                &ui,
+                "Reading QR image…",
+                move || {
+                    let text = backend::decode_qr(&path)?;
                     let stem = path
                         .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
+                        .map(|stem| stem.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "tunnel".into());
-                    let name = backend::unique_name(&stem);
-                    open_editor(&ui, true, String::new(), name, text);
-                }
-                Err(e) => set_status(&ui, format!("QR import failed: {e}")),
-            }
+                    backend::unique_name(&stem).map(|name| (name, text))
+                },
+                |ui, result| match result {
+                    Ok((name, text)) => open_editor(ui, true, String::new(), name, text),
+                    Err(error) => set_status(ui, format!("QR import failed: {error}")),
+                },
+            );
         });
     }
 
@@ -1958,19 +2187,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_show_qr(move |name| {
-            let ui = w.unwrap();
-            let text = match backend::read_config(&name) {
-                Ok(t) => t,
-                Err(e) => {
-                    set_status(&ui, format!("Couldn't read {name}: {e}"));
-                    return;
-                }
+            let Some(ui) = w.upgrade() else {
+                return;
             };
-            let Ok(win) = QrWindow::new() else { return };
-            win.set_name(name.clone());
-            win.set_qr(qr_image(&text));
-            let _ = win.show();
-            QRWIN.with(|slot| *slot.borrow_mut() = Some(win));
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Reading tunnel QR config…",
+                move || backend::read_config(&name).map(|text| (name, text)),
+                |ui, result| {
+                    let (name, image) = match result
+                        .and_then(|(name, text)| qr_image(&text).map(|image| (name, image)))
+                    {
+                        Ok(value) => value,
+                        Err(error) => {
+                            set_status(ui, format!("QR failed: {error}"));
+                            return;
+                        }
+                    };
+                    let Ok(win) = QrWindow::new() else {
+                        return;
+                    };
+                    win.set_name(name.into());
+                    win.set_qr(image);
+                    let _ = win.show();
+                    QRWIN.with(|slot| *slot.borrow_mut() = Some(win));
+                },
+            );
         });
     }
 
@@ -1978,37 +2221,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_set_autostart(move |name, on| {
-            let ui = w.unwrap();
-            match backend::set_autostart(&name, on) {
-                Ok(()) => set_status(
-                    &ui,
-                    format!(
-                        "{} autostart for {name}",
-                        if on { "Enabled" } else { "Disabled" }
-                    ),
-                ),
-                Err(e) => set_status(&ui, format!("Autostart change failed: {e}")),
-            }
-            load_detail(&ui, &name);
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Updating start-on-boot…",
+                move || {
+                    backend::set_autostart(&name, on).map(|()| {
+                        format!(
+                            "{} autostart for {name}",
+                            if on { "Enabled" } else { "Disabled" }
+                        )
+                    })
+                },
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result.unwrap_or_else(|error| format!("Autostart change failed: {error}")),
+                    );
+                    refresh_list(ui);
+                },
+            );
         });
     }
-
-    // ---- toggle helper-managed firewall kill switch ----
     {
         let w = ui.as_weak();
         ui.on_set_killswitch(move |name, on| {
-            let ui = w.unwrap();
-            match backend::set_killswitch(&name, on) {
-                Ok(()) => set_status(
-                    &ui,
-                    format!(
-                        "{} kill switch for {name}",
-                        if on { "Enabled" } else { "Disabled" }
-                    ),
-                ),
-                Err(e) => set_status(&ui, format!("Kill switch change failed: {e}")),
-            }
-            load_detail(&ui, &name);
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Updating kill switch…",
+                move || {
+                    backend::set_killswitch(&name, on).map(|()| {
+                        format!(
+                            "Kill switch {} for {name}",
+                            if on { "enabled" } else { "disabled" }
+                        )
+                    })
+                },
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result
+                            .unwrap_or_else(|error| format!("Kill switch change failed: {error}")),
+                    );
+                    refresh_list(ui);
+                },
+            );
         });
     }
 
@@ -2077,28 +2341,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_show_running(move |name| {
-            let ui = w.unwrap();
-            match backend::running_config(&name) {
-                Ok(cfg) if !cfg.trim().is_empty() => {
-                    copy_to_clipboard(&cfg);
-                    set_status(&ui, format!("Copied {name}'s running config"));
-                }
-                Ok(_) => set_status(&ui, "No running config (is the tunnel up?)"),
-                Err(e) => set_status(&ui, format!("showconf failed: {e}")),
-            }
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Reading running config…",
+                move || backend::running_config(&name),
+                |ui, result| match result {
+                    Ok(text) => {
+                        set_status(
+                            ui,
+                            if copy_to_clipboard(&text) {
+                                "Copied running config"
+                            } else {
+                                "Couldn't access the clipboard"
+                            },
+                        );
+                    }
+                    Err(error) => set_status(ui, format!("Couldn't read running config: {error}")),
+                },
+            );
         });
     }
-
-    // ---- save the live running state to disk (wg-quick save) ----
     {
         let w = ui.as_weak();
         ui.on_persist_live(move |name| {
-            let ui = w.unwrap();
-            match backend::persist_live(&name) {
-                Ok(()) => set_status(&ui, format!("Saved {name}'s live state to disk")),
-                Err(e) => set_status(&ui, format!("Save live failed: {e}")),
-            }
-            load_detail(&ui, &name);
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let name = name.to_string();
+            run_ui_task(
+                &ui,
+                "Saving live state…",
+                move || {
+                    backend::persist_live(&name).map(|()| format!("Saved live state of {name}"))
+                },
+                |ui, result| {
+                    set_status(
+                        ui,
+                        result.unwrap_or_else(|error| format!("Save live failed: {error}")),
+                    );
+                    refresh_list(ui);
+                },
+            );
         });
     }
 
@@ -2114,7 +2401,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let name = SELECTED.lock().unwrap().clone();
-            let tunnels = backend::list_tunnels();
+            let tunnels = match backend::try_list_tunnels() {
+                Ok(tunnels) => tunnels,
+                Err(error) => {
+                    *TRAY_INFO.lock().unwrap() = format!("Tunnel status unavailable: {error}");
+                    prev = None;
+                    continue;
+                }
+            };
+            *TRAY_TUNNELS.lock().unwrap() =
+                tunnels.iter().map(|t| (t.name.clone(), t.active)).collect();
             let actives: Vec<String> = tunnels
                 .iter()
                 .filter(|t| t.active)
@@ -2253,10 +2549,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // First-run check: if something critical is missing, greet new users with a
     // friendly Setup wizard instead of an empty technical window. Otherwise go
     // straight to the (Easy-mode) main window.
-    if doctor::system_check().critical_ok() {
-        ui.show()?;
-    } else {
-        show_setup_wizard(&ui);
+    ui.show()?;
+    {
+        let weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let report = doctor::system_check();
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                if !report.critical_ok() {
+                    show_setup_wizard(&ui, report);
+                }
+            });
+        });
     }
     slint::run_event_loop_until_quit()?;
     Ok(())
@@ -2296,15 +2599,24 @@ fn commands_text(report: &doctor::Report) -> String {
 
 /// Show the first-run Setup wizard. The main window is shown when the user skips
 /// or once the checks pass. Never auto-installs or connects without confirmation.
-fn show_setup_wizard(main: &MainWindow) {
+fn show_setup_wizard(main: &MainWindow, report: doctor::Report) {
     let Ok(win) = SetupWindow::new() else {
         let _ = main.show();
         return;
     };
-    let report = doctor::system_check();
+    let _ = main.hide();
     win.set_checks(build_checks(&report));
     win.set_commands(commands_text(&report).into());
 
+    {
+        let weak = main.as_weak();
+        win.window().on_close_requested(move || {
+            if let Some(main) = weak.upgrade() {
+                let _ = main.show();
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
     {
         let mw = main.as_weak();
         let sw = win.as_weak();
@@ -2329,24 +2641,37 @@ fn show_setup_wizard(main: &MainWindow) {
         let mw = main.as_weak();
         let sw = win.as_weak();
         win.on_re_check(move || {
-            let Some(s) = sw.upgrade() else { return };
-            let report = doctor::system_check();
-            s.set_checks(build_checks(&report));
-            s.set_commands(commands_text(&report).into());
-            if report.critical_ok() {
-                let _ = s.hide();
-                if let Some(m) = mw.upgrade() {
-                    let _ = m.show();
-                }
-            } else {
-                s.set_busy("Still missing something - see the list above.".into());
-            }
+            let Some(window) = sw.upgrade() else {
+                return;
+            };
+            window.set_busy("Checking prerequisites…".into());
+            let sw = window.as_weak();
+            let mw = mw.clone();
+            std::thread::spawn(move || {
+                let report = doctor::system_check();
+                let _ = sw.upgrade_in_event_loop(move |window| {
+                    window.set_checks(build_checks(&report));
+                    window.set_commands(commands_text(&report).into());
+                    if report.critical_ok() {
+                        let _ = window.hide();
+                        if let Some(main) = mw.upgrade() {
+                            let _ = main.show();
+                        }
+                    } else {
+                        window.set_busy("Still missing something — see the list above.".into());
+                    }
+                });
+            });
         });
     }
     {
         let sw = win.as_weak();
         win.on_fix_automatically(move || {
             let Some(s) = sw.upgrade() else { return };
+            let Some(guard) = UiOperation::acquire() else {
+                s.set_busy("Another operation is still running.".into());
+                return;
+            };
             // Only the safely-automatable steps: install wireguard-tools (+ a
             // resolvconf provider for DNS) and create /etc/wireguard. Never
             // installs the helper or touches configs.
@@ -2393,8 +2718,9 @@ fn show_setup_wizard(main: &MainWindow) {
                     .status()
                     .map(|st| st.success())
                     .unwrap_or(false);
+                let report = doctor::system_check();
+                drop(guard);
                 let _ = sw2.upgrade_in_event_loop(move |s| {
-                    let report = doctor::system_check();
                     s.set_checks(build_checks(&report));
                     s.set_commands(commands_text(&report).into());
                     s.set_busy(if ok {
@@ -2410,19 +2736,6 @@ fn show_setup_wizard(main: &MainWindow) {
 
     let _ = win.show();
     SETUPWIN.with(|slot| *slot.borrow_mut() = Some(win));
-}
-
-fn select_by_name(ui: &MainWindow, name: &str) {
-    let model = ui.get_tunnels();
-    for i in 0..model.row_count() {
-        if let Some(row) = model.row_data(i)
-            && row.name == name
-        {
-            ui.set_selected_index(i as i32);
-            load_detail(ui, name);
-            return;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2509,5 +2822,76 @@ mod md_tests {
                 .iter()
                 .any(|i| i.kind != "code" && i.text.contains("**"))
         );
+    }
+}
+
+#[cfg(test)]
+mod editor_key_tests {
+    use super::*;
+    #[test]
+    fn oversized_config_qr_is_an_error_instead_of_blank_image() {
+        assert!(qr_image(&"x".repeat(5000)).is_err());
+    }
+
+    #[test]
+    fn mutation_guard_excludes_overlapping_workers_and_releases_on_drop() {
+        let guard = UiOperation::acquire().unwrap();
+        assert!(
+            std::thread::spawn(|| UiOperation::acquire().is_none())
+                .join()
+                .unwrap()
+        );
+        drop(guard);
+        assert!(UiOperation::acquire().is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn second_instance_notifies_the_bound_listener() {
+        use std::io::Read as _;
+        use std::os::linux::net::SocketAddrExt as _;
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(format!(
+            "wg-gui-test-{}",
+            std::process::id()
+        ))
+        .unwrap();
+        let listener = bind_instance_listener(&addr).unwrap().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut message = [0; 4];
+            stream.read_exact(&mut message).unwrap();
+            message
+        });
+        assert!(bind_instance_listener(&addr).unwrap().is_none());
+        assert_eq!(receiver.join().unwrap(), *b"show");
+    }
+
+    #[test]
+    fn generated_private_key_preserves_prefix_directives_and_peer_fields() {
+        let config = "[Interface] # client\nPrivateKeyFile = keep\nPrivateKey = old\n[Peer]\nPrivateKey = peer-value\n";
+        let updated = set_private_key(config, "new");
+        assert!(updated.contains("PrivateKeyFile = keep\nPrivateKey = new"));
+        assert!(updated.contains("[Peer]\nPrivateKey = peer-value"));
+    }
+    #[test]
+    fn generated_private_key_replaces_all_interface_sections_including_after_peers() {
+        let config = "[Interface]\nPrivateKey = first # keep this comment\nPrivateKeyFile = keep\n[Peer]\nPrivateKey = peer-field\n[Interface] # repeated\nPrivateKey = last\nAddress = 10.0.0.1/32\n";
+        let updated = set_private_key(config, "new");
+        assert_eq!(updated.matches("PrivateKey = new").count(), 2);
+        assert!(!updated.contains("PrivateKey = first"));
+        assert!(!updated.contains("PrivateKey = last"));
+        assert!(updated.contains("PrivateKey = new # keep this comment"));
+        assert!(updated.contains("PrivateKeyFile = keep"));
+        assert!(updated.contains("[Peer]\nPrivateKey = peer-field"));
+        assert!(updated.contains("Address = 10.0.0.1/32"));
+    }
+
+    #[test]
+    fn raw_psk_generation_targets_selected_peer() {
+        let config = "[Interface]\nPrivateKey = keep\n[Peer]\nPresharedKey = first\n[Peer] # second\nPresharedKeyFile = keep-too\nPresharedKey = second\n";
+        let updated = set_psk(config, "new", 1).unwrap();
+        assert!(updated.contains("PresharedKey = first"));
+        assert!(updated.contains("PresharedKeyFile = keep-too\nPresharedKey = new"));
+        assert!(set_psk("# [Peer]\n[Interface]\n", "new", 0).is_none());
     }
 }
