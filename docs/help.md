@@ -27,7 +27,8 @@ Use **Add Tunnel**:
 
 - **Import tunnel(s) from file…** accepts `.conf` files. One file opens for
   review; several files are imported with unique names and invalid ones skipped.
-- **Import from QR code…** reads a PNG or JPEG image, not a live camera.
+- **Import from QR code…** reads a bounded PNG or JPEG image, not a live camera. All grids are checked;
+  one valid distinct tunnel is required, and ambiguous images are refused.
 - **Create tunnel…** opens a preset with a generated key. Choose Interface only,
   Full tunnel or Split tunnel, then fill in real addresses and peer details.
 
@@ -54,7 +55,8 @@ old interface; the renamed tunnel is not activated automatically.
 
 Select a tunnel on the left. **Activate / Deactivate** brings its interface
 up/down. Interface-up status is not proof of a handshake or working routes.
-The app displays recent handshake health, transfer totals and throughput;
+The app includes runtime-only peers and actual runtime settings, plus
+recent handshake health, transfer totals and throughput;
 an idle peer can have an old handshake without being broken.
 
 Click a copyable value or its trailing **⧉** icon to copy it. **Show QR** exposes
@@ -66,17 +68,17 @@ It needs systemd; OpenRC/runit require their own service setup.
 
 **Advanced ▾** on the tunnel card reveals:
 
-- **Kill switch:** host output firewall rules for an active tunnel. Loopback,
-  tunnel output and its fwmark are allowed; other output can be blocked,
-  including LAN traffic outside a split tunnel. SSH handling is conditional,
-  not a guarantee against locking yourself out. Rules are not persistent and
-  external service changes can leave them behind.
+- **Kill switch:** only one managed tunnel switch at a time. It requires an
+  active interface and complete firewall tools, prefers atomic nft batches,
+  and otherwise preflights IPv4/IPv6 restore transactions (atomic per family).
+  Loopback/tunnel/marked-transport exceptions precede rejection. It affects host
+  output, not server NAT; remote access can be disrupted.
 - **Running cfg:** copy live WireGuard configuration, including private keys.
 - **Save live:** back up and write runtime state to disk with wg-quick save;
   this can replace hand-written file content.
 
 There is no global Easy/Advanced mode. The expansion choice is remembered.
-After upgrading to 1.9.1, reapply an enabled kill switch once (off, then on) so
+After upgrading to 1.9.2, reapply an enabled kill switch once (off, then on) so
 existing rules use the corrected ordering. Plan for the brief interval without
 those rules. Restarting the app or activating alone does not reapply them.
 
@@ -86,18 +88,16 @@ those rules. Restarting the app or activating alone does not reapply them.
 Filter, This tunnel, Copy or Save. Click a row to copy one line. Clear only
 clears the displayed buffer; it does not erase the system journal.
 
-**Backup → New backup** archives readable saved configs. ZIPs are unencrypted,
-mode 0600, under `$XDG_DATA_HOME/wireguard/backups` or
-`~/.local/share/wireguard/backups`, shared with the terminal sibling. Select one
-to Restore, Export or Delete. The bottom export icon separately exports all
-readable saved tunnel configs to a ZIP destination.
+**Backup → New backup** archives all saved configs or reports a read error;
+exports no longer silently omit unreadable tunnels. Archives are unencrypted,
+0600, in the private shared wireguard/backups data directory. Completed exports
+replace destinations atomically; failed writes keep previous data.
 
-Restore accepts only valid, unique, flat `.conf` entries and preflights them all
-before saving: no script hooks, at most 1 MiB per config, 16 MiB total config
-text and 1,024 configs. It skips unrelated files. Matching saved tunnels are
-overwritten, extra saved tunnels remain, and running interfaces are not synced.
-A later save failure can leave earlier files restored; there is no rollback.
-Protect all archives and clipboard copies as carefully as the private keys.
+Restore preflights one owned single-link regular ZIP: at most 64 MiB compressed,
+4096 entries, 1024 configs, 1 MiB per config and 16 MiB total config text. It
+rejects duplicate names, unsafe paths, invalid content and root hooks, skipping
+unrelated files. Saves then occur sequentially; later failures can still leave
+a partial restore. Existing extra tunnels remain and running state is not synced.
 
 ## 5. When something is wrong
 
@@ -123,3 +123,32 @@ through their package manager.
 Close hides the window only when a tray host is available; use tray Quit to exit.
 Without a tray host, closing quits. Do not manage the same interface from both
 this application and NetworkManager or another service.
+
+## Audited input and operation limits
+
+Imported config files must be regular files at most 1 MiB. Named pipes and
+other special files are rejected without waiting for a writer.
+
+Config fields are validated on every occurrence, including canonical key pad
+bits, CIDR/keepalive bounds and exact section/field placement. Valid comments,
+repeated fields, scoped IPv6 and supported Table/FwMark/SaveConfig options remain
+available; unknown fields cannot be saved just because they remain in raw text.
+QR import uses at most 32 MiB source files and 4096 × 4096 dimensions with a
+configured 128 MiB decoder budget, and requires one distinct valid tunnel.
+
+Release helpers must be trusted installed/adjacent executables with protected
+ancestry; install a verified user-owned bundle before using its helper. Debug
+helper overrides do not grant authorization. Background reads check polkit
+without password dialogs; explicit mutations can use a desktop agent. A failed
+status refresh preserves prior data rather than inventing an inactive state.
+
+Mutations are serialized by a bounded helper lock. Failed/unknown stops retain
+kill-switch protection and report errors; inspect state before retrying. A
+90-second UI helper deadline bounds waiting, not rollback of already completed
+network changes. Local key generation is bounded separately.
+
+Verified update bundles own their private staging directory, check all required
+assets before privilege escalation, reject a non-newer version at download time,
+and clean staging after completion/failure. Success reports the actual verified
+version. Restart after installing, and prefer the package manager for a packaged
+installation.
