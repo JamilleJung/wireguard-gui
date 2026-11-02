@@ -463,7 +463,7 @@ pub fn apply(update: &VerifiedUpdate) -> Result<(), String> {
 
 /// The login name of the user who invoked us, for `WG_REAL_USER` so the
 /// installer's per-user helper grant targets the human. Resolves via
-/// `getpwuid(getuid())`, falling back to `$USER`.
+/// `getpwuid_r(getuid())`; fail if the account cannot be resolved.
 fn invoking_user() -> Result<String, String> {
     // getpwuid returns a shared static buffer and can race other GUI threads.
     // Resolve the real invoking uid into caller-owned storage instead.
