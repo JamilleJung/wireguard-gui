@@ -6,7 +6,7 @@ Report exploitable issues privately through
 [GitHub private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new)
 or **izeystudio@gmail.com**. Include the version/commit, distro, reproduction
 steps and impact; omit real private keys and production configs. Only the
-latest release (**1.9.2**) and `main` receive fixes.
+latest release (**1.9.3**) and `main` receive fixes.
 
 ## Trust and scope
 
@@ -84,6 +84,12 @@ validates the selected grant before removing the previous grant. Failed sudoers
 validation or group enrollment reports failure and keeps prior authorization.
 `--polkit` requires pkexec up front; it does not install a rule and then claim
 success without the escalation tool. Packages still do not enroll users.
+
+Repeating `--polkit` checks the existing `wireguard` group and account
+membership before invoking group-management tools. An already configured
+Alpine/BusyBox system can reinstall without optional Shadow `groupadd`/`usermod`.
+Missing groups or membership must still be created and verified before the
+previous authorization is removed.
 
 A direct root install without an invoking normal user requires `--allow-root`
 (or `WG_ALLOW_ROOT=1`). That override can permit source build scripts as root;

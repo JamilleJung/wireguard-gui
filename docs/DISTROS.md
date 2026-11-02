@@ -151,8 +151,8 @@ A helper deactivation/delete/rename retains protection when stop fails or state
 is unknown, and reports errors rather than claiming cleanup succeeded. External
 service actions may leave rules blocking traffic. Restarting the app or merely
 activating does not rebuild them. Disable the kill switch through the helper/UI
-when recovering; after upgrading to 1.9.2 reapply enabled rules once (off/on),
-with a planned brief interval without those rules. An external firewall service
+when recovering. When upgrading from before 1.9.2, reapply enabled rules once
+(off/on), with a planned brief interval without those rules. An external firewall service
 may restore its own saved rules after reboot; the GUI does not control that.
 
 ## 7. Client versus server policy
@@ -174,7 +174,7 @@ Avoid configuring the same interface through NetworkManager and this app at the
 same time. Keep declarative distro/service management and direct file edits
 consistent rather than assuming the GUI overrides other system policy.
 
-## 1.9.2 integration requirements
+## 1.9.3 integration requirements
 
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
 path containing only letters, digits, `/`, `_`, `.` and `-`, with no empty,
@@ -192,6 +192,12 @@ validates the selected grant before removing the previous grant. Failed sudoers
 validation or group enrollment reports failure and keeps prior authorization.
 `--polkit` requires pkexec up front; it does not install a rule and then claim
 success without the escalation tool. Packages still do not enroll users.
+
+Repeating `--polkit` checks the existing `wireguard` group and account
+membership before invoking group-management tools. An already configured
+Alpine/BusyBox system can reinstall without optional Shadow `groupadd`/`usermod`.
+Missing groups or membership must still be created and verified before the
+previous authorization is removed.
 
 Release helper discovery uses this project's own standard `/usr/local/lib/`
 and `/usr/lib/` paths, or an adjacent **trusted** executable. The executable must
