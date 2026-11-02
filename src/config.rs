@@ -30,7 +30,10 @@ pub fn parse_config(text: &str) -> ParsedConfig {
     let mut cfg = ParsedConfig::default();
     let mut section = "";
     for raw in text.lines() {
-        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
+        let line = raw
+            .split_once('#')
+            .map_or(raw, |(line, _)| line)
+            .trim_ascii();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -52,8 +55,8 @@ pub fn parse_config(text: &str) -> ParsedConfig {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
-        let value = value.trim().to_string();
+        let key = key.trim_ascii();
+        let value = value.trim_ascii().to_string();
         match section {
             "interface" => match key.to_ascii_lowercase().as_str() {
                 "privatekey" => cfg.private_key = Some(value),
@@ -89,7 +92,7 @@ pub fn private_key(text: &str) -> Option<String> {
 
 /// A WireGuard key is base64 of 32 bytes: 43 chars + one '=' padding.
 pub fn is_wg_key(s: &str) -> bool {
-    let s = s.trim();
+    let s = s.trim_ascii();
     let bytes = s.as_bytes();
     bytes.len() == 44
         && bytes[43] == b'='
@@ -123,7 +126,7 @@ fn is_hostname(host: &str) -> bool {
 
 /// host:port, including bracketed IPv6 `[::1]:51820`.
 pub fn is_endpoint(s: &str) -> bool {
-    let s = s.trim();
+    let s = s.trim_ascii();
     // Reject a leading '+'/'-'/whitespace that `str::parse` would otherwise
     // accept; a port must be plain ASCII digits in 1..=65535.
     let port_ok = |port: &str| {
@@ -164,7 +167,7 @@ pub fn is_endpoint(s: &str) -> bool {
 
 /// A CIDR / address check via real parsing.
 pub fn looks_like_inet(s: &str) -> bool {
-    let s = s.trim();
+    let s = s.trim_ascii();
     let (addr, prefix) = match s.split_once('/') {
         Some((a, p)) => (a, Some(p)),
         None => (s, None),
@@ -211,7 +214,10 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
     let mut section = "";
     let mut have_interface = false;
     for (index, raw) in text.lines().enumerate() {
-        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
+        let line = raw
+            .split_once('#')
+            .map_or(raw, |(line, _)| line)
+            .trim_ascii();
         if line.is_empty() {
             continue;
         }
@@ -233,8 +239,8 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
         let (key, value) = line
             .split_once('=')
             .ok_or_else(|| format!("Expected a config directive on line {}.", index + 1))?;
-        let key = key.trim().to_ascii_lowercase();
-        let value = value.trim();
+        let key = key.trim_ascii().to_ascii_lowercase();
+        let value = value.trim_ascii();
         let valid = match (section, key.as_str()) {
             ("interface", "privatekey") | ("peer", "publickey") => is_wg_key(value),
             ("peer", "presharedkey") => is_wg_key(value),
@@ -315,6 +321,21 @@ mod tests {
     use super::*;
 
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
+
+    #[test]
+    fn unicode_whitespace_cannot_be_validated_then_passed_to_ascii_tools() {
+        for line in [
+            format!("\u{2003}PrivateKey = {KEY}"),
+            format!("PrivateKey = {KEY}\u{a0}"),
+            format!("PrivateKey\u{a0} = {KEY}"),
+        ] {
+            assert!(validate_basic_wireguard_config(&format!("[Interface]\n{line}\n")).is_err());
+        }
+        let commented =
+            format!("[Interface] # บ้าน\nPrivateKey = {KEY} # comment\nAddress = 10.0.0.1/24\n");
+        assert!(validate_basic_wireguard_config(&commented).is_ok());
+        assert!(!looks_like_inet("10.0.0.1/24\u{a0}"));
+    }
 
     #[test]
     fn quick_interface_headers_must_not_hide_metadata_scope() {
