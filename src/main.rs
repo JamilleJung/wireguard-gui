@@ -856,6 +856,32 @@ fn qr_image(text: &str) -> Result<slint::Image, String> {
     Ok(slint::Image::from_rgba8(buf))
 }
 
+fn run_editor_task<T: Send + 'static>(
+    main: &MainWindow,
+    editor: &EditWindow,
+    message: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+    done: impl FnOnce(&EditWindow, T) + Send + 'static,
+) {
+    let before = editor.get_config_text().to_string();
+    let peer = editor.get_peer_index();
+    let weak = editor.as_weak();
+    let message_owned = message.to_string();
+    if !run_ui_task(main, message, work, move |main, result| {
+        if main.get_status() == message_owned {
+            main.set_status("".into());
+        }
+        let Some(editor) = weak.upgrade() else { return };
+        if editor.get_config_text() != before || editor.get_peer_index() != peer {
+            editor.set_error("Generation finished; your newer draft was preserved. Try again to apply a new key.".into());
+            return;
+        }
+        done(&editor, result);
+    }) {
+        editor.set_error("Another operation is still running.".into());
+    }
+}
+
 /// Open the tunnel editor in its own top-level window. A fresh window paints
 /// cleanly on this Wayland setup, so its text fields show up immediately.
 fn open_editor(
@@ -1028,32 +1054,39 @@ fn open_editor(
         });
     }
 
-    // Create presets for Easy Mode. Each preset regenerates a keypair, then keeps
-    // the explicit review/save step in the editor.
+    // Presets generate keys off-thread, then retain explicit review/save.
     {
         let edw = ed.as_weak();
+        let mainw = main.as_weak();
         ed.on_create_preset(move |preset| {
-            let Some(ed) = edw.upgrade() else { return };
+            let (Some(ed), Some(main)) = (edw.upgrade(), mainw.upgrade()) else {
+                return;
+            };
             let kind = match preset.as_str() {
                 "interface" => create::TunnelTemplateKind::InterfaceOnly,
                 "split" => create::TunnelTemplateKind::ClientSplitTunnel,
                 _ => create::TunnelTemplateKind::ClientFullTunnel,
             };
-            let (private_key, public_key) = match backend::generate_keypair() {
-                Ok(keys) => keys,
-                Err(e) => {
-                    ed.set_error(format!("Key generation failed: {e}").into());
-                    return;
-                }
-            };
-            let cfg = create::generate_template(kind, &private_key);
-            ed.set_config_text(cfg.clone().into());
-            ed.set_public_key(public_key.into());
-            apply_fields(&ed, &config_to_fields(&cfg), 0);
-            ed.set_form_mode(form_representable(&cfg));
-            ed.set_error("".into());
-            ed.set_warning(
-                format!("{} preset loaded. Review before creating.", kind.label()).into(),
+            run_editor_task(
+                &main,
+                &ed,
+                "Generating preset keys…",
+                backend::generate_keypair,
+                move |ed, result| match result {
+                    Ok((private_key, public_key)) => {
+                        let cfg = create::generate_template(kind, &private_key);
+                        ed.set_config_text(cfg.clone().into());
+                        ed.set_public_key(public_key.into());
+                        apply_fields(ed, &config_to_fields(&cfg), 0);
+                        ed.set_form_mode(form_representable(&cfg));
+                        ed.set_error("".into());
+                        ed.set_warning(
+                            format!("{} preset loaded. Review before creating.", kind.label())
+                                .into(),
+                        );
+                    }
+                    Err(error) => ed.set_error(format!("Key generation failed: {error}").into()),
+                },
             );
         });
     }
@@ -1178,66 +1211,82 @@ fn open_editor(
         ed.on_save_and_activate(move |name, text| handler(name, text, true));
     }
 
-    // Generate keypair: insert a fresh PrivateKey, show the public key.
+    // Key generation may invoke wg; never wait for it on the event loop.
     {
         let edw = ed.as_weak();
+        let mainw = main.as_weak();
         ed.on_generate_key(move || {
-            let Some(ed) = edw.upgrade() else { return };
-            match backend::generate_keypair() {
-                Ok((priv_k, pub_k)) => {
-                    let updated = set_private_key(&ed.get_config_text(), &priv_k);
-                    let idx = ed.get_peer_index().max(0) as usize;
-                    apply_fields(&ed, &config_to_fields(&updated), idx);
-                    ed.set_config_text(updated.into());
-                    ed.set_public_key(pub_k.clone().into());
-                    ed.set_error("".into());
-                    ed.set_warning("New keypair generated.".into());
-                }
-                Err(e) => ed.set_error(format!("Key generation failed: {e}").into()),
-            }
+            let (Some(ed), Some(main)) = (edw.upgrade(), mainw.upgrade()) else {
+                return;
+            };
+            run_editor_task(
+                &main,
+                &ed,
+                "Generating keys…",
+                backend::generate_keypair,
+                |ed, result| match result {
+                    Ok((private_key, public_key)) => {
+                        let updated = set_private_key(&ed.get_config_text(), &private_key);
+                        let peer = ed.get_peer_index().max(0) as usize;
+                        apply_fields(ed, &config_to_fields(&updated), peer);
+                        ed.set_config_text(updated.into());
+                        ed.set_public_key(public_key.into());
+                        ed.set_error("".into());
+                        ed.set_warning("New keypair generated.".into());
+                    }
+                    Err(error) => ed.set_error(format!("Key generation failed: {error}").into()),
+                },
+            );
         });
     }
-
-    // Generate a preshared key for the peer.
     {
         let edw = ed.as_weak();
+        let mainw = main.as_weak();
         ed.on_generate_psk(move || {
-            let Some(ed) = edw.upgrade() else { return };
-            // A preshared key belongs to a [Peer]; without one it would dangle.
+            let (Some(ed), Some(main)) = (edw.upgrade(), mainw.upgrade()) else {
+                return;
+            };
             if !ed.get_config_text().lines().any(|line| {
                 section_header(line).is_some_and(|header| header.eq_ignore_ascii_case("Peer"))
             }) {
                 ed.set_error("Add a [Peer] before generating a preshared key.".into());
                 return;
             }
-            match backend::generate_psk() {
-                Ok(psk) => {
-                    let idx = ed.get_peer_index().max(0) as usize;
-                    let updated = if ed.get_form_mode() && form_representable(&ed.get_config_text())
-                    {
-                        let mut fields = read_fields(&ed);
-                        fields.ensure_peer();
-                        let peer_idx = idx.min(fields.peers.len() - 1);
-                        fields.peers[peer_idx].preshared_key = psk;
-                        let cfg = fields_to_config(&fields);
-                        apply_fields(&ed, &fields, peer_idx);
-                        cfg
-                    } else {
-                        let Some(updated) = set_psk(&ed.get_config_text(), &psk, idx) else {
-                            ed.set_error(
-                                "Select an existing [Peer] before generating a preshared key."
-                                    .into(),
-                            );
-                            return;
+            run_editor_task(
+                &main,
+                &ed,
+                "Generating preshared key…",
+                backend::generate_psk,
+                |ed, result| match result {
+                    Ok(psk) => {
+                        let index = ed.get_peer_index().max(0) as usize;
+                        let updated = if ed.get_form_mode()
+                            && form_representable(&ed.get_config_text())
+                        {
+                            let mut fields = read_fields(ed);
+                            fields.ensure_peer();
+                            let index = index.min(fields.peers.len() - 1);
+                            fields.peers[index].preshared_key = psk;
+                            let cfg = fields_to_config(&fields);
+                            apply_fields(ed, &fields, index);
+                            cfg
+                        } else {
+                            let Some(updated) = set_psk(&ed.get_config_text(), &psk, index) else {
+                                ed.set_error(
+                                    "Select an existing [Peer] before generating a preshared key."
+                                        .into(),
+                                );
+                                return;
+                            };
+                            updated
                         };
-                        updated
-                    };
-                    ed.set_config_text(updated.into());
-                    ed.set_error("".into());
-                    ed.set_warning("New preshared key generated.".into());
-                }
-                Err(e) => ed.set_error(format!("PSK generation failed: {e}").into()),
-            }
+                        ed.set_config_text(updated.into());
+                        ed.set_error("".into());
+                        ed.set_warning("New preshared key generated.".into());
+                    }
+                    Err(error) => ed.set_error(format!("PSK generation failed: {error}").into()),
+                },
+            );
         });
     }
 
@@ -1342,8 +1391,12 @@ fn run_ui_task<T: Send + 'static>(
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         let result = work();
-        drop(guard);
-        let _ = weak.upgrade_in_event_loop(move |ui| done(&ui, result));
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            // Retain exclusion until the completion is applied, so an editor
+            // open cannot overtake a ready-but-undelivered earlier result.
+            drop(guard);
+            done(&ui, result);
+        });
     });
     true
 }
@@ -1584,6 +1637,34 @@ fn prefer_xwayland_on_nvidia() {
     }
 }
 
+/// User-selected configs follow the helper's 1 MiB limit. Open nonblocking
+/// before checking the file type so a named pipe cannot hold an operation open.
+fn read_config_file(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    const LIMIT: u64 = 1024 * 1024;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Config must be a regular file".into());
+    }
+    if metadata.len() > LIMIT {
+        return Err("Config exceeds the 1 MiB limit".into());
+    }
+    let mut config = String::new();
+    file.take(LIMIT + 1)
+        .read_to_string(&mut config)
+        .map_err(|error| error.to_string())?;
+    if config.len() as u64 > LIMIT {
+        return Err("Config exceeds the 1 MiB limit".into());
+    }
+    Ok(config)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // NVIDIA + native Wayland stutters; fall back to XWayland before any
     // windowing/Slint init (and before any threads spawn).
@@ -1821,8 +1902,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &ui,
                     "Reading tunnel config…",
                     move || {
-                        let content =
-                            std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+                        let content = read_config_file(&path)?;
                         let stem = path
                             .file_stem()
                             .map(|stem| stem.to_string_lossy().into_owned())
@@ -1844,8 +1924,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut first_error = None;
                         for path in files {
                             let result = (|| {
-                                let content = std::fs::read_to_string(&path)
-                                    .map_err(|error| error.to_string())?;
+                                let content = read_config_file(&path)?;
                                 backend::validate_config(&content)?;
                                 let stem = path
                                     .file_stem()
@@ -1890,19 +1969,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let w = ui.as_weak();
         ui.on_add_empty(move || {
-            let ui = w.unwrap();
-            // Pre-generate a keypair so a new tunnel opens ready, like the
-            // WireGuard for Windows "Create new tunnel" dialog.
-            let text = match backend::generate_keypair() {
-                Ok((priv_k, _)) => {
-                    create::generate_template(create::TunnelTemplateKind::ClientFullTunnel, &priv_k)
-                }
-                Err(_) => create::generate_template(
-                    create::TunnelTemplateKind::ClientFullTunnel,
-                    create::FALLBACK_PRIVATE_KEY,
-                ),
-            };
-            open_editor(&ui, true, String::new(), String::new(), text);
+            let Some(ui) = w.upgrade() else { return };
+            run_ui_task(
+                &ui,
+                "Generating tunnel keys…",
+                || {
+                    backend::generate_keypair().map(|(private, _)| {
+                        create::generate_template(
+                            create::TunnelTemplateKind::ClientFullTunnel,
+                            &private,
+                        )
+                    })
+                },
+                |ui, result| match result {
+                    Ok(text) => open_editor(ui, true, String::new(), String::new(), text),
+                    Err(error) => set_status(ui, format!("Key generation failed: {error}")),
+                },
+            );
         });
     }
 
@@ -2828,13 +2911,66 @@ mod md_tests {
 #[cfg(test)]
 mod editor_key_tests {
     use super::*;
+    static GUARD_TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[test]
+    fn config_file_reads_are_bounded_and_never_wait_for_named_pipes() {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::fs::DirBuilderExt as _;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("wg-ui-config-{}-{stamp}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let path = directory.join("example.conf");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::fs::write(&path, "example config").unwrap();
+        assert_eq!(read_config_file(&path).unwrap(), "example config");
+        file.set_len(1024 * 1024 + 1).unwrap();
+        assert!(read_config_file(&path).unwrap_err().contains("1 MiB"));
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let start = std::time::Instant::now();
+        assert!(
+            read_config_file(&path)
+                .unwrap_err()
+                .contains("regular file")
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn oversized_config_qr_is_an_error_instead_of_blank_image() {
         assert!(qr_image(&"x".repeat(5000)).is_err());
     }
 
     #[test]
+    fn mutation_guard_remains_busy_while_completion_is_queued() {
+        let _lock = GUARD_TEST_LOCK.lock().unwrap();
+        let guard = UiOperation::acquire().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(guard).unwrap())
+            .join()
+            .unwrap();
+        assert!(UiOperation::acquire().is_none());
+        drop(rx.recv().unwrap());
+        assert!(UiOperation::acquire().is_some());
+    }
+
+    #[test]
     fn mutation_guard_excludes_overlapping_workers_and_releases_on_drop() {
+        let _lock = GUARD_TEST_LOCK.lock().unwrap();
         let guard = UiOperation::acquire().unwrap();
         assert!(
             std::thread::spawn(|| UiOperation::acquire().is_none())
