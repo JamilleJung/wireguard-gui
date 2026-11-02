@@ -38,8 +38,7 @@ pub fn parse_config(text: &str) -> ParsedConfig {
             let s = line
                 .strip_prefix('[')
                 .and_then(|s| s.strip_suffix(']'))
-                .unwrap_or("")
-                .trim();
+                .unwrap_or("");
             if s.eq_ignore_ascii_case("Peer") {
                 cfg.peers.push(ParsedPeer::default());
                 section = "peer";
@@ -220,8 +219,7 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
             let header = line
                 .strip_prefix('[')
                 .and_then(|s| s.strip_suffix(']'))
-                .unwrap_or("")
-                .trim();
+                .unwrap_or("");
             if header.eq_ignore_ascii_case("Interface") {
                 have_interface = true;
                 section = "interface";
@@ -317,6 +315,21 @@ mod tests {
     use super::*;
 
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
+
+    #[test]
+    fn quick_interface_headers_must_not_hide_metadata_scope() {
+        for header in ["[ Interface ]", "[Interface ]", "[ Interface]", "[ Peer ]"] {
+            let text =
+                format!("[Interface]\nPrivateKey = {KEY}\n{header}\nAddress = 10.0.0.1/24\n");
+            assert!(validate_basic_wireguard_config(&text).is_err(), "{header}");
+        }
+        assert!(
+            validate_basic_wireguard_config(&format!(
+                "[interface]\nprivatekey = {KEY}\naddress = 10.0.0.1/24\n"
+            ))
+            .is_ok()
+        );
+    }
 
     #[test]
     fn supported_wg_quick_options_and_scoped_ipv6_remain_valid() {
