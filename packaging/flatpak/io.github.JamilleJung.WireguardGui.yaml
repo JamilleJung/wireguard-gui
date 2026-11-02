@@ -4,8 +4,10 @@
 # to /etc/wireguard, and to run `wg-quick`/systemd via sudoers or polkit. The
 # Flatpak sandbox deliberately makes all of that hard, so this manifest is NOT a
 # turnkey, fully-working package — it is a starting point only.
+# Its SDK/runtime and source pins are historical examples, not current release
+# support. This manifest is not built or tested by the release workflow.
 #
-# For a working install on any distro, prefer:
+# For the maintained installation paths, see ../PACKAGING.md and prefer:
 #   * native:  ./install.sh   (or the .deb / AppImage from Releases)
 #   * Arch:    the AUR PKGBUILD in ../aur
 #   * Fedora:  the RPM spec in ../rpm (build on COPR)

@@ -9,7 +9,7 @@ license=('MIT')
 depends=('wireguard-tools' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'wayland' 'dbus' 'polkit')
 makedepends=('cargo' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'wayland' 'dbus')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # `updpkg --sums` (or `makepkg -g`) before publishing to the AUR
+sha256sums=('SKIP')  # Fill in `makepkg -g` output before publishing to the AUR.
 
 prepare() {
     cd "$pkgname-$pkgver"
@@ -34,6 +34,6 @@ package() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
-# Privilege: this package installs the polkit rule, so an active local session
-# can run the helper without a password. (The polkit rule already allows both
-# the /usr/lib and /usr/local/lib helper paths.)
+# Privilege: the rule requires an active local session AND membership in the
+# administrator-managed wireguard group. This recipe does not create that group
+# or enroll users. The rule allows the /usr/lib and /usr/local/lib helper paths.

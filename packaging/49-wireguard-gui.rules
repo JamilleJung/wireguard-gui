@@ -4,10 +4,11 @@
  * "wireguard" group run the wg-helper through pkexec without a password. The
  * group requirement is essential: the helper can read /etc/wireguard configs
  * (which contain private keys), so it must NOT be exposed to every active-local
- * user. install.sh (--polkit) and the .deb create the group and add the
- * intended user; until then this rule denies (pkexec falls back to asking for
- * the admin password — fail closed). The sudoers drop-in is the source-install
- * default. Requires polkit with JS rules (>= 0.106).
+ * user. install.sh --polkit creates the group and adds the intended user;
+ * distro packages only install this rule and need administrator-managed group
+ * membership. A new login is needed after changing membership. Outside these
+ * checks this rule grants nothing; pkexec may request administrator credentials.
+ * The sudoers drop-in is the installer default. Requires polkit JS rules.
  */
 polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.policykit.exec" &&

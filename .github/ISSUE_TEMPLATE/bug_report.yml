@@ -17,15 +17,15 @@ body:
     id: version
     attributes:
       label: Version
-      description: Release tag, or `git rev-parse --short HEAD` if built from source.
-      placeholder: "v0.1.0"
+      description: Output of `wireguard-gui --version`, plus `git rev-parse --short HEAD` if built from source.
+      placeholder: "wireguard-gui 1.9.1"
     validations:
       required: true
   - type: input
     id: distro
     attributes:
       label: Distro & package manager
-      placeholder: "Ubuntu 24.04 (apt) / Arch (pacman) / Fedora 41 (dnf) …"
+      placeholder: "Distribution and version, package manager, and CPU architecture (uname -m)"
     validations:
       required: true
   - type: dropdown
@@ -37,6 +37,8 @@ body:
         - install.sh --polkit
         - .deb
         - AppImage
+        - prebuilt release tarball
+        - native distro recipe (AUR/RPM/Alpine/Void)
         - built from source
     validations:
       required: true
@@ -53,4 +55,6 @@ body:
         Relevant output. Helpful commands:
         `journalctl -t wireguard-gui --no-pager | tail -n 50`
         and run the app from a terminal to capture its stderr.
+        Remove PrivateKey/PresharedKey values and sensitive addresses before posting.
+        Do not attach a full tunnel config, QR code, or backup archive.
       render: shell
