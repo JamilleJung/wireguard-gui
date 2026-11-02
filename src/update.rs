@@ -206,6 +206,23 @@ fn architecture_token(arch: &str) -> Result<&'static str, String> {
 pub struct VerifiedUpdate {
     workdir: PathBuf,
     directory: PathBuf,
+    version: String,
+}
+
+impl VerifiedUpdate {
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+fn validate_update_version(version: &str) -> Result<(), String> {
+    match is_newer(version) {
+        Some(true) => Ok(()),
+        Some(false) => Err(format!(
+            "release {version} is not newer than installed {CURRENT}; update refused"
+        )),
+        None => Err("invalid update version".into()),
+    }
 }
 
 impl Drop for VerifiedUpdate {
@@ -270,6 +287,7 @@ pub fn download_and_verify() -> Result<VerifiedUpdate, String> {
         return Err("automatic release updates are supported on Linux only".into());
     }
     let latest = latest_tag()?;
+    validate_update_version(&latest)?;
     let arch = arch_token()?;
     let tarname = format!("{REPO}-{latest}-{arch}-linux.tar.gz");
     let base = format!("https://github.com/{OWNER}/{REPO}/releases/download/v{latest}");
@@ -278,6 +296,7 @@ pub fn download_and_verify() -> Result<VerifiedUpdate, String> {
     let mut update = VerifiedUpdate {
         workdir: private_workdir()?,
         directory: PathBuf::new(),
+        version: latest.clone(),
     };
     let workdir = &update.workdir;
 
@@ -561,6 +580,17 @@ pub fn disabled() -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn downloaded_release_cannot_silently_downgrade() {
+        let current = super::parse(super::CURRENT).unwrap();
+        assert!(super::validate_update_version(super::CURRENT).is_err());
+        assert!(super::validate_update_version("0.0.0").is_err());
+        assert!(super::validate_update_version("bad").is_err());
+        assert!(super::validate_update_version(&format!("{}.0.0", current.0 + 1)).is_ok());
+        let update = bundle_fixture();
+        assert_eq!(update.version(), "1.9.2");
+    }
+
+    #[test]
     fn unsupported_gui_cpu_has_no_mismatched_update() {
         assert_eq!(super::architecture_token("x86_64").unwrap(), "x86_64");
         assert_eq!(super::architecture_token("aarch64").unwrap(), "aarch64");
@@ -589,7 +619,11 @@ mod tests {
         ] {
             std::fs::write(directory.join(file), b"fixture").unwrap();
         }
-        VerifiedUpdate { workdir, directory }
+        VerifiedUpdate {
+            workdir,
+            directory,
+            version: "1.9.2".into(),
+        }
     }
 
     #[test]

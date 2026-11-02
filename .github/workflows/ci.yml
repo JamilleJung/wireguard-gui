@@ -45,6 +45,12 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
+      - name: Firewall integration in isolated network namespace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables iptables
+          bash tests/firewall-namespace.sh
+
       - name: Build (release)
         run: cargo build --release --locked
 
@@ -88,7 +94,8 @@ jobs:
           bash -n install.sh
           bash -n tests/helper-validation.sh
           bash -n tests/installer-sanity.sh
-          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+          bash -n tests/firewall-namespace.sh
+          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh tests/firewall-namespace.sh
           bash tests/helper-validation.sh target/release/wg-helper
           bash tests/installer-sanity.sh
 
