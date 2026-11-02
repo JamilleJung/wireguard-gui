@@ -59,7 +59,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-auditable
-        run: cargo install cargo-auditable --version =0.7.4 --locked
+        run: cargo install cargo-auditable --version =0.7.7 --locked
 
       - name: Build release binary (with embedded SBOM)
         run: cargo auditable build --release --locked
@@ -140,7 +140,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-auditable
-        run: cargo install cargo-auditable --version =0.7.4 --locked
+        run: cargo install cargo-auditable --version =0.7.7 --locked
 
       - name: Build release binary (with embedded SBOM)
         run: cargo auditable build --release --locked
@@ -228,7 +228,7 @@ jobs:
       # ---------------- .deb ----------------
       - name: Build .deb
         run: |
-          cargo install cargo-deb --version =2.12.1 --locked
+          cargo install cargo-deb --version =3.8.0 --locked
           cargo deb --no-build --no-strip || cargo deb
           cp target/debian/*.deb .   # mandatory: fail the release if none exists
 
