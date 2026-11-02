@@ -183,7 +183,7 @@ fn helper(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
         }
         Escalation::Pkexec => {
             let mut c = Command::new("pkexec");
-            c.arg(helper).args(args);
+            c.arg("--disable-internal-agent").arg(helper).args(args);
             c
         }
     };
@@ -451,19 +451,29 @@ pub struct Detail {
 // Public API
 // ---------------------------------------------------------------------------
 
+fn saved_tunnel_names() -> Result<Vec<String>, String> {
+    let output = helper(&["list"], None)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for name in output.lines().filter(|name| !name.is_empty()) {
+        validate_tunnel_name(name)?;
+        if !seen.insert(name) {
+            return Err("wg-helper returned duplicate tunnel names.".into());
+        }
+        names.push(name.to_string());
+    }
+    Ok(names)
+}
+
 pub fn try_list_tunnels() -> Result<Vec<Tunnel>, String> {
-    let names = helper(&["list"], None)?;
-    let active: Vec<String> = helper(&["active"], None)?
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
+    let names = saved_tunnel_names()?;
+    let active = helper(&["active"], None)?;
+    let active: std::collections::HashSet<_> = active.split_whitespace().collect();
     Ok(names
-        .lines()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(|n| Tunnel {
-            name: n.to_string(),
-            active: active.iter().any(|a| a == n),
+        .into_iter()
+        .map(|name| Tunnel {
+            active: active.contains(name.as_str()),
+            name,
         })
         .collect())
 }
@@ -471,8 +481,7 @@ pub fn try_list_tunnels() -> Result<Vec<Tunnel>, String> {
 /// A collision-free tunnel name based on `base`: returns `base`, else
 /// `base-2`, `base-3`, … (kept within the 15-char interface-name limit).
 pub fn unique_name(base: &str) -> Result<String, String> {
-    let existing: std::collections::HashSet<_> =
-        try_list_tunnels()?.into_iter().map(|t| t.name).collect();
+    let existing: std::collections::HashSet<_> = saved_tunnel_names()?.into_iter().collect();
     unique_name_with(base, |name| existing.contains(name))
 }
 
@@ -984,9 +993,7 @@ pub fn persist_live(name: &str) -> Result<(), String> {
 
 /// All tunnel configs as (filename, contents), for export.
 pub fn read_all_configs() -> Result<Vec<(String, String)>, String> {
-    collect_configs(try_list_tunnels()?.into_iter().map(|t| t.name), |name| {
-        read_config(name)
-    })
+    collect_configs(saved_tunnel_names()?, read_config)
 }
 
 fn collect_configs(
@@ -1549,6 +1556,60 @@ mod tests {
 
     // A syntactically valid 44-char base64 WireGuard key (43 chars + '=').
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
+
+    #[test]
+    fn offline_saved_configs_do_not_depend_on_live_status_fixture() {
+        let Some(path) = std::env::var_os("WG_TEST_SAVED_CONFIG_HELPER") else {
+            return;
+        };
+        HELPER
+            .set(Some(PathBuf::from(&path).to_string_lossy().into_owned()))
+            .unwrap();
+        assert!(ESC.set(Escalation::Direct).is_ok());
+        assert!(try_list_tunnels().is_err());
+        assert_eq!(unique_name("wg0").unwrap(), "wg0-2");
+        assert_eq!(read_all_configs().unwrap().len(), 1);
+        let dest = PathBuf::from(path)
+            .parent()
+            .unwrap()
+            .join("offline-backup.zip");
+        assert_eq!(export_zip(&dest).unwrap(), 1);
+        assert!(dest.is_file());
+    }
+
+    #[test]
+    fn offline_backup_and_name_checks_survive_a_failed_active_query() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        let dir = scratch_dir();
+        let helper = dir.join("wg-helper");
+        std::fs::write(&helper, format!("#!/bin/sh\ncase \"$1\" in\nlist) printf 'wg0\\n';;\nactive) echo 'active query failed' >&2; exit 2;;\nread) printf '[Interface]\\nPrivateKey = {KEY}\\n';;\n*) exit 2;;\nesac\n")).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "backend::tests::offline_saved_configs_do_not_depend_on_live_status_fixture",
+                "--nocapture",
+            ])
+            .env("WG_TEST_SAVED_CONFIG_HELPER", &helper)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = helper_output_timeout(
+            command.spawn().unwrap(),
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(dir.join("offline-backup.zip").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn generated_keys_must_be_valid_utf8_and_canonical_wireguard_keys() {
