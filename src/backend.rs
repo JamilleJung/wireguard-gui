@@ -71,8 +71,8 @@ fn wg_helper_override_allowed(p: &str) -> bool {
     trusted_helper(std::path::Path::new(p))
 }
 
-/// Resolve the helper path: `$WG_HELPER` (when allowed), an installed location,
-/// or the in-tree copy used during `cargo run`.
+/// Resolve an allowed `$WG_HELPER` override, this application's trusted
+/// installed or adjacent helper, or a development helper in debug builds.
 pub fn helper_path() -> Option<&'static str> {
     HELPER
         .get_or_init(|| {
@@ -1348,57 +1348,83 @@ fn preflight_zip_directory(
     length: u64,
 ) -> Result<(), String> {
     use std::io::SeekFrom;
-    if length < 22 {
-        return Err("Truncated ZIP end record.".into());
+    if !(22..=MAX_BACKUP_BYTES).contains(&length) {
+        return Err("Invalid or oversized ZIP file.".into());
     }
-    let tail_len = length.min(22 + 65535) as usize;
+    // zip may fall back among EOCD64 records anywhere before a locator. Scan
+    // every structurally possible record with a bounded overlapping buffer,
+    // rather than trusting just the locator's optimistic offset.
+    reader.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut consumed = 0u64;
+    let mut carry = Vec::new();
+    while consumed < length {
+        let count = (length - consumed).min(64 * 1024) as usize;
+        let base = consumed.saturating_sub(carry.len() as u64);
+        let mut bytes = carry;
+        let old_len = bytes.len();
+        bytes.resize(old_len + count, 0);
+        reader
+            .read_exact(&mut bytes[old_len..])
+            .map_err(|e| e.to_string())?;
+        consumed += count as u64;
+        for index in 0..bytes.len().saturating_sub(55) {
+            if !bytes[index..].starts_with(b"PK\x06\x06") {
+                continue;
+            }
+            let size = u64::from_le_bytes(bytes[index + 4..index + 12].try_into().unwrap());
+            if size < 40
+                || base
+                    .checked_add(index as u64)
+                    .and_then(|offset| offset.checked_add(12))
+                    .and_then(|offset| offset.checked_add(size))
+                    .is_none_or(|end| end > length)
+            {
+                continue;
+            }
+            for offset in [24, 32] {
+                if u64::from_le_bytes(
+                    bytes[index + offset..index + offset + 8]
+                        .try_into()
+                        .unwrap(),
+                ) > 4096
+                {
+                    return Err("Backup contains too many archive entries.".into());
+                }
+            }
+        }
+        carry = bytes[bytes.len().saturating_sub(55)..].to_vec();
+    }
+    // zip9 searches a bounded tail for *all* EOCD candidates and accepts
+    // trailing garbage (comment end <= EOF). Use a wider bound and inspect
+    // every candidate: a small fake footer must not mask a huge earlier one.
+    let tail_len = length.min(128 * 1024) as usize;
     reader
         .seek(SeekFrom::Start(length - tail_len as u64))
         .map_err(|e| e.to_string())?;
     let mut tail = vec![0; tail_len];
     reader.read_exact(&mut tail).map_err(|e| e.to_string())?;
-    let end = (0..=tail.len() - 22)
-        .rev()
-        .find(|&index| {
-            tail[index..].starts_with(b"PK\x05\x06")
-                && index + 22 + u16::from_le_bytes([tail[index + 20], tail[index + 21]]) as usize
-                    == tail.len()
-        })
-        .ok_or("ZIP end record is missing or inconsistent.")?;
-    let disk_entries = u16::from_le_bytes([tail[end + 8], tail[end + 9]]);
-    let entries = u16::from_le_bytes([tail[end + 10], tail[end + 11]]);
-    let end_offset = length - tail_len as u64 + end as u64;
-    let mut locator = [0; 20];
-    if end_offset >= 20 {
-        reader
-            .seek(SeekFrom::Start(end_offset - 20))
-            .map_err(|e| e.to_string())?;
-        reader.read_exact(&mut locator).map_err(|e| e.to_string())?;
-    }
-    if locator.starts_with(b"PK\x06\x07") {
-        let offset = u64::from_le_bytes(locator[8..16].try_into().unwrap());
-        if offset > length.saturating_sub(56) {
-            return Err("Invalid ZIP64 end offset.".into());
-        }
-        reader
-            .seek(SeekFrom::Start(offset))
-            .map_err(|e| e.to_string())?;
-        let mut record = [0; 56];
-        reader.read_exact(&mut record).map_err(|e| e.to_string())?;
-        if !record.starts_with(b"PK\x06\x06")
-            || u64::from_le_bytes(record[4..12].try_into().unwrap()) < 44
+    let mut found = false;
+    for index in 0..=tail.len() - 22 {
+        if !tail[index..].starts_with(b"PK\x05\x06")
+            || index + 22 + u16::from_le_bytes([tail[index + 20], tail[index + 21]]) as usize
+                > tail.len()
         {
-            return Err("Invalid ZIP64 end record.".into());
+            continue;
         }
-        for offset in [24, 32] {
-            if u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap()) > 4096 {
-                return Err("Backup contains too many archive entries.".into());
+        found = true;
+        let disk_entries = u16::from_le_bytes([tail[index + 8], tail[index + 9]]);
+        let entries = u16::from_le_bytes([tail[index + 10], tail[index + 11]]);
+        let zip64_locator = index >= 20 && tail[index - 20..].starts_with(b"PK\x06\x07");
+        if entries == u16::MAX || disk_entries == u16::MAX {
+            if !zip64_locator {
+                return Err("ZIP64 end locator is missing.".into());
             }
+        } else if entries > 4096 || disk_entries > 4096 {
+            return Err("Backup contains too many archive entries.".into());
         }
-    } else if entries == u16::MAX || disk_entries == u16::MAX {
-        return Err("ZIP64 end locator is missing.".into());
-    } else if entries > 4096 || disk_entries > 4096 {
-        return Err("Backup contains too many archive entries.".into());
+    }
+    if !found {
+        return Err("ZIP end record is missing or inconsistent.".into());
     }
     Ok(())
 }
@@ -1941,6 +1967,42 @@ mod tests {
             backup_configs(std::io::Cursor::new(zip64))
                 .unwrap_err()
                 .contains("too many")
+        );
+    }
+
+    #[test]
+    fn small_fake_zip_footer_cannot_mask_an_oversized_fallback_directory() {
+        let mut entries = vec![0; 44];
+        entries[..4].copy_from_slice(b"PK\x05\x06");
+        entries[8..10].copy_from_slice(&4097u16.to_le_bytes());
+        entries[10..12].copy_from_slice(&4097u16.to_le_bytes());
+        entries[20..22].copy_from_slice(&22u16.to_le_bytes());
+        entries[22..26].copy_from_slice(b"PK\x05\x06");
+        assert!(
+            backup_configs(std::io::Cursor::new(entries))
+                .unwrap_err()
+                .contains("too many")
+        );
+        // A ZIP64 candidate can cross the scanner's chunk boundary and the
+        // parser also accepts a 40-byte declared body before its later checks.
+        let mut zip64 = vec![0; 64 * 1024 + 80];
+        let index = 64 * 1024 - 20;
+        zip64[index..index + 4].copy_from_slice(b"PK\x06\x06");
+        zip64[index + 4..index + 12].copy_from_slice(&40u64.to_le_bytes());
+        zip64[index + 24..index + 32].copy_from_slice(&4097u64.to_le_bytes());
+        assert!(
+            preflight_zip_directory(&mut std::io::Cursor::new(&zip64), zip64.len() as u64)
+                .unwrap_err()
+                .contains("too many")
+        );
+        let valid = format!("[Interface]\nPrivateKey = {KEY}\n");
+        let mut trailing = backup_archive(&[("wg0.conf", &valid)]).into_inner();
+        trailing.extend_from_slice(b"harmless trailing data");
+        assert_eq!(
+            backup_configs(std::io::Cursor::new(trailing))
+                .unwrap()
+                .len(),
+            1
         );
     }
 
