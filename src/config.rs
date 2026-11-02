@@ -186,6 +186,31 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
         return Err("Missing an [Interface] section.".into());
     }
 
+    // The helper checks every key occurrence, whereas parse_config keeps the
+    // final scalar value. Check earlier key lines too before backup restore
+    // starts writing any tunnel from an archive.
+    let mut section = String::new();
+    for raw in text.lines() {
+        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
+        if line.starts_with('[') {
+            section = line.trim_matches(['[', ']']).trim().to_ascii_lowercase();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let required_key = matches!(
+            (section.as_str(), key.as_str()),
+            ("interface", "privatekey") | ("peer", "publickey")
+        );
+        let optional_key = section == "peer" && key == "presharedkey" && !value.is_empty();
+        if (required_key || optional_key) && !is_wg_key(value) {
+            return Err(format!("Invalid {key} in [{section}]."));
+        }
+    }
+
     let cfg = parse_config(text);
 
     match cfg.private_key.as_deref() {
@@ -311,6 +336,20 @@ mod tests {
         assert_eq!(p.address.as_deref(), Some("10.0.0.2/24, fd00::2/64"));
         assert_eq!(p.peers[0].allowed_ips, "0.0.0.0/0, ::/0");
         assert!(validate_basic_wireguard_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn earlier_invalid_keys_cannot_be_hidden_by_repeated_values() {
+        let valid = format!(
+            "[Interface]\nPrivateKey = {KEY}\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        for key in ["PrivateKey", "PublicKey"] {
+            let line = format!("{key} = {KEY}");
+            let bad = valid.replace(&line, &format!("{key} = bad\n{line}"));
+            assert!(validate_basic_wireguard_config(&bad).is_err(), "{key}");
+        }
+        let bad = format!("{valid}PresharedKey = bad\nPresharedKey = {KEY}\n");
+        assert!(validate_basic_wireguard_config(&bad).is_err());
     }
 
     #[test]
