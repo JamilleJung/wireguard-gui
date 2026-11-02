@@ -15,8 +15,6 @@ impl TunnelTemplateKind {
     }
 }
 
-pub const FALLBACK_PRIVATE_KEY: &str = "<run: wg genkey>";
-
 pub fn generate_interface_only_config(private_key: &str) -> String {
     format!("[Interface]\nPrivateKey = {private_key}\nAddress = 10.0.0.2/32\n")
 }
