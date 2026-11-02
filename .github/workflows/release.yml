@@ -180,9 +180,6 @@ jobs:
           fi
           if [ "$rc" -eq 124 ]; then
             echo "GUI launched and stayed alive 8s under Xvfb — OK"
-          elif grep -qiE "GLX|EGL|libGL|GL context|glutin|NotSupported|xkbcommon|could not" /tmp/gui-launch.log; then
-            echo "::warning::GUI exited early on a headless GL/X11 limitation (rc=$rc); zbus path clean"
-            cat /tmp/gui-launch.log
           else
             echo "::error::wireguard-gui crashed on launch (rc=$rc)"
             cat /tmp/gui-launch.log; exit 1
@@ -287,6 +284,8 @@ jobs:
             exit 1
           fi
           sudo apt-get install -y --no-install-recommends minisign
+          umask 077
+          trap 'rm -f minisign.key' EXIT
           printf '%s\n' "$MINISIGN_KEY" > minisign.key
           minisign -S -s minisign.key -m SHA256SUMS -t "wireguard-gui ${REF#v}"
           rm -f minisign.key
