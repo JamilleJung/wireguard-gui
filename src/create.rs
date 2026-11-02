@@ -50,7 +50,7 @@ mod tests {
         generate_client_split_tunnel_config, generate_interface_only_config, generate_template,
     };
 
-    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
 
     #[test]
     fn generates_interface_only_config() {

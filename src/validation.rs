@@ -6,7 +6,9 @@ const MAX_TUNNEL_NAME_LEN: usize = 15;
 /// keeps names simple so every privileged path resolves to
 /// `/etc/wireguard/<name>.conf` without ambiguity.
 pub fn validate_tunnel_name(name: &str) -> Result<(), String> {
-    let name = name.trim();
+    if name.trim() != name {
+        return Err("Tunnel name must not contain surrounding whitespace.".into());
+    }
     if name.is_empty() {
         return Err("Tunnel name is required.".into());
     }
@@ -63,14 +65,14 @@ pub fn sanitize_import_name(file_stem: &str) -> String {
     let trimmed = truncated
         .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
         .trim_end_matches('.');
-    if trimmed.is_empty() {
+    let mut name = trimmed;
+    while name.to_ascii_lowercase().ends_with(".conf") {
+        name = name[..name.len() - 5].trim_end_matches('.');
+    }
+    if name.is_empty() {
         "tunnel".to_string()
-    } else if trimmed.to_ascii_lowercase().ends_with(".conf") {
-        trimmed[..trimmed.len() - 5]
-            .trim_end_matches('.')
-            .to_string()
     } else {
-        trimmed.to_string()
+        name.to_string()
     }
 }
 
@@ -99,6 +101,9 @@ mod tests {
             "-bad",
             "name.conf",
             "abcdefghijklmnop",
+            " wg0",
+            "wg0 ",
+            "wg0\t",
         ] {
             assert!(validate_tunnel_name(name).is_err(), "{name}");
         }
@@ -130,6 +135,8 @@ mod tests {
             "@@@9abc",
             "home server",
             "x..conf",
+            "____a.conf.confZZ",
+            "_____.confZZZZZZ",
         ] {
             let out = sanitize_import_name(input);
             assert!(
