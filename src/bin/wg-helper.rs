@@ -935,12 +935,13 @@ fn kill_comment(name: &str) -> String {
 
 /// Parse the quoting emitted by nft/iptables listing commands; never interpret
 /// quoted comment contents as more rule syntax.
-fn rule_words(line: &str) -> Result<Vec<String>, String> {
+fn rule_tokens(line: &str) -> Result<Vec<(String, bool)>, String> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut quote = None;
     let mut escaped = false;
     let mut started = false;
+    let mut quoted = false;
     for c in line.chars() {
         if escaped {
             word.push(c);
@@ -950,6 +951,7 @@ fn rule_words(line: &str) -> Result<Vec<String>, String> {
         }
         if c == '\\' && quote != Some('\'') {
             escaped = true;
+            quoted = true;
             continue;
         }
         if let Some(q) = quote {
@@ -963,10 +965,12 @@ fn rule_words(line: &str) -> Result<Vec<String>, String> {
         if matches!(c, '\'' | '"') {
             quote = Some(c);
             started = true;
+            quoted = true;
         } else if c.is_whitespace() {
             if started {
-                words.push(std::mem::take(&mut word));
+                words.push((std::mem::take(&mut word), quoted));
                 started = false;
+                quoted = false;
             }
         } else {
             word.push(c);
@@ -977,20 +981,40 @@ fn rule_words(line: &str) -> Result<Vec<String>, String> {
         return Err("malformed firewall rule listing".into());
     }
     if started {
-        words.push(word);
+        words.push((word, quoted));
     }
     Ok(words)
 }
 
+fn rule_words(line: &str) -> Result<Vec<String>, String> {
+    Ok(rule_tokens(line)?
+        .into_iter()
+        .map(|(word, _)| word)
+        .collect())
+}
+
 fn rule_comment(line: &str) -> Option<String> {
-    let words = rule_words(line).ok()?;
-    for (i, word) in words.iter().enumerate() {
-        if word == "--comment"
-            || (word == "comment"
-                && i.checked_sub(1)
-                    .is_none_or(|p| !matches!(words[p].as_str(), "-m" | "--match")))
+    let words = rule_tokens(line).ok()?;
+    for (i, (word, quoted)) in words.iter().enumerate() {
+        if !quoted
+            && (word == "--comment"
+                || (word == "comment"
+                    && i.checked_sub(1).is_none_or(|p| {
+                        !matches!(
+                            words[p].0.as_str(),
+                            "-m" | "--match"
+                                | "-o"
+                                | "--out-interface"
+                                | "-i"
+                                | "--in-interface"
+                                | "oif"
+                                | "oifname"
+                                | "iif"
+                                | "iifname"
+                        )
+                    })))
         {
-            return words.get(i + 1).cloned();
+            return words.get(i + 1).map(|(value, _)| value.clone());
         }
     }
     None
@@ -1003,11 +1027,15 @@ fn rule_has_comment(line: &str, expected: &str) -> bool {
 fn has_reject(text: &str, comment: &str, nft: bool) -> bool {
     text.lines().any(|line| {
         rule_has_comment(line, comment)
-            && rule_words(line).is_ok_and(|words| {
+            && rule_tokens(line).is_ok_and(|tokens| {
                 if nft {
-                    words.iter().any(|w| w == "reject")
+                    tokens
+                        .iter()
+                        .any(|(word, quoted)| !quoted && word == "reject")
                 } else {
-                    words.windows(2).any(|w| w == ["-j", "REJECT"])
+                    tokens
+                        .windows(2)
+                        .any(|w| w[0].0 == "-j" && w[1].0 == "REJECT")
                 }
             })
     })
@@ -1017,12 +1045,15 @@ fn complete_switch_rules(text: &str, name: &str, nft: bool) -> bool {
     let comment = kill_comment(name);
     let (mut loopback, mut tunnel, mut mark) = (false, false, false);
     for line in text.lines().filter(|line| rule_has_comment(line, &comment)) {
-        let Ok(words) = rule_words(line) else {
+        let Ok(tokens) = rule_tokens(line) else {
             return false;
         };
+        let words: Vec<_> = tokens.iter().map(|(word, _)| word.as_str()).collect();
         let pairs = |a: &str, b: &str| words.windows(2).any(|w| w[0] == a && w[1] == b);
         let accept = if nft {
-            words.iter().any(|w| w == "accept")
+            tokens
+                .iter()
+                .any(|(word, quoted)| !quoted && word == "accept")
         } else {
             pairs("-j", "ACCEPT")
         };
@@ -1034,7 +1065,7 @@ fn complete_switch_rules(text: &str, name: &str, nft: bool) -> bool {
             tunnel |= pairs("oifname", name);
             mark |= words
                 .windows(3)
-                .any(|w| w[0] == "meta" && w[1] == "mark" && parse_fwmark(&w[2]).is_ok());
+                .any(|w| w[0] == "meta" && w[1] == "mark" && parse_fwmark(w[2]).is_ok());
         } else {
             loopback |= pairs("-o", "lo");
             tunnel |= pairs("-o", name);
@@ -2227,6 +2258,37 @@ mod tests {
         assert!(c.contains("wg-helper-killswitch"), "{c}");
         // Comment must be unique enough to avoid collisions.
         assert!(!kill_comment("wg0").eq(&kill_comment("wg1")));
+    }
+
+    #[test]
+    fn firewall_keyword_interface_names_are_values_not_rule_syntax() {
+        for name in ["comment", "reject", "accept"] {
+            let nft_rules = nft_killswitch_rules(name, "51820", None);
+            let nft = nft_rules
+                .iter()
+                .enumerate()
+                .map(|(i, rule)| format!("{} # handle {}", rule.join(" "), i + 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(complete_switch_rules(&nft, name, true), "{name}");
+            assert_eq!(
+                nft_delete_script(&nft, name).unwrap().lines().count(),
+                4,
+                "{name}"
+            );
+            let no_reject = nft.lines().skip(1).collect::<Vec<_>>().join("\n");
+            assert!(
+                !complete_switch_rules(&no_reject, name, true),
+                "a quoted interface named {name} is not a verdict"
+            );
+            let ipt = iptables_killswitch_rules(name, "51820", None)
+                .iter()
+                .map(|rule| rule.join(" ").replacen("-I OUTPUT", "-A OUTPUT", 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(complete_switch_rules(&ipt, name, false), "{name}");
+            assert_eq!(iptables_delete_lines(&ipt, name).len(), 4, "{name}");
+        }
     }
 
     #[test]
