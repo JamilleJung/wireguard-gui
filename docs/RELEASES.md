@@ -1,6 +1,6 @@
 # 📦 Releases
 
-Current published release: **[1.9.2 — 2026-11-02](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.2)**.
+Current published release: **[1.9.3 — 2026-11-02](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.3)**.
 This page describes current release packaging and selected historical changes.
 [CHANGELOG.md](../CHANGELOG.md) is the detailed version record. Documentation
 changes on `main` do not rebuild or replace an already published release.
@@ -9,14 +9,14 @@ changes on `main` do not rebuild or replace an already published release.
 
 Use the project's [release list](https://github.com/JamilleJung/wireguard-gui/releases)
 or [latest release](https://github.com/JamilleJung/wireguard-gui/releases/latest).
-Release 1.9.2 uses the following artifact names; AppImage is optional:
+Release 1.9.3 uses the following artifact names; AppImage is optional:
 
 | Artifact | Purpose |
 |---|---|
-| `wireguard-gui_1.9.2-1_amd64.deb` | Debian-family x86_64 application/helper, desktop assets and polkit rule |
-| `wireguard-gui-1.9.2-x86_64-linux.tar.gz` | Native Linux x86_64 application/helper and installer assets |
-| `wireguard-gui-1.9.2-aarch64-linux.tar.gz` | Native Linux ARM64 application/helper and installer assets |
-| `wireguard-gui-1.9.2-x86_64.AppImage` | x86_64 AppImage; optional in the workflow, attached only when its optional build succeeds |
+| `wireguard-gui_1.9.3-1_amd64.deb` | Debian-family x86_64 application/helper, desktop assets and polkit rule |
+| `wireguard-gui-1.9.3-x86_64-linux.tar.gz` | Native Linux x86_64 application/helper and installer assets |
+| `wireguard-gui-1.9.3-aarch64-linux.tar.gz` | Native Linux ARM64 application/helper and installer assets |
+| `wireguard-gui-1.9.3-x86_64.AppImage` | x86_64 AppImage; optional in the workflow, attached only when its optional build succeeds |
 | `SHA256SUMS` | SHA-256 digests of binary/package artifacts |
 | `SHA256SUMS.minisig` | minisign signature of the digest manifest |
 | `minisign.pub` | Public signing key, also committed in the repository |
@@ -54,8 +54,8 @@ create a `/usr/local` installation alongside a `/usr` package. It needs external
 verification/escalation tools and a restart. See the [update tutorial](TUTORIAL.md#updates).
 
 **Kill-switch upgrade step:** replacing binaries does not rewrite firewall rules
-already loaded in the kernel. After upgrading to 1.9.2, reapply an active kill
-switch once (off, then on) to use exact comment matching and corrected ordering.
+already loaded in the kernel. When upgrading from before 1.9.2, reapply an active
+kill switch once (off, then on) to use exact comment matching and corrected ordering.
 Plan for the brief interval without those rules. Restarting the app or merely
 activating an interface does not reapply them.
 
@@ -63,7 +63,7 @@ activating an interface does not reapply them.
 
 [wireguard-tui](https://github.com/JamilleJung/wireguard-tui) is a separate
 terminal application with a related file/helper model. Both currently publish
-1.9.2, but their controls, CLI, supported artifacts and features differ. Read
+1.9.3, but their controls, CLI, supported artifacts and features differ. Read
 each project's own changelog and instructions; a matching number is not a
 promise of feature-identical behavior.
 
@@ -109,7 +109,7 @@ The AppImage uses uncompressed copies internally; extract it before inspecting
 its application/helper. Locked sources help repeat builds, but this is not a
 promise of identical binary bytes across every toolchain or distribution.
 
-## 1.9.2 behavior and upgrade checks
+## 1.9.3 behavior and upgrade checks
 
 Release helper discovery uses this project's own standard `/usr/local/lib/`
 and `/usr/lib/` paths, or an adjacent **trusted** executable. The executable must
@@ -145,6 +145,12 @@ validation or group enrollment reports failure and keeps prior authorization.
 `--polkit` requires pkexec up front; it does not install a rule and then claim
 success without the escalation tool. Packages still do not enroll users.
 
+Repeating `--polkit` checks the existing `wireguard` group and account
+membership before invoking group-management tools. An already configured
+Alpine/BusyBox system can reinstall without optional Shadow `groupadd`/`usermod`.
+Missing groups or membership must still be created and verified before the
+previous authorization is removed.
+
 Verified updates retain ownership of their private download directory through
 installation and clean it up on download, staging or installation failure and
 normal completion. Before privilege escalation, the whole required bundle is
@@ -160,6 +166,12 @@ using an archive created by another tool. Tests cover concrete failure paths;
 passing them does not prove compatibility with every host firewall or distro.
 
 ## Version history
+
+### 1.9.3 (2026-11-02)
+
+Fix repeat `--polkit` installation on Alpine/BusyBox by reusing existing group
+and membership state without requiring optional Shadow utilities. Missing setup
+still has to succeed before previous authorization is removed.
 
 ### 1.9.2 (2026-11-02)
 

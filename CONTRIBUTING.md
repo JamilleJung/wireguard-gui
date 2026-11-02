@@ -88,7 +88,7 @@ use the actual run output rather than maintaining a fixed total here.
 For a generated tarball, also check its actual installer layout:
 
 ```sh
-bash tests/installer-sanity.sh install.sh /path/to/wireguard-gui-1.9.2-x86_64-linux.tar.gz
+bash tests/installer-sanity.sh install.sh /path/to/wireguard-gui-1.9.3-x86_64-linux.tar.gz
 ```
 
 ## 🛡️ Privileged changes

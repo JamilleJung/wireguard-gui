@@ -524,6 +524,23 @@ command -v update-desktop-database >/dev/null 2>&1 && \
     as_root update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
 ok "Files installed."
 
+wireguard_group_exists() {
+    if command -v getent >/dev/null 2>&1; then
+        getent group wireguard >/dev/null 2>&1
+    else
+        grep -q '^wireguard:' /etc/group
+    fi
+}
+
+wireguard_user_enrolled() {
+    local memberships
+    memberships="$(id -nG "$REAL_USER" 2>/dev/null)" || return 1
+    case " $memberships " in
+        *" wireguard "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 configure_authorization() {
     validate_authorization_path
     if [ "$AUTH_MODE" = "polkit" ]; then
@@ -531,17 +548,27 @@ configure_authorization() {
         # Gate the root helper on a dedicated group so it is NOT exposed to every
         # active-local user (who could otherwise read another user's private keys
         # via the helper's read/showconf/dump verbs).
-        as_root groupadd -f wireguard 2>/dev/null \
-            || as_root addgroup wireguard 2>/dev/null \
-            || die "Could not create the wireguard authorization group; existing authorization kept."
+        if ! wireguard_group_exists; then
+            # BusyBox addgroup fails when the group already exists. Recheck
+            # after creation attempts as another installer may have created it.
+            as_root groupadd -f wireguard 2>/dev/null \
+                || as_root addgroup wireguard 2>/dev/null || true
+            wireguard_group_exists \
+                || die "Could not create the wireguard authorization group; existing authorization kept."
+        fi
         if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] \
                 && printf '%s' "$REAL_USER" | grep -qE '^[a-zA-Z_][a-zA-Z0-9_-]*$' \
                 && id "$REAL_USER" >/dev/null 2>&1; then
-            as_root usermod -aG wireguard "$REAL_USER" 2>/dev/null \
-                || as_root gpasswd -a "$REAL_USER" wireguard 2>/dev/null \
-                || as_root adduser "$REAL_USER" wireguard 2>/dev/null \
-                || die "Could not enroll $REAL_USER in wireguard; existing authorization kept."
-            ok "Added $REAL_USER to the 'wireguard' group (log out and back in for it to take effect)."
+            if wireguard_user_enrolled; then
+                ok "$REAL_USER is already in the 'wireguard' group."
+            else
+                as_root usermod -aG wireguard "$REAL_USER" 2>/dev/null \
+                    || as_root gpasswd -a "$REAL_USER" wireguard 2>/dev/null \
+                    || as_root adduser "$REAL_USER" wireguard 2>/dev/null || true
+                wireguard_user_enrolled \
+                    || die "Could not enroll $REAL_USER in wireguard; existing authorization kept."
+                ok "Added $REAL_USER to the 'wireguard' group (log out and back in for it to take effect)."
+            fi
         else
             warn "Couldn't add a user to the 'wireguard' group automatically."
             warn "Add yours with: sudo usermod -aG wireguard <your-username>  (then re-login)."

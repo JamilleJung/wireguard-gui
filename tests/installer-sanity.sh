@@ -236,14 +236,21 @@ fi
 (
     fixture="$(mktemp -d)"
     trap 'rm -rf "$fixture"' EXIT
-    for fn in validate_authorization_path configure_authorization; do
+    for fn in validate_authorization_path wireguard_group_exists wireguard_user_enrolled configure_authorization; do
         eval "$(awk -v name="$fn" '$0 == name "() {" { reading=1 } reading { print } reading && $0 == "}" { exit }' "$script")"
     done
     say() { :; }
     ok() { :; }
     warn() { :; }
     die() { echo "$*" >&2; exit 1; }
-    id() { [ "$*" = fixture ]; }
+    id() {
+        case "$*" in
+            fixture) return 0 ;;
+            '-nG fixture') printf '%s\n' "$MEMBERSHIPS" ;;
+            *) return 1 ;;
+        esac
+    }
+    getent() { [ "$*" = 'group wireguard' ] && [ "$GROUP_PRESENT" = 1 ]; }
     HERE="$fixture/bundle"
     mkdir -p "$HERE/packaging"
     # Resolve the asset from the installer, independent of repository dirname.
@@ -256,14 +263,31 @@ fi
     export AUTH_MODE HELPER PREFIX # Used by dynamically loaded installer functions.
     REAL_USER=fixture
     GROUP_FAIL=0
+    GROUP_PRESENT=0
+    CREATE_FAIL=0
+    CREATE_RACE=0
+    SHADOW_MISSING=0
+    MEMBERSHIPS=fixture
     VISUDO_FAIL=0
+    auth_calls="$fixture/auth-calls"
     PREFIX=/usr/local
     PATH_FAIL=0
     validate_install_path() { [ "$PATH_FAIL" = 0 ] || die 'untrusted helper path'; }
     as_root() {
         case "$1" in
-            groupadd|addgroup) return 0 ;;
-            usermod|gpasswd|adduser) test "$GROUP_FAIL" = 0 ;;
+            groupadd|addgroup)
+                printf '%s\n' "$1" >> "$auth_calls"
+                if [ "$CREATE_RACE" = 1 ]; then GROUP_PRESENT=1; return 1; fi
+                if [ "$1" = groupadd ] && [ "$SHADOW_MISSING" = 1 ]; then return 127; fi
+                [ "$CREATE_FAIL" = 0 ] || return 1
+                GROUP_PRESENT=1
+                ;;
+            usermod|gpasswd|adduser)
+                printf '%s\n' "$1" >> "$auth_calls"
+                if [ "$1" != adduser ] && [ "$SHADOW_MISSING" = 1 ]; then return 127; fi
+                [ "$GROUP_FAIL" = 0 ] || return 1
+                MEMBERSHIPS='fixture wireguard'
+                ;;
             visudo) test "$VISUDO_FAIL" = 0 ;;
             install)
                 if [ "$2" = -d ]; then return 0; fi
@@ -317,12 +341,76 @@ fi
     grep -q 'fixture ALL=(root) NOPASSWD:' "$SUDOERS"
 
     AUTH_MODE=polkit
+    GROUP_PRESENT=0
+    CREATE_FAIL=1
+    if (configure_authorization) 2>/dev/null; then
+        echo 'failed group creation unexpectedly succeeded' >&2; exit 1
+    fi
+    test -f "$SUDOERS"
+    test ! -e "$POLKIT_RULE"
+    GROUP_PRESENT=1
+    CREATE_FAIL=0
     GROUP_FAIL=1
+    MEMBERSHIPS=fixture
     if (configure_authorization) 2>/dev/null; then
         echo 'failed group enrollment unexpectedly succeeded' >&2; exit 1
     fi
     test -f "$SUDOERS"
     test ! -e "$POLKIT_RULE"
+
+    # An Alpine-style reinstall needs no Shadow commands when group/member
+    # state is already correct; exact membership avoids prefix-name matches.
+    SHADOW_MISSING=1
+    CREATE_FAIL=1
+    MEMBERSHIPS='fixture wireguard'
+    : > "$auth_calls"
+    configure_authorization
+    test ! -s "$auth_calls"
+    test ! -e "$SUDOERS"
+    test -f "$POLKIT_RULE"
+    printf 'old sudoers grant\n' > "$SUDOERS"
+    rm "$POLKIT_RULE"
+    MEMBERSHIPS='fixture wireguard-other'
+    if (configure_authorization) 2>/dev/null; then
+        echo 'similar group name was treated as wireguard membership' >&2; exit 1
+    fi
+    test -f "$SUDOERS"
+    test ! -e "$POLKIT_RULE"
+
+    # A first BusyBox-only install uses addgroup/adduser fallbacks. A failed
+    # create is harmless only if a concurrent install made the group exist.
+    CREATE_FAIL=0
+    GROUP_FAIL=0
+    GROUP_PRESENT=0
+    MEMBERSHIPS=fixture
+    : > "$auth_calls"
+    configure_authorization
+    grep -q '^addgroup$' "$auth_calls"
+    grep -q '^adduser$' "$auth_calls"
+    test "$GROUP_PRESENT" = 1
+    test "$MEMBERSHIPS" = 'fixture wireguard'
+    GROUP_PRESENT=0
+    CREATE_RACE=1
+    configure_authorization
+    test "$GROUP_PRESENT" = 1
+
+    # Without getent, use an exact local group record; never write /etc/group.
+    command() {
+        if [ "$*" = '-v getent' ]; then return 1; fi
+        builtin command "$@"
+    }
+    grep() {
+        if [ "$*" = '-q ^wireguard: /etc/group' ]; then
+            test "$GROUP_PRESENT" = 1
+        else
+            command grep "$@"
+        fi
+    }
+    wireguard_group_exists
+    GROUP_PRESENT=0
+    if wireguard_group_exists; then
+        echo 'absent local group unexpectedly found' >&2; exit 1
+    fi
 )
 
 

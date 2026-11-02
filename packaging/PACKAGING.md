@@ -1,6 +1,6 @@
 # 📦 Packaging wireguard-gui
 
-The current application version is **1.9.2**. The release workflow produces an
+The current application version is **1.9.3**. The release workflow produces an
 x86_64 `.deb`, x86_64/ARM64 Linux tarballs, and an optional x86_64 AppImage
 (attached if its optional build succeeds), with signed checksums. See [releases](../docs/RELEASES.md).
 The other files here are source-package recipes; their presence does not mean
@@ -39,10 +39,10 @@ authorization grant is written.
 
 `[package.metadata.deb]` in [Cargo.toml](../Cargo.toml) supplies assets and runtime
 dependencies. The release workflow uses `cargo-deb 3.8.0` after the SBOM-enabled
-build, tests and compression; output is `wireguard-gui_1.9.2-1_amd64.deb`.
+build, tests and compression; output is `wireguard-gui_1.9.3-1_amd64.deb`.
 
 ```sh
-sudo apt install ./wireguard-gui_1.9.2-1_amd64.deb
+sudo apt install ./wireguard-gui_1.9.3-1_amd64.deb
 ```
 
 Inspect the final package's control metadata, helper location and rule path
@@ -115,7 +115,7 @@ enrollment instructions and source-versus-binary archive layout. Follow
 [release automation](../docs/RELEASES.md#how-releases-are-built) and keep the
 committed public signing key consistent with the release signing secret.
 
-## 1.9.2 compatibility and validation
+## 1.9.3 compatibility and validation
 
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
 path containing only letters, digits, `/`, `_`, `.` and `-`, with no empty,
@@ -133,6 +133,12 @@ validates the selected grant before removing the previous grant. Failed sudoers
 validation or group enrollment reports failure and keeps prior authorization.
 `--polkit` requires pkexec up front; it does not install a rule and then claim
 success without the escalation tool. Packages still do not enroll users.
+
+Repeating `--polkit` checks the existing `wireguard` group and account
+membership before invoking group-management tools. An already configured
+Alpine/BusyBox system can reinstall without optional Shadow `groupadd`/`usermod`.
+Missing groups or membership must still be created and verified before the
+previous authorization is removed.
 
 Release helper discovery uses this project's own standard `/usr/local/lib/`
 and `/usr/lib/` paths, or an adjacent **trusted** executable. The executable must

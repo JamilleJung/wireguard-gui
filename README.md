@@ -45,7 +45,7 @@ packaging and feature sets; matching version numbers do not imply feature parity
 |---|---|
 | ![config editor](docs/screenshot-editor.png) | ![qr view](docs/screenshot-qr.png) |
 
-These are historical interface examples; controls and layout differ in 1.9.2.
+These are historical interface examples; controls and layout differ in 1.9.3.
 Values visible in these published config/QR screenshots are public; never reuse
 their keys. The current controls are described below and in the
 [tutorial](docs/TUTORIAL.md).
@@ -72,16 +72,16 @@ their keys. The current controls are described below and in the
 
 ## 📦 Install
 
-Current release: **[1.9.2](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.2)**.
+Current release: **[1.9.3](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.3)**.
 Choose a package for your CPU and Linux environment. WireGuard tools and the
 required system libraries are not bundled into the tarballs.
 
 | Download | Purpose |
 |---|---|
-| `wireguard-gui_1.9.2-1_amd64.deb` | Debian-family x86_64 package with GUI, helper, desktop entry, icon and polkit rule |
-| `wireguard-gui-1.9.2-x86_64-linux.tar.gz` | Linux x86_64 binaries and installer assets |
-| `wireguard-gui-1.9.2-aarch64-linux.tar.gz` | Linux ARM64 binaries and installer assets |
-| `wireguard-gui-1.9.2-x86_64.AppImage` | x86_64 AppImage; optional in the workflow and attached if its optional build succeeds |
+| `wireguard-gui_1.9.3-1_amd64.deb` | Debian-family x86_64 package with GUI, helper, desktop entry, icon and polkit rule |
+| `wireguard-gui-1.9.3-x86_64-linux.tar.gz` | Linux x86_64 binaries and installer assets |
+| `wireguard-gui-1.9.3-aarch64-linux.tar.gz` | Linux ARM64 binaries and installer assets |
+| `wireguard-gui-1.9.3-x86_64.AppImage` | x86_64 AppImage; optional in the workflow and attached if its optional build succeeds |
 | `SHA256SUMS`, `SHA256SUMS.minisig`, `minisign.pub` | Artifact checksums, signature and public key |
 
 ### Verify a download
@@ -91,7 +91,7 @@ Install `minisign` and the system's SHA-256 tools, then verify the signed manife
 against the project key before checking the selected file:
 
 ```sh
-asset=wireguard-gui-1.9.2-x86_64-linux.tar.gz
+asset=wireguard-gui-1.9.3-x86_64-linux.tar.gz
 minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
 awk -v file="$asset" '$2 == file { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > selected.sha256 &&
 sha256sum --check --strict selected.sha256
@@ -105,7 +105,7 @@ use the inline key above. Releases fail rather than publish unsigned artifacts.
 ### Debian-family package
 
 ```sh
-sudo apt install ./wireguard-gui_1.9.2-1_amd64.deb
+sudo apt install ./wireguard-gui_1.9.3-1_amd64.deb
 wireguard-gui
 ```
 
@@ -128,8 +128,8 @@ After verification, extract the tarball for your CPU, enter its directory and
 run the installer as your normal user:
 
 ```sh
-tar -xzf wireguard-gui-1.9.2-x86_64-linux.tar.gz
-cd wireguard-gui-1.9.2-x86_64-linux
+tar -xzf wireguard-gui-1.9.3-x86_64-linux.tar.gz
+cd wireguard-gui-1.9.3-x86_64-linux
 ./install.sh
 ```
 
@@ -369,6 +369,12 @@ validates the selected grant before removing the previous grant. Failed sudoers
 validation or group enrollment reports failure and keeps prior authorization.
 `--polkit` requires pkexec up front; it does not install a rule and then claim
 success without the escalation tool. Packages still do not enroll users.
+
+Repeating `--polkit` checks the existing `wireguard` group and account
+membership before invoking group-management tools. An already configured
+Alpine/BusyBox system can reinstall without optional Shadow `groupadd`/`usermod`.
+Missing groups or membership must still be created and verified before the
+previous authorization is removed.
 
 Verified updates retain ownership of their private download directory through
 installation and clean it up on download, staging or installation failure and

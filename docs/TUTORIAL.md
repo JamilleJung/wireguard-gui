@@ -1,6 +1,6 @@
 # 📖 wireguard-gui tutorial
 
-This guide follows the current 1.9.2 application behavior: installing the desktop
+This guide follows the current 1.9.3 application behavior: installing the desktop
 client, importing or creating a tunnel, connecting, editing, backing up and
 updating. It describes the GUI; the terminal sibling has its own controls and
 CLI. Repository guide corrections do not change Help embedded in an already
@@ -21,7 +21,7 @@ backups and full-config clipboard copies.
 
 ## 2. Choose an installation method
 
-Get the current [1.9.2 release](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.2)
+Get the current [1.9.3 release](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.3)
 and [verify its signed checksum](../README.md#verify-a-download) before using a
 binary package. The release offers x86_64 `.deb`/AppImage and x86_64/ARM64 Linux
 tarballs. Choose the correct CPU and a compatible Linux runtime; tarballs are
@@ -30,7 +30,7 @@ not universal across every libc/distribution.
 ### Debian-family x86_64 package
 
 ```sh
-sudo apt install ./wireguard-gui_1.9.2-1_amd64.deb
+sudo apt install ./wireguard-gui_1.9.3-1_amd64.deb
 wireguard-gui
 ```
 
@@ -50,8 +50,8 @@ Group members can read keys and manage all tunnels.
 ### Extracted binary bundle
 
 ```sh
-tar -xzf wireguard-gui-1.9.2-x86_64-linux.tar.gz
-cd wireguard-gui-1.9.2-x86_64-linux
+tar -xzf wireguard-gui-1.9.3-x86_64-linux.tar.gz
+cd wireguard-gui-1.9.3-x86_64-linux
 ./install.sh
 ```
 
@@ -371,6 +371,12 @@ validates the selected grant before removing the previous grant. Failed sudoers
 validation or group enrollment reports failure and keeps prior authorization.
 `--polkit` requires pkexec up front; it does not install a rule and then claim
 success without the escalation tool. Packages still do not enroll users.
+
+Repeating `--polkit` checks the existing `wireguard` group and account
+membership before invoking group-management tools. An already configured
+Alpine/BusyBox system can reinstall without optional Shadow `groupadd`/`usermod`.
+Missing groups or membership must still be created and verified before the
+previous authorization is removed.
 
 Verified updates retain ownership of their private download directory through
 installation and clean it up on download, staging or installation failure and

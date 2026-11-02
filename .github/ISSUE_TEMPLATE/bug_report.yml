@@ -18,7 +18,7 @@ body:
     attributes:
       label: Version
       description: Output of `wireguard-gui --version`, plus `git rev-parse --short HEAD` if built from source.
-      placeholder: "wireguard-gui 1.9.2"
+      placeholder: "wireguard-gui 1.9.3"
     validations:
       required: true
   - type: input

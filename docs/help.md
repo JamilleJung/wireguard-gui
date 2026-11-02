@@ -78,8 +78,8 @@ It needs systemd; OpenRC/runit require their own service setup.
   this can replace hand-written file content.
 
 There is no global Easy/Advanced mode. The expansion choice is remembered.
-After upgrading to 1.9.2, reapply an enabled kill switch once (off, then on) so
-existing rules use the corrected ordering. Plan for the brief interval without
+When upgrading from before 1.9.2, reapply an enabled kill switch once (off, then
+on) so existing rules use the corrected ordering. Plan for the brief interval without
 those rules. Restarting the app or activating alone does not reapply them.
 
 ## 4. Logs and backups

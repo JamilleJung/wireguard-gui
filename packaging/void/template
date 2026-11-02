@@ -1,6 +1,6 @@
 # Template file for 'wireguard-gui'
 pkgname=wireguard-gui
-version=1.9.2
+version=1.9.3
 revision=1
 build_style=cargo
 hostmakedepends="pkg-config"
