@@ -34,19 +34,19 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: rustfmt
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Smoke test (binary starts & parses args)
         run: |
@@ -107,27 +107,6 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit dependencies against the RUSTSEC advisory DB
-        # Fail on real vulnerabilities and on any NEW advisory. The IDs below are
-        # pre-existing informational warnings (unmaintained / unsound) in
-        # transitive build/UI dependencies (Slint's tree) with no upstream fix
-        # yet — accepted knowingly; drop an entry once its upstream updates.
-        #
-        # quick-xml (0194/0195) are real DoS advisories, but the crate only
-        # reaches us through the wayland-scanner proc-macro, which parses the
-        # protocol XML shipped inside the wayland-* crates at build time. The
-        # parser never sees runtime or attacker-controlled input, and the
-        # fixed 0.41 is gated behind wayland-scanner's own bump.
-        #
-        # rustybuzz (0206) / ttf-parser (0192) are unmaintained-only notices on
-        # crates pulled in by resvg/usvg inside Slint; no fixed version exists.
-        run: |
-          cargo audit --deny warnings \
-            --ignore RUSTSEC-2021-0139 \
-            --ignore RUSTSEC-2024-0375 \
-            --ignore RUSTSEC-2025-0141 \
-            --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2021-0145 \
-            --ignore RUSTSEC-2026-0194 \
-            --ignore RUSTSEC-2026-0195 \
-            --ignore RUSTSEC-2026-0206 \
-            --ignore RUSTSEC-2026-0192
+        # The same narrow, documented exceptions apply to tag releases.
+        # See .cargo/audit.toml; real vulnerabilities and new notices fail.
+        run: cargo audit --deny warnings

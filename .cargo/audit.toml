@@ -1,0 +1,14 @@
+# Keep this policy shared by CI and the tag-triggered release audit.
+# Only unmaintained notices without an upstream fixed version are accepted.
+# Patched vulnerabilities, unsoundness and new advisories remain failures.
+[advisories]
+ignore = [
+    # Optional Slint renderer dependencies retained in the cross-platform lockfile.
+    "RUSTSEC-2025-0141", # bincode: unmaintained
+    "RUSTSEC-2026-0192", # ttf-parser: unmaintained
+    # ksni 0.3 still requires zbus 5. These crates were merged into zbus 6;
+    # remove these entries when ksni migrates to zbus 6.
+    "RUSTSEC-2026-0370", # zvariant: unmaintained
+    "RUSTSEC-2026-0371", # zbus_names: unmaintained
+    "RUSTSEC-2026-0372", # zvariant_derive: unmaintained
+]

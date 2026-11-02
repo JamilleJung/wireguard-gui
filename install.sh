@@ -210,6 +210,18 @@ case "$PM" in
 esac
 
 install_pkgs() {
+    if prebuilt_ready; then
+        # Portable releases need runtime libraries, never compilers or headers.
+        case "$PM" in
+            apt-get) PKGS="libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libgl1 libegl1 libwayland-client0 libdbus-1-3 curl ca-certificates wireguard-tools" ;;
+            dnf|yum) PKGS="fontconfig libxkbcommon libxkbcommon-x11 mesa-libGL mesa-libEGL wayland dbus-libs curl ca-certificates wireguard-tools" ;;
+            pacman) PKGS="fontconfig libxkbcommon libxkbcommon-x11 libglvnd wayland dbus curl wireguard-tools" ;;
+            zypper) PKGS="fontconfig libxkbcommon0 libxkbcommon-x11-0 Mesa-libGL1 libEGL1 libwayland-client0 libdbus-1-3 curl ca-certificates wireguard-tools" ;;
+            apk) PKGS="fontconfig libxkbcommon libxkbcommon-x11 mesa-gl mesa-egl wayland-libs-client dbus-libs curl wireguard-tools" ;;
+            xbps-install) PKGS="fontconfig libxkbcommon libxkbcommon-x11 libglvnd wayland dbus curl wireguard-tools" ;;
+            eopkg) PKGS="fontconfig libxkbcommon mesalib wayland dbus curl wireguard-tools" ;;
+        esac
+    fi
     [ -z "$PM" ] && { warn "Skipping automatic dependency install."; return 0; }
     say "Installing dependencies via ${PM} (this may ask for your password)"
     case "$PM" in
@@ -226,6 +238,29 @@ install_pkgs() {
 }
 
 # ---------------------------------------------------------------------------
+# Reuse an extracted release bundle without treating source checkouts as
+# prebuilt installs. The updater already stages its verified binaries and opts
+# in explicitly; a manual bundle has adjacent binaries and no Cargo manifest.
+prebuilt_ready() {
+    [ "${WG_USE_PREBUILT:-0}" = 1 ] \
+        && [ -f "$HERE/target/release/wireguard-gui" ] \
+        && [ -f "$HERE/target/release/wg-helper" ]
+}
+
+prepare_prebuilt() {
+    if [ "${WG_USE_PREBUILT:-0}" = 1 ]; then
+        prebuilt_ready || die "Prebuilt install requires both application and helper binaries."
+        return 0
+    fi
+    [ ! -f "$HERE/Cargo.toml" ] || return 0
+    [ -f "$HERE/wireguard-gui" ] && [ -f "$HERE/wg-helper" ] \
+        || die "Incomplete release bundle: application and helper binaries are required."
+    install -d "$HERE/target/release"
+    install -m755 "$HERE/wireguard-gui" "$HERE/target/release/wireguard-gui"
+    install -m755 "$HERE/wg-helper" "$HERE/target/release/wg-helper"
+    WG_USE_PREBUILT=1
+}
+
 # Ensure a Rust toolchain and build the release binary AS THE INVOKING USER (via
 # as_user - never as root, so build scripts/proc-macros don't run with privilege
 # and the toolchain + artifacts land in that user's home, not /root).
@@ -233,7 +268,7 @@ install_pkgs() {
 build_app() {
     # Explicit prebuilt reuse (the auto-updater stages verified binaries and sets
     # WG_USE_PREBUILT=1): skip the compile entirely when both are present.
-    if [ "${WG_USE_PREBUILT:-0}" = 1 ] && [ -f "$HERE/target/release/wireguard-gui" ] && [ -f "$HERE/target/release/wg-helper" ]; then
+    if prebuilt_ready; then
         ok "Using staged prebuilt binaries (skipping build)."
         return 0
     fi
@@ -275,7 +310,7 @@ BUILD
 verify_build_deps() {
     # Explicit prebuilt reuse (WG_USE_PREBUILT=1): nothing is built, so don't
     # fail on a missing compiler/headers.
-    if [ "${WG_USE_PREBUILT:-0}" = 1 ] && [ -f "$HERE/target/release/wireguard-gui" ] && [ -f "$HERE/target/release/wg-helper" ]; then
+    if prebuilt_ready; then
         return 0
     fi
     # When a root install will reuse the prebuilt binary, there is nothing to
@@ -346,6 +381,7 @@ ensure_resolvconf() {
 printf "${B}wireguard-gui installer${N}\n"
 [ -n "$PM" ] && say "Detected package manager: ${PM}" || true
 
+prepare_prebuilt
 install_pkgs
 ensure_sudo
 verify_build_deps

@@ -300,18 +300,16 @@ QR and zip export contain private keys. Treat them like the config file itself.
 
 ### 🧾 Dependency advisories
 
-`cargo audit` (run in CI) flags a few **unmaintained / soundness** advisories on
-transitive **build-time / proc-macro / optional** dependencies of the Slint UI
-framework and the `ksni` tray crate (`ansi_term`, `atty`, `bincode`, `paste`).
-**None of them ship in the runtime binary, and none are exploitable** - they are
-build-script, proc-macro, or optional-and-disabled crates inside upstream code we
-do not control. Removing them today would mean replacing the UI framework, or
-pulling a heavier *runtime* dependency (`tokio`, a C `appindicator`) just to
-silence a *build-time* warning - a net loss. So they are documented `--ignore`
-entries in the audit gate, which still fails on any real or new vulnerability,
-and Dependabot watches for upstream fixes so the ignores can be dropped later.
-Every release binary embeds an SBOM, so `cargo audit bin <binary>` audits exactly
-what was compiled in. See [SECURITY.md](SECURITY.md).
+`cargo audit --deny warnings` runs in CI and before release publication.
+The shared `.cargo/audit.toml` policy accepts five unmaintained notices with no
+upstream fixed version: `bincode`, `ttf-parser`, and the `zvariant`, `zbus_names`,
+`zvariant_derive` family still required by ksni's zbus 5 dependency. These notices
+include runtime dependencies; they are not a guarantee that dependencies cannot
+contain bugs. Actual vulnerabilities, unsoundness and new advisories fail the
+audit gate. Remove the exceptions as upstream migrations become available.
+Release binaries embed SBOM data through `cargo auditable build`, allowing
+`cargo audit bin <binary>` to inspect the compiled dependency set.
+
 
 ## 🔧 Hacking on it
 

@@ -163,29 +163,16 @@ on any supported distro with the Rust toolchain and Slint dev libraries.
 
 ### 🧾 Dependency advisories (accepted, documented)
 
-`cargo audit` runs in CI against the RUSTSEC database. A few advisories are
-flagged on **transitive build-time / proc-macro / optional** dependencies - none
-of which are compiled into the runtime binary:
+`cargo audit --deny warnings` runs in CI and before release publication.
+The shared `.cargo/audit.toml` policy accepts five unmaintained notices with no
+upstream fixed version: `bincode`, `ttf-parser`, and the `zvariant`, `zbus_names`,
+`zvariant_derive` family still required by ksni's zbus 5 dependency. These notices
+include runtime dependencies; they are not a guarantee that dependencies cannot
+contain bugs. Actual vulnerabilities, unsoundness and new advisories fail the
+audit gate. Remove the exceptions as upstream migrations become available.
+Release binaries embed SBOM data through `cargo auditable build`, allowing
+`cargo audit bin <binary>` to inspect the compiled dependency set.
 
-- `ansi_term` and `atty` come from a build-time codegen step inside the `ksni`
-  tray crate (`dbus-codegen` → `clap v2`);
-- `bincode` and `paste` come from the Slint UI framework and its image-codec
-  compiler step.
-
-These are **unmaintained / soundness-lint advisories, not exploitable
-vulnerabilities**, and they live in upstream crates this project does not
-control. Eliminating them today would require replacing the entire UI framework,
-or pulling a much heavier *runtime* dependency (`tokio`, a C `appindicator`, …)
-into the app to drop a *build-time* warning - a net increase in real attack
-surface. They are therefore listed as documented `--ignore` entries in the audit
-gate, which **still fails on any real or new vulnerability**. Dependabot watches
-the crate and Action pins, so the ignores can be removed as soon as a clean
-upstream fix is available.
-
-To see what a shipped binary *actually* contains (the audit gate scans the full
-lockfile, including non-shipping deps), every release binary embeds an SBOM via
-`cargo auditable build` - run `cargo audit bin <binary>` to audit exactly what
-was compiled in.
 
 ## 📝 Notes
 

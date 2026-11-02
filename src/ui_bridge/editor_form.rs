@@ -61,16 +61,16 @@ pub fn form_representable(cfg: &str) -> bool {
         // A comment carries layout/intent the structured form cannot round-trip
         // (fields_to_config never re-emits comments), so keep such configs in
         // raw-text mode rather than silently dropping the comment on save.
-        if t.starts_with('#') {
+        if t.contains('#') {
             return false;
         }
         let lower = t.to_ascii_lowercase();
         if lower.starts_with('[') {
-            if lower.starts_with("[peer]") {
+            if lower == "[peer]" {
                 peers += 1;
                 section = "peer";
                 peer_seen.clear();
-            } else if lower.starts_with("[interface]") {
+            } else if lower == "[interface]" {
                 section = "interface";
             } else {
                 return false;
@@ -121,10 +121,10 @@ pub fn config_to_fields(cfg: &str) -> Fields {
         }
         let lower = t.to_ascii_lowercase();
         if lower.starts_with('[') {
-            section = if lower.starts_with("[interface]") {
+            section = if lower == "[interface]" {
                 peer_idx = None;
                 "interface"
-            } else if lower.starts_with("[peer]") {
+            } else if lower == "[peer]" {
                 f.peers.push(PeerFields::default());
                 peer_idx = Some(f.peers.len() - 1);
                 "peer"
@@ -279,6 +279,22 @@ mod tests {
              [Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
         );
         assert!(!form_representable(&cfg));
+        assert!(!form_representable(&single_peer().replace(
+            "Address = 10.0.0.2/24",
+            "Address = 10.0.0.2/24 # keep this comment"
+        )));
+    }
+
+    #[test]
+    fn section_prefixes_are_not_form_representable() {
+        for section in ["[Interface]extra", "[Peer]extra"] {
+            let header = if section.starts_with("[Interface]") {
+                "[Interface]"
+            } else {
+                "[Peer]"
+            };
+            assert!(!form_representable(&single_peer().replace(header, section)));
+        }
     }
 
     #[test]

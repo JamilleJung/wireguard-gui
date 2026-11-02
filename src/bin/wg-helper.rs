@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const WG_DIR: &str = "/etc/wireguard";
 const BACKUP_DIR: &str = "/etc/wireguard/.backup";
@@ -103,40 +103,67 @@ fn command_output(
         cmd.stdin(Stdio::piped());
     }
 
-    let mut child = cmd
-        .spawn()
+    let out = run_command(cmd, stdin, timeout)
         .map_err(|e| format!("{tool_name} {}: {e}", args.join(" ")))?;
-    if let Some(input) = stdin {
-        child
-            .stdin
-            .take()
-            .ok_or("stdin unavailable")?
-            .write_all(input.as_bytes())
-            .map_err(|e| format!("{tool_name} stdin: {e}"))?;
-    }
-
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{tool_name} {} timed out", args.join(" ")));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("{tool_name} wait: {e}")),
-        }
-    }
-
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("{tool_name} output: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let stderr = redact(&String::from_utf8_lossy(&out.stderr));
         Err(format!("{tool_name} {}: {}", args.join(" "), stderr.trim()))
+    }
+}
+
+/// Drain both output pipes while the command runs. Waiting for exit before
+/// reading can deadlock when a large dump or journal fills a pipe. Give each
+/// invocation its own process group so a timeout also stops its descendants.
+fn run_command(
+    mut cmd: Command,
+    input: Option<&str>,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::mpsc;
+
+    cmd.process_group(0)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let pid = child.id();
+    let writer = child
+        .stdin
+        .take()
+        .zip(input.map(str::to_owned))
+        .map(|(mut pipe, text)| std::thread::spawn(move || pipe.write_all(text.as_bytes())));
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = child.wait_with_output().map_err(|e| format!("output: {e}"));
+        let write_result = writer.map(|thread| thread.join());
+        let result = match write_result {
+            Some(Ok(Err(e))) if result.as_ref().is_ok_and(|out| out.status.success()) => {
+                Err(format!("stdin: {e}"))
+            }
+            Some(Err(_)) => Err("stdin writer panicked".into()),
+            _ => result,
+        };
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // The child is the process-group leader (process_group(0)). Kill
+            // the group so grandchildren cannot keep the pipe readers open.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            let _ = rx.recv(); // reap the child and finish draining its pipes
+            Err("timed out".into())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err("output worker stopped".into()),
     }
 }
 
@@ -263,7 +290,7 @@ fn validate_config_text(text: &str) -> Result<(), String> {
     };
 
     for raw in text.lines() {
-        let line = raw.trim();
+        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -681,6 +708,26 @@ fn kill_comment(name: &str) -> String {
     format!("wg-helper-killswitch:{name}")
 }
 
+/// Match the whole comment token: `wg0` must never match `wg01`.
+fn rule_has_comment(line: &str, expected: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let mut previous = "";
+    while let Some(word) = words.next() {
+        // iptables emits "-m comment --comment VALUE"; the first "comment"
+        // names a module. Stop at the actual value, never scan words inside
+        // an unrelated quoted comment as if they were more rule syntax.
+        if word == "--comment" || (word == "comment" && !matches!(previous, "-m" | "--match")) {
+            return words.next().is_some_and(|value| {
+                value == expected
+                    || value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(expected)
+                    || value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) == Some(expected)
+            });
+        }
+        previous = word;
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // nftables backend (preferred on modern Linux — one table handles both v4+v6)
 // ---------------------------------------------------------------------------
@@ -720,11 +767,11 @@ fn nft_has_comment(comment: &str) -> bool {
         None,
         Duration::from_secs(5),
     )
-    .map(|out| out.lines().any(|line| line.contains(comment)))
+    .map(|out| out.lines().any(|line| rule_has_comment(line, comment)))
     .unwrap_or(false)
 }
 
-/// Delete every nftables rule whose line contains our comment.
+/// Delete every nftables rule with our exact comment.
 fn killswitch_flush_nft(name: &str) {
     let comment = kill_comment(name);
     let Ok(out) = command_output(
@@ -737,7 +784,7 @@ fn killswitch_flush_nft(name: &str) {
     };
     let mut handles: Vec<u64> = Vec::new();
     for line in out.lines() {
-        if line.contains(&comment)
+        if rule_has_comment(line, &comment)
             && let Some(handle_str) = line.rsplit("handle ").next()
             && let Ok(h) = handle_str.trim().parse::<u64>()
         {
@@ -765,7 +812,6 @@ fn killswitch_flush_nft(name: &str) {
 
 /// nftables path of killswitch_enable.
 fn killswitch_enable_nft(name: &str, mark: &str) -> Result<(), String> {
-    let comment = kill_comment(name);
     killswitch_flush_nft(name);
     nft_ensure_chain()?;
     // SSH safety: when $SSH_CONNECTION is set, insert an ACCEPT rule for
@@ -774,70 +820,59 @@ fn killswitch_enable_nft(name: &str, mark: &str) -> Result<(), String> {
     let ssh_port = std::env::var("SSH_CONNECTION")
         .ok()
         .and_then(|conn| conn.split_whitespace().nth(3)?.parse::<u16>().ok());
-    if let Some(port) = ssh_port {
-        let _ = command_output(
-            "nft",
-            &[
-                "insert",
-                "rule",
-                "inet",
-                "filter",
-                "output",
-                "tcp",
-                "sport",
-                &port.to_string(),
-                "ct",
-                "state",
-                "established,related",
-                "accept",
-                "comment",
-                &comment,
-            ],
-            None,
-            Duration::from_secs(5),
-        );
+    for rule in nft_killswitch_rules(name, mark, ssh_port) {
+        let args: Vec<&str> = rule.iter().map(String::as_str).collect();
+        command_output("nft", &args, None, Duration::from_secs(10))?;
     }
-    command_output(
-        "nft",
-        &[
-            "insert", "rule", "inet", "filter", "output", "oif", "lo", "accept", "comment",
+    Ok(())
+}
+
+fn nft_killswitch_rules(name: &str, mark: &str, ssh_port: Option<u16>) -> Vec<Vec<String>> {
+    // Insert the rejection BEFORE existing firewall rules. Appending it would
+    // let an existing ACCEPT bypass the kill switch. Exceptions are inserted
+    // ahead of it; a later failure leaves the rejection in place (fail closed).
+    // nft parses its arguments as a command, so quote the comment explicitly.
+    let comment = format!("\"{}\"", kill_comment(name));
+    let mut rules = Vec::new();
+    let mut push = |args: &[&str]| rules.push(args.iter().map(|s| (*s).to_string()).collect());
+    push(&[
+        "insert", "rule", "inet", "filter", "output", "reject", "comment", &comment,
+    ]);
+    if let Some(port) = ssh_port {
+        push(&[
+            "insert",
+            "rule",
+            "inet",
+            "filter",
+            "output",
+            "tcp",
+            "sport",
+            &port.to_string(),
+            "ct",
+            "state",
+            "established,related",
+            "accept",
+            "comment",
             &comment,
-        ],
-        None,
-        Duration::from_secs(10),
-    )?;
+        ]);
+    }
+    push(&[
+        "insert", "rule", "inet", "filter", "output", "oif", "lo", "accept", "comment", &comment,
+    ]);
     // Allow the tunnel's own plaintext egress: an app's packet is routed to the
     // wg interface and traverses OUTPUT with oif=<name> and NO fwmark (only
     // WireGuard's encapsulated transport packets carry the mark, on a second
     // pass). Without this the terminal reject drops it and the tunnel carries
     // no traffic at all.
-    command_output(
-        "nft",
-        &[
-            "insert", "rule", "inet", "filter", "output", "oifname", name, "accept", "comment",
-            &comment,
-        ],
-        None,
-        Duration::from_secs(10),
-    )?;
-    command_output(
-        "nft",
-        &[
-            "insert", "rule", "inet", "filter", "output", "meta", "mark", mark, "accept",
-            "comment", &comment,
-        ],
-        None,
-        Duration::from_secs(10),
-    )?;
-    command_output(
-        "nft",
-        &[
-            "add", "rule", "inet", "filter", "output", "reject", "comment", &comment,
-        ],
-        None,
-        Duration::from_secs(10),
-    )?;
-    Ok(())
+    push(&[
+        "insert", "rule", "inet", "filter", "output", "oifname", name, "accept", "comment",
+        &comment,
+    ]);
+    push(&[
+        "insert", "rule", "inet", "filter", "output", "meta", "mark", mark, "accept", "comment",
+        &comment,
+    ]);
+    rules
 }
 
 // ---------------------------------------------------------------------------
@@ -846,7 +881,7 @@ fn killswitch_enable_nft(name: &str, mark: &str) -> Result<(), String> {
 
 fn iptables_has_comment(tool_name: &str, comment: &str) -> bool {
     command_output(tool_name, &["-S", "OUTPUT"], None, Duration::from_secs(5))
-        .map(|out| out.lines().any(|line| line.contains(comment)))
+        .map(|out| out.lines().any(|line| rule_has_comment(line, comment)))
         .unwrap_or(false)
 }
 
@@ -866,7 +901,7 @@ fn killswitch_flush_iptables(name: &str) {
         for line in out.lines() {
             if line.starts_with("-A OUTPUT ") {
                 idx += 1;
-                if line.contains(&comment) {
+                if rule_has_comment(line, &comment) {
                     nums.push(idx);
                 }
             }
@@ -884,117 +919,99 @@ fn killswitch_flush_iptables(name: &str) {
 }
 
 fn killswitch_enable_iptables(name: &str, mark: &str) -> Result<(), String> {
-    let comment = kill_comment(name);
     killswitch_flush_iptables(name);
     let ssh_port = std::env::var("SSH_CONNECTION")
         .ok()
         .and_then(|conn| conn.split_whitespace().nth(3)?.parse::<u16>().ok());
-    if let Some(port) = ssh_port {
-        for tool_name in ["iptables", "ip6tables"] {
-            if !have_tool(tool_name) {
-                continue;
-            }
-            let _ = command_output(
-                tool_name,
-                &[
-                    "-I",
-                    "OUTPUT",
-                    "-p",
-                    "tcp",
-                    "--sport",
-                    &port.to_string(),
-                    "-m",
-                    "conntrack",
-                    "--ctstate",
-                    "ESTABLISHED,RELATED",
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-                None,
-                Duration::from_secs(5),
-            );
-        }
-    }
     for tool_name in ["iptables", "ip6tables"] {
         if !have_tool(tool_name) {
             continue;
         }
-        command_output(
-            tool_name,
-            &[
-                "-I",
-                "OUTPUT",
-                "-m",
-                "mark",
-                "--mark",
-                mark,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-            None,
-            Duration::from_secs(10),
-        )?;
-        command_output(
-            tool_name,
-            &[
-                "-I",
-                "OUTPUT",
-                "-o",
-                "lo",
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-            None,
-            Duration::from_secs(10),
-        )?;
-        // Allow the tunnel's own plaintext egress (oif=<name>, unmarked) — see
-        // the nft path; without it the REJECT drops all tunnelled traffic.
-        command_output(
-            tool_name,
-            &[
-                "-I",
-                "OUTPUT",
-                "-o",
-                name,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-            None,
-            Duration::from_secs(10),
-        )?;
-        command_output(
-            tool_name,
-            &[
-                "-A",
-                "OUTPUT",
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "REJECT",
-            ],
-            None,
-            Duration::from_secs(10),
-        )?;
+        for rule in iptables_killswitch_rules(name, mark, ssh_port) {
+            let args: Vec<&str> = rule.iter().map(String::as_str).collect();
+            command_output(tool_name, &args, None, Duration::from_secs(10))?;
+        }
     }
     Ok(())
+}
+
+fn iptables_killswitch_rules(name: &str, mark: &str, ssh_port: Option<u16>) -> Vec<Vec<String>> {
+    let comment = kill_comment(name);
+    let mut rules = Vec::new();
+    let mut push = |args: &[&str]| rules.push(args.iter().map(|s| (*s).to_string()).collect());
+    // As with nftables, reject before the old OUTPUT rules, then insert only
+    // the intended exceptions ahead of that rejection.
+    push(&[
+        "-I",
+        "OUTPUT",
+        "-m",
+        "comment",
+        "--comment",
+        &comment,
+        "-j",
+        "REJECT",
+    ]);
+    if let Some(port) = ssh_port {
+        push(&[
+            "-I",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "--sport",
+            &port.to_string(),
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-m",
+            "comment",
+            "--comment",
+            &comment,
+            "-j",
+            "ACCEPT",
+        ]);
+    }
+    push(&[
+        "-I",
+        "OUTPUT",
+        "-m",
+        "mark",
+        "--mark",
+        mark,
+        "-m",
+        "comment",
+        "--comment",
+        &comment,
+        "-j",
+        "ACCEPT",
+    ]);
+    push(&[
+        "-I",
+        "OUTPUT",
+        "-o",
+        "lo",
+        "-m",
+        "comment",
+        "--comment",
+        &comment,
+        "-j",
+        "ACCEPT",
+    ]);
+    // Allow the tunnel's own plaintext egress (oif=<name>, unmarked) — see
+    // the nft path; without it the REJECT drops all tunnelled traffic.
+    push(&[
+        "-I",
+        "OUTPUT",
+        "-o",
+        name,
+        "-m",
+        "comment",
+        "--comment",
+        &comment,
+        "-j",
+        "ACCEPT",
+    ]);
+    rules
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,6 +1084,29 @@ fn killswitch_disable(name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn command_drains_large_stdout_and_stderr() {
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2",
+        ]);
+        let out = run_command(cmd, None, Duration::from_secs(5)).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 262144);
+        assert_eq!(out.stderr.len(), 262144);
+    }
+
+    #[test]
+    fn command_timeout_stops_children_with_inherited_pipes() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & wait"]);
+        let start = std::time::Instant::now();
+        let error = run_command(cmd, None, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(error, "timed out");
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
 
     #[test]
@@ -1129,6 +1169,18 @@ mod tests {
     }
 
     #[test]
+    fn inline_comments_are_valid_and_do_not_hide_hooks() {
+        let cfg = format!(
+            "[Interface] # home\nPrivateKey = {KEY} # secret\n\
+             [Peer] # gateway\nPublicKey = {KEY} # remote\nAllowedIPs = 0.0.0.0/0 # IPv4\n"
+        );
+        assert!(validate_config_text(&cfg).is_ok());
+        for hook in ["PreUp", "PostUp", "PreDown", "PostDown"] {
+            assert!(validate_config_text(&format!("{cfg}{hook} = id # hook\n")).is_err());
+        }
+    }
+
+    #[test]
     fn paths_stay_under_wireguard_dir() {
         assert_eq!(conf_path("wg0"), Path::new(WG_DIR).join("wg0.conf"));
     }
@@ -1153,6 +1205,78 @@ mod tests {
         assert!(c.contains("wg-helper-killswitch"), "{c}");
         // Comment must be unique enough to avoid collisions.
         assert!(!kill_comment("wg0").eq(&kill_comment("wg1")));
+    }
+
+    #[test]
+    fn firewall_comments_match_only_the_exact_tunnel() {
+        let comment = kill_comment("wg0");
+        for line in [
+            "reject comment \"wg-helper-killswitch:wg0\" # handle 12",
+            "-A OUTPUT -m comment --comment wg-helper-killswitch:wg0 -j REJECT",
+            "-A OUTPUT -m comment --comment \"wg-helper-killswitch:wg0\" -j REJECT",
+        ] {
+            assert!(rule_has_comment(line, &comment), "{line}");
+            assert!(!rule_has_comment(&line.replace(":wg0", ":wg01"), &comment));
+        }
+        assert!(!rule_has_comment(
+            "reject # wg-helper-killswitch:wg0",
+            &comment
+        ));
+        for line in [
+            "accept comment \"unrelated comment wg-helper-killswitch:wg0\"",
+            "-A OUTPUT -m comment --comment \"unrelated --comment wg-helper-killswitch:wg0\" -j ACCEPT",
+            "accept comment \"wg-helper-killswitch:wg0 extra\"",
+        ] {
+            assert!(!rule_has_comment(line, &comment), "{line}");
+        }
+    }
+
+    #[test]
+    fn nft_killswitch_reject_precedes_existing_accept_rules() {
+        let mut chain = vec![vec!["existing accept".to_string()]];
+        for rule in nft_killswitch_rules("wg0", "0xca6c", Some(22)) {
+            assert_eq!(rule[0], "insert");
+            chain.insert(0, rule);
+        }
+        let reject = chain
+            .iter()
+            .position(|r| r.iter().any(|s| s == "reject"))
+            .unwrap();
+        let existing = chain
+            .iter()
+            .position(|r| r[0] == "existing accept")
+            .unwrap();
+        assert!(reject < existing);
+        assert_eq!(reject, 4); // SSH, loopback, tunnel egress, and transport exceptions.
+        assert!(
+            chain[..reject]
+                .iter()
+                .all(|r| r.iter().any(|s| s == "accept"))
+        );
+    }
+
+    #[test]
+    fn iptables_killswitch_reject_precedes_existing_accept_rules() {
+        let mut chain = vec![vec!["existing accept".to_string()]];
+        for rule in iptables_killswitch_rules("wg0", "0xca6c", Some(22)) {
+            assert_eq!(rule[0], "-I");
+            chain.insert(0, rule);
+        }
+        let reject = chain
+            .iter()
+            .position(|r| r.iter().any(|s| s == "REJECT"))
+            .unwrap();
+        let existing = chain
+            .iter()
+            .position(|r| r[0] == "existing accept")
+            .unwrap();
+        assert!(reject < existing);
+        assert_eq!(reject, 4);
+        assert!(
+            chain[..reject]
+                .iter()
+                .all(|r| r.iter().any(|s| s == "ACCEPT"))
+        );
     }
 
     #[test]

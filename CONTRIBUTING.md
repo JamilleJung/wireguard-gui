@@ -59,8 +59,8 @@ CI runs these and **will fail the build** if they don't pass. Run them locally:
 
 ```sh
 # Rust quality gates
-cargo fmt --all - --check
-cargo clippy --all-targets - -D warnings
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 

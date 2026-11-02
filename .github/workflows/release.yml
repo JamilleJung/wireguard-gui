@@ -15,8 +15,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  audit:
+    name: Audit release dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit the release lockfile
+        run: cargo audit --deny warnings
+
   arm64-tarball:
     name: Build aarch64 tarball
+    needs: audit
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -27,6 +40,9 @@ jobs:
         run: |
           echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1; }
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$package_version" = "${GITHUB_REF_NAME#v}" \
+            || { echo "::error::tag and Cargo.toml version differ"; exit 1; }
 
       - name: Install system dependencies
         run: |
@@ -40,10 +56,10 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-auditable
-        run: cargo install cargo-auditable --version =0.7.4 --locked
+        run: cargo install cargo-auditable --version =0.7.7 --locked
 
       - name: Build release binary (with embedded SBOM)
         run: cargo auditable build --release --locked
@@ -74,17 +90,18 @@ jobs:
         run: |
           V="${REF#v}"
           D="wireguard-gui-${V}-aarch64-linux"
-          mkdir -p "$D"
+          mkdir -p "$D/packaging"
           cp target/release/wireguard-gui "$D/"
           cp target/release/wg-helper "$D/"
-          cp packaging/wireguard-gui.desktop "$D/"
-          cp packaging/wireguard-gui.svg "$D/"
-          cp packaging/49-wireguard-gui.rules "$D/"
+          cp packaging/wireguard-gui.desktop "$D/packaging/"
+          cp packaging/wireguard-gui.svg "$D/packaging/"
+          cp packaging/49-wireguard-gui.rules "$D/packaging/"
           cp install.sh README.md LICENSE "$D/"
           tar -czf "${D}.tar.gz" "$D"
+          bash tests/installer-sanity.sh install.sh "${D}.tar.gz"
 
       - name: Upload aarch64 tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wireguard-gui-aarch64-tarball
           path: wireguard-gui-*-aarch64-linux.tar.gz
@@ -103,6 +120,9 @@ jobs:
         run: |
           echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1; }
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$package_version" = "${GITHUB_REF_NAME#v}" \
+            || { echo "::error::tag and Cargo.toml version differ"; exit 1; }
 
       - name: Install system dependencies
         run: |
@@ -117,10 +137,10 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-auditable
-        run: cargo install cargo-auditable --version =0.7.4 --locked
+        run: cargo install cargo-auditable --version =0.7.7 --locked
 
       - name: Build release binary (with embedded SBOM)
         run: cargo auditable build --release --locked
@@ -189,17 +209,18 @@ jobs:
         run: |
           V="${REF#v}"
           D="wireguard-gui-${V}-x86_64-linux"
-          mkdir -p "$D"
+          mkdir -p "$D/packaging"
           cp target/release/wireguard-gui "$D/"
           cp target/release/wg-helper "$D/"
-          cp packaging/wireguard-gui.desktop "$D/"
-          cp packaging/wireguard-gui.svg "$D/"
-          cp packaging/49-wireguard-gui.rules "$D/"
+          cp packaging/wireguard-gui.desktop "$D/packaging/"
+          cp packaging/wireguard-gui.svg "$D/packaging/"
+          cp packaging/49-wireguard-gui.rules "$D/packaging/"
           cp install.sh README.md LICENSE "$D/"
           tar -czf "${D}.tar.gz" "$D"
+          bash tests/installer-sanity.sh install.sh "${D}.tar.gz"
 
       - name: Download aarch64 tarball
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wireguard-gui-aarch64-tarball
           path: .
@@ -207,7 +228,7 @@ jobs:
       # ---------------- .deb ----------------
       - name: Build .deb
         run: |
-          cargo install cargo-deb --version =2.12.1 --locked
+          cargo install cargo-deb --version =3.8.0 --locked
           cargo deb --no-build --no-strip || cargo deb
           cp target/debian/*.deb .   # mandatory: fail the release if none exists
 
@@ -274,7 +295,7 @@ jobs:
           test -s SHA256SUMS.minisig
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
           files: |
