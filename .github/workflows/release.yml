@@ -15,8 +15,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  audit:
+    name: Audit release dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit the release lockfile
+        run: cargo audit --deny warnings
+
   arm64-tarball:
     name: Build aarch64 tarball
+    needs: audit
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -27,6 +40,9 @@ jobs:
         run: |
           echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1; }
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$package_version" = "${GITHUB_REF_NAME#v}" \
+            || { echo "::error::tag and Cargo.toml version differ"; exit 1; }
 
       - name: Install system dependencies
         run: |
@@ -103,6 +119,9 @@ jobs:
         run: |
           echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1; }
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$package_version" = "${GITHUB_REF_NAME#v}" \
+            || { echo "::error::tag and Cargo.toml version differ"; exit 1; }
 
       - name: Install system dependencies
         run: |
