@@ -157,12 +157,88 @@ fi
     fi
 )
 
+# Exercise Linux metadata checks with an isolated fake stat provider. No test
+# traverses or changes a privileged directory, even on a root CI runner.
+(
+    for fn in validate_install_path validate_install_destinations; do
+        eval "$(awk -v name="$fn" '$0 == name "() {" { reading=1 } reading { print } reading && $0 == "}" { exit }' "$script")"
+    done
+    die() { echo "$*" >&2; exit 7; }
+    BAD_PATH=""
+    BAD_METADATA=""
+    MISSING_PATH=""
+    install_path_metadata() {
+        if [[ "$1" = "$MISSING_PATH" ]]; then
+            echo 'stat: No such file or directory' >&2; return 1
+        elif [[ "$1" = "$BAD_PATH" ]]; then
+            printf '%s\n' "$BAD_METADATA"
+        elif [[ "$1" = */wg-helper || "$1" = */application ]]; then
+            printf '0 755 81ed 1\n'
+        else
+            printf '0 755 41ed 1\n'
+        fi
+    }
+    validate_install_path /usr/local/lib/project/wg-helper helper
+    for path in relative /usr/ /usr//local /usr/./local /usr/../local \
+        '/usr/a b' '/usr/a,b' '/usr/a:b' '/usr/a#b' '/usr/a*b' '/usr/a\b' $'/usr/a\nb'; do
+        if (validate_install_path "$path" directory) 2>/dev/null; then
+            echo "unsafe install syntax accepted: $path" >&2; exit 1
+        fi
+    done
+    for metadata in '1000 755 41ed 1' '0 775 41fd 1' '0 755 a1ed 1' \
+        '0 755 81ed 1' 'malformed metadata'; do
+        BAD_PATH=/usr/local/lib
+        BAD_METADATA="$metadata"
+        if (validate_install_path /usr/local/lib/project/wg-helper helper) 2>/dev/null; then
+            echo "unsafe helper ancestor accepted: $metadata" >&2; exit 1
+        fi
+    done
+    BAD_PATH=/usr/local/lib/project/wg-helper
+    for metadata in '1000 755 81ed 1' '0 775 81fd 1' '0 755 a1ed 1' \
+        '0 755 81ed 2' '0 644 81a4 1' '0 600 11a0 1'; do
+        BAD_METADATA="$metadata"
+        if (validate_install_path "$BAD_PATH" helper) 2>/dev/null; then
+            echo "unsafe installed helper accepted: $metadata" >&2; exit 1
+        fi
+    done
+    BAD_PATH=""
+    MISSING_PATH=/usr/local/lib/project
+    validate_install_path /usr/local/lib/project/wg-helper file
+    if (validate_install_path /usr/local/lib/project/wg-helper helper) 2>/dev/null; then
+        echo 'missing installed helper accepted' >&2; exit 1
+    fi
+    # The planned-path preflight must inspect existing project directories and
+    # app targets too, before the installer creates/copies any privileged file.
+    MISSING_PATH=""
+    PREFIX=/usr/local
+    BIN=/usr/local/bin/application
+    HELPER=/usr/local/lib/project/wg-helper
+    DESKTOP=/usr/local/share/applications/desktop
+    ICON_DIR=/usr/local/share/icons/apps
+    ICON="$ICON_DIR/icon"
+    INSTALL_DESKTOP=0
+    export PREFIX BIN HELPER DESKTOP ICON_DIR ICON INSTALL_DESKTOP AUTH_MODE # Read by extracted functions.
+    AUTH_MODE=sudoers
+    BAD_PATH=/usr/local/lib/project
+    BAD_METADATA='1000 755 41ed 1'
+    if (validate_install_destinations) 2>/dev/null; then
+        echo 'planned helper directory trust check missing' >&2; exit 1
+    fi
+    BAD_PATH="$BIN"
+    BAD_METADATA='0 755 a1ed 1'
+    if (validate_install_destinations) 2>/dev/null; then
+        echo 'planned application target symlink accepted' >&2; exit 1
+    fi
+)
+
 # Auth-mode changes must not leave the previous passwordless grant active or
 # delete the working grant before replacement validation succeeds.
 (
     fixture="$(mktemp -d)"
     trap 'rm -rf "$fixture"' EXIT
-    eval "$(awk '$0 == "configure_authorization() {" { reading=1 } reading { print } reading && $0 == "}" { exit }' "$script")"
+    for fn in validate_authorization_path configure_authorization; do
+        eval "$(awk -v name="$fn" '$0 == name "() {" { reading=1 } reading { print } reading && $0 == "}" { exit }' "$script")"
+    done
     say() { :; }
     ok() { :; }
     warn() { :; }
@@ -177,10 +253,13 @@ fi
     SUDOERS="$fixture/current.sudoers"
     POLKIT_RULE="$fixture/current.rules"
     HELPER="$fixture/helper"
-    export AUTH_MODE HELPER # Used by dynamically loaded installer functions.
+    export AUTH_MODE HELPER PREFIX # Used by dynamically loaded installer functions.
     REAL_USER=fixture
     GROUP_FAIL=0
     VISUDO_FAIL=0
+    PREFIX=/usr/local
+    PATH_FAIL=0
+    validate_install_path() { [ "$PATH_FAIL" = 0 ] || die 'untrusted helper path'; }
     as_root() {
         case "$1" in
             groupadd|addgroup) return 0 ;;
@@ -201,6 +280,25 @@ fi
 
     AUTH_MODE=polkit
     printf 'old sudoers grant\n' > "$SUDOERS"
+    # A failed trust check or unsupported polkit prefix keeps the old grant,
+    # before group changes or writing either authorization replacement.
+    for AUTH_MODE in polkit sudoers; do
+        PATH_FAIL=1
+        if (configure_authorization) 2>/dev/null; then
+            echo 'untrusted helper received an authorization grant' >&2; exit 1
+        fi
+        grep -q 'old sudoers grant' "$SUDOERS"
+        test ! -e "$POLKIT_RULE"
+    done
+    PATH_FAIL=0
+    AUTH_MODE=polkit
+    PREFIX=/opt/protected
+    if (configure_authorization) 2>/dev/null; then
+        echo 'custom polkit prefix received a nonmatching grant' >&2; exit 1
+    fi
+    grep -q 'old sudoers grant' "$SUDOERS"
+    test ! -e "$POLKIT_RULE"
+    PREFIX=/usr/local
     configure_authorization
     test ! -e "$SUDOERS"
     grep -q 'new polkit rule' "$POLKIT_RULE"

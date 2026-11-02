@@ -136,6 +136,80 @@ as_user() {
     fi
 }
 
+# The helper's narrow grant is safe only while no unprivileged user can replace
+# its executable through a writable parent. Refuse unsafe layouts; never chown
+# an existing caller-owned directory to turn it into a privileged install root.
+install_path_metadata() {
+    as_root env LC_ALL=C stat -c '%u %a %f %h' -- "$1"
+}
+
+validate_install_path() {
+    local path="$1" kind="$2" component current="" metadata uid mode bits links
+    local LC_ALL=C
+    local -a components paths=(/)
+    [[ "$path" =~ ^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] \
+        || die "Unsafe install path '$path': use an absolute ASCII path without whitespace, trailing slashes or authorization metacharacters; existing authorization kept."
+    IFS=/ read -r -a components <<< "${path#/}"
+    for component in "${components[@]}"; do
+        [[ "$component" != . && "$component" != .. ]] \
+            || die "Unsafe install path '$path': dot components are forbidden; existing authorization kept."
+        current="$current/$component"
+        paths+=("$current")
+    done
+    for current in "${paths[@]}"; do
+        if metadata="$(install_path_metadata "$current" 2>&1)"; then
+            [[ "$metadata" =~ ^([0-9]+)\ ([0-7]{1,4})\ ([0-9a-fA-F]+)\ ([0-9]+)$ ]] \
+                || die "Cannot inspect install path '$current'; existing authorization kept."
+            read -r uid mode bits links <<< "$metadata"
+            if (( (16#$bits & 0170000) == 0120000 )); then
+                die "Symlink install path '$current' is forbidden: use its resolved, protected path; existing authorization kept."
+            fi
+            if [[ "$uid" != 0 ]] || (( (8#$mode & 0022) != 0 )); then
+                die "Untrusted install path '$current': root ownership and no group/other write permission are required; existing authorization kept."
+            fi
+            if [[ "$current" != "$path" || "$kind" = directory ]]; then
+                (( (16#$bits & 0170000) == 0040000 )) \
+                    || die "Install ancestor '$current' must be a directory; existing authorization kept."
+            else
+                (( (16#$bits & 0170000) == 0100000 )) && [[ "$links" = 1 ]] \
+                    || die "Install target '$current' must be a regular file with one link; existing authorization kept."
+                if [[ "$kind" = helper ]]; then
+                    (( (8#$mode & 0111) != 0 )) \
+                        || die "Installed helper '$current' is not executable; existing authorization kept."
+                fi
+            fi
+        else
+            case "$metadata" in
+                *"No such file or directory"*)
+                    [[ "$kind" != helper ]] \
+                        || die "Installed helper '$path' is missing; existing authorization kept."
+                    # A missing path below already-checked protected ancestors
+                    # can be created by root without a user-controlled traversal.
+                    return 0 ;;
+                *) die "Cannot inspect install path '$current': $metadata; existing authorization kept." ;;
+            esac
+        fi
+    done
+}
+
+validate_authorization_path() {
+    validate_install_path "$HELPER" helper
+    if [[ "$AUTH_MODE" = polkit && "$PREFIX" != /usr && "$PREFIX" != /usr/local ]]; then
+        die "--polkit supports only PREFIX=/usr or /usr/local; custom helper paths need matching authorization rules and frontend discovery. Existing authorization kept."
+    fi
+}
+
+validate_install_destinations() {
+    validate_install_path "$PREFIX" directory
+    validate_install_path "$BIN" file
+    validate_install_path "$HELPER" file
+    validate_install_path "$DESKTOP" file
+    validate_install_path "$ICON_DIR/wireguard-gui.svg" file
+    if [[ "$AUTH_MODE" = polkit && "$PREFIX" != /usr && "$PREFIX" != /usr/local ]]; then
+        die "--polkit supports only PREFIX=/usr or /usr/local; existing authorization kept."
+    fi
+}
+
 # A NOPASSWD sudoers drop-in scoped to the helper grants `sudo -n wg-helper` to
 # REAL_USER even if they aren't otherwise a sudoer (sudoers rules are per-user,
 # independent of the `sudo` group) - but it needs the `sudo` binary present. So
@@ -428,6 +502,7 @@ ensure_resolvconf() {
 printf "${B}wireguard-gui installer${N}\n"
 [ -n "$PM" ] && say "Detected package manager: ${PM}" || true
 
+validate_install_destinations
 prepare_prebuilt
 install_pkgs
 ensure_sudo
@@ -436,6 +511,7 @@ verify_runtime_deps
 ensure_resolvconf
 build_app
 
+validate_install_destinations
 say "Installing into $PREFIX"
 as_root install -d "$LIBDIR" "$ICON_DIR" "$PREFIX/bin" "$PREFIX/share/applications"
 as_root install -m755 "$HERE/target/release/wireguard-gui" "$BIN"
@@ -449,6 +525,7 @@ command -v update-desktop-database >/dev/null 2>&1 && \
 ok "Files installed."
 
 configure_authorization() {
+    validate_authorization_path
     if [ "$AUTH_MODE" = "polkit" ]; then
         say "Installing polkit rule (passwordless for the 'wireguard' group)"
         # Gate the root helper on a dedicated group so it is NOT exposed to every
@@ -470,6 +547,7 @@ configure_authorization() {
             warn "Add yours with: sudo usermod -aG wireguard <your-username>  (then re-login)."
         fi
         as_root install -d /etc/polkit-1/rules.d
+        validate_install_path "$HELPER" helper
         as_root install -m644 "$HERE/packaging/49-wireguard-gui.rules" "$POLKIT_RULE" \
             || die "Could not install polkit rule; existing authorization kept."
         as_root rm -f "$SUDOERS" || die "Could not remove the previous sudoers grant."
@@ -487,6 +565,7 @@ configure_authorization() {
         tmp="$(mktemp)"
         printf '%s ALL=(root) NOPASSWD: %s\n' "$REAL_USER" "$HELPER" > "$tmp"
         if as_root visudo -cf "$tmp" >/dev/null 2>&1; then
+            validate_install_path "$HELPER" helper
             as_root install -m440 "$tmp" "$SUDOERS" || { rm -f "$tmp"; die "Could not install sudoers grant; existing authorization kept."; }
             as_root rm -f "$POLKIT_RULE" || { rm -f "$tmp"; die "Could not remove the previous polkit grant."; }
             ok "Passwordless helper set up for $REAL_USER (works even without sudo-group membership)."
