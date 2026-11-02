@@ -710,15 +710,20 @@ fn kill_comment(name: &str) -> String {
 
 /// Match the whole comment token: `wg0` must never match `wg01`.
 fn rule_has_comment(line: &str, expected: &str) -> bool {
-    let mut words = line.split_whitespace().peekable();
+    let mut words = line.split_whitespace();
+    let mut previous = "";
     while let Some(word) = words.next() {
-        if matches!(word, "comment" | "--comment")
-            && words
-                .peek()
-                .is_some_and(|value| value.trim_matches(['\"', '\'']) == expected)
-        {
-            return true;
+        // iptables emits "-m comment --comment VALUE"; the first "comment"
+        // names a module. Stop at the actual value, never scan words inside
+        // an unrelated quoted comment as if they were more rule syntax.
+        if word == "--comment" || (word == "comment" && !matches!(previous, "-m" | "--match")) {
+            return words.next().is_some_and(|value| {
+                value == expected
+                    || value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(expected)
+                    || value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) == Some(expected)
+            });
         }
+        previous = word;
     }
     false
 }
@@ -1217,6 +1222,13 @@ mod tests {
             "reject # wg-helper-killswitch:wg0",
             &comment
         ));
+        for line in [
+            "accept comment \"unrelated comment wg-helper-killswitch:wg0\"",
+            "-A OUTPUT -m comment --comment \"unrelated --comment wg-helper-killswitch:wg0\" -j ACCEPT",
+            "accept comment \"wg-helper-killswitch:wg0 extra\"",
+        ] {
+            assert!(!rule_has_comment(line, &comment), "{line}");
+        }
     }
 
     #[test]
