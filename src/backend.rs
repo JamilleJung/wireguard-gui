@@ -1221,10 +1221,22 @@ pub fn create_backup() -> Result<BackupInfo, String> {
 }
 
 fn count_zip_entries(path: &std::path::Path) -> usize {
-    open_backup(path)
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut file) = open_backup(path) else {
+        return 0;
+    };
+    let Ok(meta) = file.metadata() else {
+        return 0;
+    };
+    if preflight_zip_directory(&mut file, meta.len()).is_err()
+        || file.seek(SeekFrom::Start(0)).is_err()
+    {
+        return 0;
+    }
+    zip::ZipArchive::new(file)
         .ok()
-        .and_then(|f| zip::ZipArchive::new(f).ok())
-        .map(|z| z.len())
+        .filter(|zip| !zip.has_duplicate_names() && zip.len() <= 4096)
+        .map(|zip| zip.len())
         .unwrap_or(0)
 }
 
@@ -1328,6 +1340,69 @@ pub fn restore_backup(path: &std::path::Path) -> Result<usize, String> {
     Ok(configs.len())
 }
 
+// ZIP metadata is eagerly allocated by ZipArchive::new. Read only the bounded
+// end records first so a huge declared/actual entry count cannot allocate that
+// metadata before the archive's entry limit is enforced.
+fn preflight_zip_directory(
+    reader: &mut (impl std::io::Read + std::io::Seek),
+    length: u64,
+) -> Result<(), String> {
+    use std::io::SeekFrom;
+    if length < 22 {
+        return Err("Truncated ZIP end record.".into());
+    }
+    let tail_len = length.min(22 + 65535) as usize;
+    reader
+        .seek(SeekFrom::Start(length - tail_len as u64))
+        .map_err(|e| e.to_string())?;
+    let mut tail = vec![0; tail_len];
+    reader.read_exact(&mut tail).map_err(|e| e.to_string())?;
+    let end = (0..=tail.len() - 22)
+        .rev()
+        .find(|&index| {
+            tail[index..].starts_with(b"PK\x05\x06")
+                && index + 22 + u16::from_le_bytes([tail[index + 20], tail[index + 21]]) as usize
+                    == tail.len()
+        })
+        .ok_or("ZIP end record is missing or inconsistent.")?;
+    let disk_entries = u16::from_le_bytes([tail[end + 8], tail[end + 9]]);
+    let entries = u16::from_le_bytes([tail[end + 10], tail[end + 11]]);
+    let end_offset = length - tail_len as u64 + end as u64;
+    let mut locator = [0; 20];
+    if end_offset >= 20 {
+        reader
+            .seek(SeekFrom::Start(end_offset - 20))
+            .map_err(|e| e.to_string())?;
+        reader.read_exact(&mut locator).map_err(|e| e.to_string())?;
+    }
+    if locator.starts_with(b"PK\x06\x07") {
+        let offset = u64::from_le_bytes(locator[8..16].try_into().unwrap());
+        if offset > length.saturating_sub(56) {
+            return Err("Invalid ZIP64 end offset.".into());
+        }
+        reader
+            .seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut record = [0; 56];
+        reader.read_exact(&mut record).map_err(|e| e.to_string())?;
+        if !record.starts_with(b"PK\x06\x06")
+            || u64::from_le_bytes(record[4..12].try_into().unwrap()) < 44
+        {
+            return Err("Invalid ZIP64 end record.".into());
+        }
+        for offset in [24, 32] {
+            if u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap()) > 4096 {
+                return Err("Backup contains too many archive entries.".into());
+            }
+        }
+    } else if entries == u16::MAX || disk_entries == u16::MAX {
+        return Err("ZIP64 end locator is missing.".into());
+    } else if entries > 4096 || disk_entries > 4096 {
+        return Err("Backup contains too many archive entries.".into());
+    }
+    Ok(())
+}
+
 // Validate the whole archive before the first privileged write. Bound both
 // declared and actual uncompressed sizes so a corrupt backup cannot exhaust
 // memory or overwrite earlier tunnels before a later invalid entry is found.
@@ -1343,6 +1418,7 @@ fn backup_configs<R: std::io::Read + std::io::Seek>(
     if length > MAX_BACKUP_BYTES {
         return Err("Backup exceeds 64 MiB.".into());
     }
+    preflight_zip_directory(&mut reader, length)?;
     reader
         .seek(std::io::SeekFrom::Start(0))
         .map_err(|e| e.to_string())?;
@@ -1839,6 +1915,33 @@ mod tests {
         assert!(open_backup_in(&dir, &real).is_err());
         std::fs::remove_dir_all(base).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn zip_entry_budget_is_checked_before_eager_metadata_allocation() {
+        let mut end = vec![0; 22];
+        end[..4].copy_from_slice(b"PK\x05\x06");
+        end[8..10].copy_from_slice(&4097u16.to_le_bytes());
+        end[10..12].copy_from_slice(&4097u16.to_le_bytes());
+        assert!(
+            backup_configs(std::io::Cursor::new(end))
+                .unwrap_err()
+                .contains("too many")
+        );
+        let mut zip64 = vec![0; 56 + 20 + 22];
+        zip64[..4].copy_from_slice(b"PK\x06\x06");
+        zip64[4..12].copy_from_slice(&44u64.to_le_bytes());
+        zip64[24..32].copy_from_slice(&4097u64.to_le_bytes());
+        zip64[32..40].copy_from_slice(&4097u64.to_le_bytes());
+        zip64[56..60].copy_from_slice(b"PK\x06\x07");
+        zip64[76..80].copy_from_slice(b"PK\x05\x06");
+        zip64[84..86].copy_from_slice(&u16::MAX.to_le_bytes());
+        zip64[86..88].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(
+            backup_configs(std::io::Cursor::new(zip64))
+                .unwrap_err()
+                .contains("too many")
+        );
     }
 
     #[test]
