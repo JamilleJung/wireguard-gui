@@ -28,20 +28,30 @@ static HELPER: OnceLock<Option<String>> = OnceLock::new();
 pub fn init() {
     let esc = if unsafe { libc::geteuid() } == 0 {
         Escalation::Direct
-    } else if helper_path().is_some_and(|path| {
-        Command::new("sudo")
-            .args(["-n", path, "list"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    }) {
+    } else if helper_path().is_some_and(sudo_helper_available) {
         Escalation::Sudo
     } else {
         Escalation::Pkexec
     };
     let _ = ESC.set(esc);
+}
+
+fn sudo_helper_available(path: &str) -> bool {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new("sudo");
+    command
+        .args(["-n", path, "list"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+        .spawn()
+        .ok()
+        .and_then(|child| {
+            helper_output_timeout(child, None, std::time::Duration::from_secs(2)).ok()
+        })
+        .is_some_and(|out| out.status.success())
 }
 
 /// Whether to honour a `$WG_HELPER` override. Since the helper runs as root,
@@ -253,7 +263,6 @@ fn helper_output_timeout(
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut status = None;
-    let mut exited_at = None;
     let started = std::time::Instant::now();
     let result = (|| {
         nonblocking(stdout.as_ref().ok_or("Helper stdout is unavailable.")?)?;
@@ -285,17 +294,13 @@ fn helper_output_timeout(
                     }
                 }
             }
-            if status.is_none() {
+            // Keep the leader unreaped while any pipe can delay completion:
+            // its PID then remains reserved until group cleanup.
+            if status.is_none() && stdout.is_none() && stderr.is_none() && stdin.is_none() {
                 status = child.try_wait().map_err(|e| e.to_string())?;
-                if status.is_some() {
-                    exited_at = Some(std::time::Instant::now());
-                }
             }
             if status.is_some() && stdout.is_none() && stderr.is_none() {
                 break;
-            }
-            if exited_at.is_some_and(|at| at.elapsed() >= std::time::Duration::from_millis(200)) {
-                return Err("Helper exited without closing its output pipes.".into());
             }
             if started.elapsed() >= timeout {
                 return Err("Helper operation timed out.".into());
@@ -312,7 +317,7 @@ fn helper_output_timeout(
             stderr: err,
         })
     })();
-    if result.is_err() {
+    if result.is_err() && status.is_none() {
         // Each helper command starts in its own group. Close our pipes and
         // terminate what we can; do not wait forever on an escaped descendant
         // or a privileged process that the UI user cannot signal.
@@ -1634,10 +1639,10 @@ mod tests {
             helper_output_timeout(
                 cmd.spawn().unwrap(),
                 None,
-                std::time::Duration::from_secs(3)
+                std::time::Duration::from_millis(100)
             )
             .unwrap_err()
-            .contains("output pipes")
+            .contains("timed out")
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
