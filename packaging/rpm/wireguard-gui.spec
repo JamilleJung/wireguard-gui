@@ -1,5 +1,5 @@
 Name:           wireguard-gui
-Version:        1.9.1
+Version:        1.9.2
 Release:        1%{?dist}
 Summary:        A native Linux GUI for managing WireGuard tunnels
 
@@ -58,6 +58,10 @@ install -Dm0644 packaging/49-wireguard-gui.rules %{buildroot}%{_datadir}/polkit-
 %{_datadir}/polkit-1/rules.d/49-wireguard-gui.rules
 
 %changelog
+* Mon Nov 02 2026 jamillejung <izeystudio@gmail.com> - 1.9.2-1
+- Deep audit: shared config validation, bounded helpers, safe backups and updates.
+- Serialize tunnel/firewall mutations and require complete kill-switch protection.
+
 * Mon Nov 02 2026 jamillejung <izeystudio@gmail.com> - 1.9.1-1
 - Fix kill-switch isolation and rule ordering, helper hangs, config comments,
   backup validation and update staging; refresh dependencies.

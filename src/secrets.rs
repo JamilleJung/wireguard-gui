@@ -9,9 +9,24 @@ pub fn redact_config(text: &str) -> String {
             // WHOLE line rather than letting it through. Keeps the two redactors
             // from diverging into a weaker one on the log path.
             let lower = line.to_ascii_lowercase();
+            if lower.contains("key is not the correct length")
+                || lower.contains("key is not correct length")
+                || lower.contains("invalid private key")
+                || lower.contains("invalid preshared key")
+            {
+                return "<redacted key error>".to_string();
+            }
             if lower.contains("privatekey") || lower.contains("presharedkey") {
                 match line.split_once('=') {
-                    Some((key, _)) => format!("{} = <redacted>", key.trim()),
+                    Some((key, _))
+                        if matches!(
+                            key.trim().to_ascii_lowercase().as_str(),
+                            "privatekey" | "presharedkey"
+                        ) =>
+                    {
+                        format!("{} = <redacted>", key.trim())
+                    }
+                    Some(_) => "<redacted secret line>".to_string(),
                     None => "<redacted secret line>".to_string(),
                 }
             } else {
@@ -43,6 +58,19 @@ pub fn config_runs_scripts(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{config_runs_scripts, redact_config};
+
+    #[test]
+    fn secret_before_an_equals_in_a_log_prefix_is_redacted() {
+        for line in [
+            "PrivateKey: SECRET = metadata",
+            "journal: PresharedKey SECRET=value",
+            "error=PrivateKey: SECRET",
+            "Key is not the correct length or format: SECRET",
+            "Invalid private key: SECRET",
+        ] {
+            assert!(!redact_config(line).contains("SECRET"), "{line}");
+        }
+    }
 
     #[test]
     fn redacts_private_and_preshared_keys() {

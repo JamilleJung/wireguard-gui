@@ -17,7 +17,7 @@ without installing system files:
 
 ```sh
 cargo build --release --locked
-cargo run --release --locked
+cargo run --release --locked --bin wireguard-gui
 ```
 
 Use the current stable Rust toolchain, a C compiler/linker, `pkg-config` (or
@@ -88,7 +88,7 @@ use the actual run output rather than maintaining a fixed total here.
 For a generated tarball, also check its actual installer layout:
 
 ```sh
-bash tests/installer-sanity.sh install.sh /path/to/wireguard-gui-1.9.1-x86_64-linux.tar.gz
+bash tests/installer-sanity.sh install.sh /path/to/wireguard-gui-1.9.2-x86_64-linux.tar.gz
 ```
 
 ## 🛡️ Privileged changes
@@ -102,7 +102,8 @@ Saved configs use a new `0600` temporary file, `File::sync_all`, rename and a
 best-effort directory sync. Preserve backups before destructive changes. Frontend
 and helper validation have different roles: the frontend gives detailed errors;
 the helper enforces the privileged boundary, including rejection of script hooks.
-Keep both in sync when changing accepted config syntax.
+The helper includes the shared `config.rs` and `secrets.rs` modules so these
+checks do not drift; helper hook rejection stays independent.
 
 Keep firewall rules scoped to exact tunnel comments. Test rule ordering and
 both IPv4/IPv6 paths; unit tests of generated arguments do not prove behavior on
@@ -133,13 +134,34 @@ Debug builds permit a development helper override:
 
 ```sh
 cargo build --bin wg-helper --locked
-WG_HELPER=/absolute/path/to/wg-helper cargo run --locked
+WG_HELPER=/absolute/path/to/wg-helper cargo run --locked --bin wireguard-gui
 ```
 
 This can invoke real privileged operations. Release overrides additionally need
 `WG_ALLOW_UNSAFE_HELPER=1` and an absolute, root-owned regular file with neither
 group nor other write permission. An override does not grant authorization for
 that new path. Avoid running the GUI itself as root for routine development.
+
+## Audit regression expectations
+
+Test all repeated fields and exact config schema; use canonical key fixtures,
+not merely 44 characters with an equals sign. Exercise supported Table/FwMark/
+SaveConfig/IPv6 variants as well as invalid controls, CIDRs and keepalive bounds.
+Keep restore preflight and actual saves aligned through the shared validator.
+
+Regression tests cover failed/partial exports preserving old files, other
+hardlink names, symlink directories and linked backups, hidden ZIP duplicates,
+QR grid selection/limits, runtime-only peers, bounded output/blocked input,
+escaped pipe holders and PID lifetime. The helper serializes mutations with a
+2-second lock deadline and refuses unsafe root-managed file types/ownership.
+Keep the child leader unreaped until pipe work finishes if cleanup may signal
+its process group; otherwise PID reuse can target an unrelated process.
+
+Firewall argument tests do not replace disposable Linux namespace integration.
+One managed switch is allowed; nft updates are one batch, iptables families are
+preflighted and committed separately. Preserve failure reporting and protection
+when stop state is unknown. Never run privileged integration tests on real
+production tunnels or a shared host firewall.
 
 ## 🐛 Issues and contributions
 

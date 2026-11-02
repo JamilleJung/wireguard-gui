@@ -30,12 +30,18 @@ pub fn parse_config(text: &str) -> ParsedConfig {
     let mut cfg = ParsedConfig::default();
     let mut section = "";
     for raw in text.lines() {
-        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
+        let line = raw
+            .split_once('#')
+            .map_or(raw, |(line, _)| line)
+            .trim_ascii();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if line.starts_with('[') {
-            let s = line.trim_matches(|c| c == '[' || c == ']').trim();
+            let s = line
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .unwrap_or("");
             if s.eq_ignore_ascii_case("Peer") {
                 cfg.peers.push(ParsedPeer::default());
                 section = "peer";
@@ -49,8 +55,8 @@ pub fn parse_config(text: &str) -> ParsedConfig {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
-        let value = value.trim().to_string();
+        let key = key.trim_ascii();
+        let value = value.trim_ascii().to_string();
         match section {
             "interface" => match key.to_ascii_lowercase().as_str() {
                 "privatekey" => cfg.private_key = Some(value),
@@ -86,12 +92,14 @@ pub fn private_key(text: &str) -> Option<String> {
 
 /// A WireGuard key is base64 of 32 bytes: 43 chars + one '=' padding.
 pub fn is_wg_key(s: &str) -> bool {
-    let s = s.trim();
-    s.len() == 44
-        && s.ends_with('=')
-        && s[..43]
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
+    let s = s.trim_ascii();
+    let bytes = s.as_bytes();
+    bytes.len() == 44
+        && bytes[43] == b'='
+        && bytes[..43].iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/'))
+        // 32 bytes leave two padding bits in the final base64 character. wg
+        // rejects nonzero bits even when the text has the right length/alphabet.
+        && b"AEIMQUYcgkosw048".contains(&bytes[42])
 }
 
 /// A syntactically valid DNS hostname (RFC 1123 labels).
@@ -118,7 +126,7 @@ fn is_hostname(host: &str) -> bool {
 
 /// host:port, including bracketed IPv6 `[::1]:51820`.
 pub fn is_endpoint(s: &str) -> bool {
-    let s = s.trim();
+    let s = s.trim_ascii();
     // Reject a leading '+'/'-'/whitespace that `str::parse` would otherwise
     // accept; a port must be plain ASCII digits in 1..=65535.
     let port_ok = |port: &str| {
@@ -134,7 +142,17 @@ pub fn is_endpoint(s: &str) -> bool {
         let Some(port) = after.strip_prefix(':') else {
             return false;
         };
-        return inner.parse::<std::net::Ipv6Addr>().is_ok() && port_ok(port);
+        let (address, zone) = inner
+            .split_once('%')
+            .map_or((inner, None), |(address, zone)| (address, Some(zone)));
+        let zone_ok = zone.is_none_or(|zone| {
+            !zone.is_empty()
+                && zone.len() <= 15
+                && !zone.chars().any(|c| {
+                    c.is_whitespace() || c.is_control() || matches!(c, '%' | '[' | ']' | ':' | '/')
+                })
+        });
+        return address.parse::<std::net::Ipv6Addr>().is_ok() && zone_ok && port_ok(port);
     }
 
     let Some((host, port)) = s.rsplit_once(':') else {
@@ -149,7 +167,7 @@ pub fn is_endpoint(s: &str) -> bool {
 
 /// A CIDR / address check via real parsing.
 pub fn looks_like_inet(s: &str) -> bool {
-    let s = s.trim();
+    let s = s.trim_ascii();
     let (addr, prefix) = match s.split_once('/') {
         Some((a, p)) => (a, Some(p)),
         None => (s, None),
@@ -160,6 +178,7 @@ pub fn looks_like_inet(s: &str) -> bool {
     };
     match prefix {
         None => true,
+        Some(p) if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) => false,
         Some(p) => match p.parse::<u8>() {
             Ok(n) => match ip {
                 std::net::IpAddr::V4(_) => n <= 32,
@@ -170,116 +189,127 @@ pub fn looks_like_inet(s: &str) -> bool {
     }
 }
 
+fn decimal(value: &str, max: u32) -> Option<u32> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u32>().ok().filter(|n| *n <= max)
+}
+
 /// Validate obvious WireGuard config errors before handing text to `wg-quick`.
 ///
 /// This deliberately stays permissive: Address and Peer sections are allowed to
 /// be absent for interface-only setups, but if fields are present they must be
 /// shaped like WireGuard expects.
 pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
-    let has_iface = text.lines().any(|l| {
-        l.split_once('#')
-            .map_or(l, |(line, _)| line)
-            .trim()
-            .eq_ignore_ascii_case("[Interface]")
-    });
-    if !has_iface {
-        return Err("Missing an [Interface] section.".into());
+    if text.len() > 1024 * 1024
+        || text
+            .bytes()
+            .any(|b| b == 0 || (b.is_ascii_control() && !matches!(b, b'\t' | b'\r' | b'\n')))
+    {
+        return Err("Config is too large or contains invalid control characters.".into());
     }
-
-    // The helper checks every key occurrence, whereas parse_config keeps the
-    // final scalar value. Check earlier key lines too before backup restore
-    // starts writing any tunnel from an archive.
-    let mut section = String::new();
-    for raw in text.lines() {
-        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
+    // Validate each occurrence before scalar values are folded by parse_config.
+    // This keeps whole-archive preflight consistent with helper validation.
+    let mut section = "";
+    let mut have_interface = false;
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw
+            .split_once('#')
+            .map_or(raw, |(line, _)| line)
+            .trim_ascii();
+        if line.is_empty() {
+            continue;
+        }
         if line.starts_with('[') {
-            section = line.trim_matches(['[', ']']).trim().to_ascii_lowercase();
+            let header = line
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .unwrap_or("");
+            if header.eq_ignore_ascii_case("Interface") {
+                have_interface = true;
+                section = "interface";
+            } else if header.eq_ignore_ascii_case("Peer") {
+                section = "peer";
+            } else {
+                return Err(format!("Invalid config section on line {}.", index + 1));
+            }
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("Expected a config directive on line {}.", index + 1))?;
+        let key = key.trim_ascii().to_ascii_lowercase();
+        let value = value.trim_ascii();
+        let valid = match (section, key.as_str()) {
+            ("interface", "privatekey") | ("peer", "publickey") => is_wg_key(value),
+            ("peer", "presharedkey") => is_wg_key(value),
+            ("interface", "address") => {
+                let addresses: Vec<_> = value
+                    .split(|c: char| c == ',' || c.is_ascii_whitespace())
+                    .filter(|v| !v.is_empty())
+                    .collect();
+                !addresses.is_empty() && addresses.into_iter().all(looks_like_inet)
+            }
+            ("peer", "allowedips") => !value.is_empty() && value.split(',').all(looks_like_inet),
+            ("interface", "listenport") => decimal(value, 65535).is_some(),
+            ("peer", "persistentkeepalive") => {
+                value.eq_ignore_ascii_case("off") || decimal(value, 65535).is_some()
+            }
+            ("peer", "endpoint") => is_endpoint(value),
+            ("interface", "mtu") => {
+                value.is_empty() || decimal(value, 65535).is_some_and(|n| n > 0)
+            }
+            ("interface", "fwmark") => {
+                value.eq_ignore_ascii_case("off")
+                    || decimal(value, u32::MAX).is_some()
+                    || value.strip_prefix("0x").is_some_and(|hex| {
+                        !hex.is_empty()
+                            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                            && u32::from_str_radix(hex, 16).is_ok()
+                    })
+            }
+            ("interface", "saveconfig") => {
+                value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false")
+            }
+            ("interface", "table") => value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')),
+            // wg-quick splits DNS into servers/search domains on commas and
+            // whitespace; an empty directive is a valid no-op.
+            ("interface", "dns") => true,
+            // Frontends may display/admin-edit hooks, while the privileged
+            // helper rejects them independently before any managed write.
+            ("interface", "preup" | "postup" | "predown" | "postdown") => true,
+            _ => {
+                return Err(format!(
+                    "Unknown or misplaced config directive on line {}.",
+                    index + 1
+                ));
+            }
         };
-        let key = key.trim().to_ascii_lowercase();
-        let value = value.trim();
-        let required_key = matches!(
-            (section.as_str(), key.as_str()),
-            ("interface", "privatekey") | ("peer", "publickey")
-        );
-        let optional_key = section == "peer" && key == "presharedkey" && !value.is_empty();
-        if (required_key || optional_key) && !is_wg_key(value) {
-            return Err(format!("Invalid {key} in [{section}]."));
+        if !valid {
+            return Err(format!(
+                "Invalid {key} in [{section}] on line {}.",
+                index + 1
+            ));
         }
-        if value.is_empty()
-            && matches!(
-                (section.as_str(), key.as_str()),
-                ("interface", "address") | ("peer", "allowedips")
-            )
-        {
-            return Err(format!("Empty {key} in [{section}]."));
-        }
+    }
+    if !have_interface {
+        return Err("Missing an [Interface] section.".into());
     }
 
     let cfg = parse_config(text);
 
-    match cfg.private_key.as_deref() {
-        None | Some("") => return Err("[Interface] is missing PrivateKey.".into()),
-        Some(k) if !is_wg_key(k) => {
-            return Err(
-                "PrivateKey is not a valid WireGuard key (expected 44-char base64).".into(),
-            );
-        }
-        _ => {}
+    if cfg.private_key.is_none() {
+        return Err("[Interface] is missing PrivateKey.".into());
     }
-
-    if let Some(addrs) = cfg.address.as_deref() {
-        if addrs.trim().is_empty() {
-            return Err("Address is empty.".into());
+    for (index, peer) in cfg.peers.iter().enumerate() {
+        if peer.public_key.is_empty() {
+            return Err(format!("Peer {} is missing PublicKey.", index + 1));
         }
-        for a in addrs.split(',') {
-            if !looks_like_inet(a) {
-                return Err(format!("Address '{}' is not a valid IP/CIDR.", a.trim()));
-            }
-        }
-    }
-
-    if let Some(port) = cfg.listen_port.as_deref()
-        && !port.is_empty()
-        && port.parse::<u32>().map(|p| p > 65535).unwrap_or(true)
-    {
-        return Err(format!("ListenPort '{port}' is not a valid port."));
-    }
-
-    for (i, p) in cfg.peers.iter().enumerate() {
-        let n = i + 1;
-        if p.public_key.is_empty() {
-            return Err(format!("Peer {n} is missing PublicKey."));
-        }
-        if !is_wg_key(&p.public_key) {
-            return Err(format!("Peer {n} has an invalid PublicKey."));
-        }
-        if !p.preshared_key.is_empty() && !is_wg_key(&p.preshared_key) {
-            return Err(format!("Peer {n} has an invalid PresharedKey."));
-        }
-        if p.allowed_ips.trim().is_empty() {
-            return Err(format!("Peer {n} is missing AllowedIPs."));
-        }
-        for a in p.allowed_ips.split(',') {
-            if !looks_like_inet(a) {
-                return Err(format!("Peer {n}: AllowedIPs '{}' is not valid.", a.trim()));
-            }
-        }
-        if !p.endpoint.is_empty() && !is_endpoint(&p.endpoint) {
-            return Err(format!(
-                "Peer {n}: Endpoint '{}' must be host:port.",
-                p.endpoint
-            ));
-        }
-        let ka = p.keepalive.trim();
-        if !ka.is_empty() && !ka.eq_ignore_ascii_case("off") && ka.parse::<u32>().is_err() {
-            return Err(format!(
-                "Peer {n}: PersistentKeepalive '{}' must be a number or 'off'.",
-                p.keepalive
-            ));
+        if peer.allowed_ips.is_empty() {
+            return Err(format!("Peer {} is missing AllowedIPs.", index + 1));
         }
     }
 
@@ -290,7 +320,119 @@ pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
+
+    #[test]
+    fn unicode_whitespace_cannot_be_validated_then_passed_to_ascii_tools() {
+        for line in [
+            format!("\u{2003}PrivateKey = {KEY}"),
+            format!("PrivateKey = {KEY}\u{a0}"),
+            format!("PrivateKey\u{a0} = {KEY}"),
+        ] {
+            assert!(validate_basic_wireguard_config(&format!("[Interface]\n{line}\n")).is_err());
+        }
+        let commented =
+            format!("[Interface] # บ้าน\nPrivateKey = {KEY} # comment\nAddress = 10.0.0.1/24\n");
+        assert!(validate_basic_wireguard_config(&commented).is_ok());
+        assert!(!looks_like_inet("10.0.0.1/24\u{a0}"));
+    }
+
+    #[test]
+    fn quick_interface_headers_must_not_hide_metadata_scope() {
+        for header in ["[ Interface ]", "[Interface ]", "[ Interface]", "[ Peer ]"] {
+            let text =
+                format!("[Interface]\nPrivateKey = {KEY}\n{header}\nAddress = 10.0.0.1/24\n");
+            assert!(validate_basic_wireguard_config(&text).is_err(), "{header}");
+        }
+        assert!(
+            validate_basic_wireguard_config(&format!(
+                "[interface]\nprivatekey = {KEY}\naddress = 10.0.0.1/24\n"
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn supported_wg_quick_options_and_scoped_ipv6_remain_valid() {
+        for table in ["auto", "off", "123", "main"] {
+            for mark in ["off", "0", "123", "0xca6c"] {
+                let text = format!(
+                    "[Interface]\nPrivateKey = {KEY}\nListenPort = 0\nMTU = 1420\nTable = {table}\nFwMark = {mark}\nSaveConfig = true\nDNS = 1.1.1.1, search.example\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = [fe80::1%eth0]:51820\nPersistentKeepalive = 65535\n"
+                );
+                assert!(
+                    validate_basic_wireguard_config(&text).is_ok(),
+                    "table={table} mark={mark}"
+                );
+            }
+        }
+        let optional = format!(
+            "[Interface]\nPrivateKey = {KEY}\nMTU =\nTable =\nDNS = 1.1.1.1 8.8.8.8 search.example\nAddress = 10.0.0.1/24 fd00::1/64\n"
+        );
+        assert!(validate_basic_wireguard_config(&optional).is_ok());
+        let invalid_psk = format!(
+            "[Interface]\nPrivateKey = {KEY}\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = ::/0\nPresharedKey =\n"
+        );
+        assert!(validate_basic_wireguard_config(&invalid_psk).is_err());
+        assert!(is_endpoint("[fe80::1%3]:51820"));
+        assert!(!is_endpoint("[fe80::1%]:51820"));
+        assert!(!is_endpoint("[fe80::1%eth0%evil]:51820"));
+    }
+
+    #[test]
+    fn key_padding_bits_must_match_wireguard_decoder() {
+        assert!(is_wg_key(KEY));
+        assert!(!is_wg_key("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq="));
+        assert!(!is_wg_key("éABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno="));
+    }
+
+    #[test]
+    fn every_repeated_scalar_and_section_is_validated() {
+        let valid = format!(
+            "[Interface]\nPrivateKey = {KEY}\n[Peer]\nPublicKey = {KEY}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        for invalid in [
+            "Endpoint = bad\nEndpoint = host:42",
+            "PersistentKeepalive = 65536\nPersistentKeepalive = 25",
+            "AllowedIPs = 10.0.0.1/+24",
+        ] {
+            assert!(
+                validate_basic_wireguard_config(&format!("{valid}{invalid}\n")).is_err(),
+                "{invalid}"
+            );
+        }
+        for invalid in [
+            "[[Interface]]",
+            "[Interface] trailing",
+            "[Unknown]",
+            "some junk",
+            "Unknown = value",
+            "Address = 10.0.0.1/+24",
+            "ListenPort =",
+            "MTU = 0",
+            "SaveConfig = perhaps",
+        ] {
+            assert!(
+                validate_basic_wireguard_config(&format!(
+                    "[Interface]\nPrivateKey = {KEY}\n{invalid}\n"
+                ))
+                .is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(
+            validate_basic_wireguard_config(&format!(
+                "PrivateKey = {KEY}\n[Interface]\nPrivateKey = {KEY}\n"
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_basic_wireguard_config(&format!(
+                "[Peer]\nPublicKey = {KEY}\nAllowedIPs = ::/0\n[Interface]\nPrivateKey = {KEY}\n"
+            ))
+            .is_ok()
+        );
+        assert!(validate_basic_wireguard_config(&format!("{valid}[Interface]\nListenPort = 0\nFwMark = 0xca6c\nTable = off\nSaveConfig = false\n")).is_ok());
+    }
 
     #[test]
     fn wg_key_shape() {

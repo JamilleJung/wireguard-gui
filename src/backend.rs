@@ -22,25 +22,36 @@ enum Escalation {
 }
 
 static ESC: OnceLock<Escalation> = OnceLock::new();
-static HELPER: OnceLock<String> = OnceLock::new();
+static HELPER: OnceLock<Option<String>> = OnceLock::new();
 
 /// Decide once how we gain privilege and where the helper lives.
 pub fn init() {
     let esc = if unsafe { libc::geteuid() } == 0 {
         Escalation::Direct
-    } else if Command::new("sudo")
-        .args(["-n", helper_path(), "list"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-    {
+    } else if helper_path().is_some_and(sudo_helper_available) {
         Escalation::Sudo
     } else {
         Escalation::Pkexec
     };
     let _ = ESC.set(esc);
+}
+
+fn sudo_helper_available(path: &str) -> bool {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new("sudo");
+    command
+        .args(["-n", path, "list"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+        .spawn()
+        .ok()
+        .and_then(|child| {
+            helper_output_timeout(child, None, std::time::Duration::from_secs(2)).ok()
+        })
+        .is_some_and(|out| out.status.success())
 }
 
 /// Whether to honour a `$WG_HELPER` override. Since the helper runs as root,
@@ -57,62 +68,70 @@ fn wg_helper_override_allowed(p: &str) -> bool {
     if std::env::var("WG_ALLOW_UNSAFE_HELPER").as_deref() != Ok("1") {
         return false;
     }
-    let path = std::path::Path::new(p);
+    trusted_helper(std::path::Path::new(p))
+}
+
+/// Resolve an allowed `$WG_HELPER` override, this application's trusted
+/// installed or adjacent helper, or a development helper in debug builds.
+pub fn helper_path() -> Option<&'static str> {
+    HELPER
+        .get_or_init(|| {
+            if let Ok(path) = std::env::var("WG_HELPER")
+                && wg_helper_override_allowed(&path)
+            {
+                return Some(path);
+            }
+            for path in [
+                "/usr/local/lib/wireguard-gui/wg-helper",
+                "/usr/lib/wireguard-gui/wg-helper",
+            ] {
+                if trusted_helper(std::path::Path::new(path)) {
+                    return Some(path.to_string());
+                }
+            }
+            if let Some(path) = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("wg-helper")))
+                && (trusted_helper(&path) || (cfg!(debug_assertions) && path.is_file()))
+            {
+                return Some(path.to_string_lossy().into_owned());
+            }
+            // Development fallbacks are never baked into release helper selection:
+            // an old build directory must not become a root executable later.
+            if cfg!(debug_assertions) {
+                for rel in ["target/debug/wg-helper", "target/release/wg-helper"] {
+                    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+                    if path.is_file() {
+                        return Some(path.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            None
+        })
+        .as_deref()
+}
+
+fn trusted_helper(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
     if !path.is_absolute() {
         return false;
     }
-    match std::fs::metadata(path) {
-        Ok(m) => {
-            use std::os::unix::fs::MetadataExt;
-            m.is_file() && m.uid() == 0 && (m.mode() & 0o022) == 0
-        }
-        Err(_) => false,
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(meta) = canonical.metadata() else {
+        return false;
+    };
+    if !meta.is_file() || meta.uid() != 0 || meta.mode() & 0o022 != 0 || meta.mode() & 0o111 == 0 {
+        return false;
     }
-}
-
-/// Resolve the helper path: `$WG_HELPER` (when allowed), an installed location,
-/// or the in-tree copy used during `cargo run`.
-fn helper_path() -> &'static str {
-    HELPER.get_or_init(|| {
-        if let Ok(p) = std::env::var("WG_HELPER")
-            && wg_helper_override_allowed(&p)
-        {
-            return p;
-        }
-        // Unsafe override in a release build — ignore it and fall back to the
-        // trusted installed paths rather than running an attacker's script.
-        let candidates = [
-            "/usr/local/lib/wireguard-gui/wg-helper",
-            "/usr/lib/wireguard-gui/wg-helper",
-        ];
-        for c in candidates {
-            if PathBuf::from(c).exists() {
-                return c.to_string();
-            }
-        }
-        // A wg-helper sitting next to the binary — e.g. an extracted release
-        // tarball that hasn't run install.sh. Tried only after the trusted
-        // installed paths; under sudoers/polkit the grant is scoped to the
-        // installed path, so this mainly helps the run-as-root / portable case.
-        if let Some(adj) = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("wg-helper")))
-            && adj.is_file()
-        {
-            return adj.to_string_lossy().into_owned();
-        }
-        // dev fallback: a helper built from src/bin/wg-helper.rs.
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        for rel in ["target/debug/wg-helper", "target/release/wg-helper"] {
-            let dev = manifest.join(rel);
-            if dev.is_file() {
-                return dev.to_string_lossy().into_owned();
-            }
-        }
-        manifest
-            .join("target/debug/wg-helper")
-            .to_string_lossy()
-            .into_owned()
+    // A root-owned file in a user-writable directory can still be replaced.
+    // Verify both the spelling's parents and the resolved target's parents.
+    [path, canonical.as_path()].into_iter().all(|file| {
+        file.ancestors().skip(1).all(|dir| {
+            dir.metadata()
+                .is_ok_and(|meta| meta.is_dir() && meta.uid() == 0 && meta.mode() & 0o022 == 0)
+        })
     })
 }
 
@@ -138,7 +157,18 @@ fn spawn_error(esc: Escalation, helper: &str, e: &std::io::Error) -> String {
 /// Run the helper with a verb (+ optional name) and optional stdin payload.
 fn helper(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     let esc = *ESC.get().unwrap_or(&Escalation::Pkexec);
-    let helper = helper_path();
+    let helper = helper_path()
+        .ok_or("No trusted executable wg-helper found; run ./install.sh to install it.")?;
+
+    // Polling must not open authentication dialogs every refresh. pkcheck
+    // without --allow-user-interaction only accepts an existing authorization;
+    // explicit mutating actions still use pkexec's normal authentication flow.
+    if esc == Escalation::Pkexec
+        && read_only_helper_verb(args.first().copied().unwrap_or(""))
+        && !polkit_authorized(helper)
+    {
+        return Err("Helper authorization is required; run ./install.sh to configure the scoped helper grant.".into());
+    }
 
     let mut cmd = match esc {
         Escalation::Direct => {
@@ -153,33 +183,230 @@ fn helper(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
         }
         Escalation::Pkexec => {
             let mut c = Command::new("pkexec");
-            c.arg(helper).args(args);
+            c.arg("--disable-internal-agent").arg(helper).args(args);
             c
         }
     };
 
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
 
-    let mut child = cmd.spawn().map_err(|e| spawn_error(esc, helper, &e))?;
-    if let Some(payload) = stdin {
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(payload.as_bytes())
-            .map_err(|e| format!("write stdin: {e}"))?;
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("wait failed: {e}"))?;
+    let child = cmd.spawn().map_err(|e| spawn_error(esc, helper, &e))?;
+    let out = helper_output(child, stdin.map(str::to_owned))?;
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
+        let err = secrets::redact_config(&String::from_utf8_lossy(&out.stderr));
         return Err(format!("{} {}: {}", helper, args.join(" "), err.trim()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    String::from_utf8(out.stdout).map_err(|_| "wg-helper returned invalid UTF-8.".to_string())
+}
+
+const MAX_HELPER_OUTPUT: usize = 4 * 1024 * 1024;
+
+fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<(), String> {
+    let fd = pipe.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn drain_helper_pipe(
+    pipe: &mut Option<impl std::io::Read>,
+    bytes: &mut Vec<u8>,
+) -> Result<(), String> {
+    let mut chunk = [0; 8192];
+    for _ in 0..16 {
+        let Some(reader) = pipe else {
+            return Ok(());
+        };
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                *pipe = None;
+                return Ok(());
+            }
+            Ok(n) if bytes.len() + n <= MAX_HELPER_OUTPUT => bytes.extend_from_slice(&chunk[..n]),
+            Ok(_) => return Err("Helper output exceeds the 4 MiB safety limit.".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn helper_output(
+    child: std::process::Child,
+    input: Option<String>,
+) -> Result<std::process::Output, String> {
+    helper_output_timeout(child, input, std::time::Duration::from_secs(90))
+}
+
+fn helper_output_timeout(
+    mut child: std::process::Child,
+    input: Option<String>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let mut stdin = child.stdin.take();
+    let input = input.unwrap_or_default().into_bytes();
+    let mut offset = 0;
+    let mut failed_input = false;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut status = None;
+    let started = std::time::Instant::now();
+    let result = (|| {
+        nonblocking(stdout.as_ref().ok_or("Helper stdout is unavailable.")?)?;
+        nonblocking(stderr.as_ref().ok_or("Helper stderr is unavailable.")?)?;
+        if let Some(pipe) = &stdin {
+            nonblocking(pipe)?;
+        }
+        loop {
+            drain_helper_pipe(&mut stdout, &mut out)?;
+            drain_helper_pipe(&mut stderr, &mut err)?;
+            if offset == input.len() {
+                stdin = None;
+            }
+            if let Some(pipe) = &mut stdin {
+                match pipe.write(&input[offset..]) {
+                    Ok(0) => {
+                        failed_input = true;
+                        stdin = None;
+                    }
+                    Ok(n) => offset += n,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => {
+                        failed_input = true;
+                        stdin = None;
+                    }
+                }
+            }
+            // Keep the leader unreaped while any pipe can delay completion:
+            // its PID then remains reserved until group cleanup.
+            if status.is_none() && stdout.is_none() && stderr.is_none() && stdin.is_none() {
+                status = child.try_wait().map_err(|e| e.to_string())?;
+            }
+            if status.is_some() && stdout.is_none() && stderr.is_none() {
+                break;
+            }
+            if started.elapsed() >= timeout {
+                return Err("Helper operation timed out.".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let status = status.ok_or("Missing helper exit status.")?;
+        if status.success() && (failed_input || offset != input.len()) {
+            return Err("Could not send the complete config to wg-helper.".into());
+        }
+        Ok(std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
+        })
+    })();
+    if result.is_err() && status.is_none() {
+        // Each helper command starts in its own group. Close our pipes and
+        // terminate what we can; do not wait forever on an escaped descendant
+        // or a privileged process that the UI user cannot signal.
+        stdin.take();
+        stdout.take();
+        stderr.take();
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let deadline = std::time::Instant::now();
+        while deadline.elapsed() < std::time::Duration::from_millis(200) {
+            if child.try_wait().ok().flatten().is_some() {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    result
+}
+
+fn read_only_helper_verb(verb: &str) -> bool {
+    matches!(
+        verb,
+        "list"
+            | "active"
+            | "read"
+            | "dump"
+            | "is-enabled"
+            | "showconf"
+            | "log"
+            | "killswitch-status"
+    )
+}
+
+fn polkit_subject(stat: &str, pid: u32, uid: u32) -> Option<String> {
+    // /proc stat field 2 (comm) can itself contain spaces and ')'. Field22 is
+    // starttime; use pid,starttime,uid as required by pkcheck to avoid PID reuse.
+    let start = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?;
+    if start.is_empty() || !start.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("{pid},{start},{uid}"))
+}
+
+fn polkit_authorized(helper: &str) -> bool {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
+        return false;
+    };
+    let Some(subject) = polkit_subject(&stat, std::process::id(), unsafe { libc::geteuid() })
+    else {
+        return false;
+    };
+    let mut cmd = Command::new("pkcheck");
+    cmd.args([
+        "--action-id",
+        "org.freedesktop.policykit.exec",
+        "--process",
+        &subject,
+        "--detail",
+        "program",
+        helper,
+        "--detail",
+        "user",
+        "root",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() < std::time::Duration::from_secs(3) => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,51 +451,57 @@ pub struct Detail {
 // Public API
 // ---------------------------------------------------------------------------
 
-pub fn list_tunnels() -> Vec<Tunnel> {
-    let names = helper(&["list"], None).unwrap_or_default();
-    let active: Vec<String> = helper(&["active"], None)
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-    names
-        .lines()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(|n| Tunnel {
-            name: n.to_string(),
-            active: active.iter().any(|a| a == n),
-        })
-        .collect()
+fn saved_tunnel_names() -> Result<Vec<String>, String> {
+    let output = helper(&["list"], None)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for name in output.lines().filter(|name| !name.is_empty()) {
+        validate_tunnel_name(name)?;
+        if !seen.insert(name) {
+            return Err("wg-helper returned duplicate tunnel names.".into());
+        }
+        names.push(name.to_string());
+    }
+    Ok(names)
 }
 
-pub fn tunnel_exists(name: &str) -> bool {
-    list_tunnels().iter().any(|t| t.name == name)
+pub fn try_list_tunnels() -> Result<Vec<Tunnel>, String> {
+    let names = saved_tunnel_names()?;
+    let active = helper(&["active"], None)?;
+    let active: std::collections::HashSet<_> = active.split_whitespace().collect();
+    Ok(names
+        .into_iter()
+        .map(|name| Tunnel {
+            active: active.contains(name.as_str()),
+            name,
+        })
+        .collect())
 }
 
 /// A collision-free tunnel name based on `base`: returns `base`, else
 /// `base-2`, `base-3`, … (kept within the 15-char interface-name limit).
-pub fn unique_name(base: &str) -> String {
-    unique_name_with(base, tunnel_exists)
+pub fn unique_name(base: &str) -> Result<String, String> {
+    let existing: std::collections::HashSet<_> = saved_tunnel_names()?.into_iter().collect();
+    unique_name_with(base, |name| existing.contains(name))
 }
 
-fn unique_name_with<F>(base: &str, exists: F) -> String
+fn unique_name_with<F>(base: &str, exists: F) -> Result<String, String>
 where
     F: Fn(&str) -> bool,
 {
     let base = sanitize_name(base);
     if !exists(&base) {
-        return base;
+        return Ok(base);
     }
-    for n in 2..1000 {
+    for n in 2..=10000 {
         let suffix = format!("-{n}");
         let keep = 15usize.saturating_sub(suffix.len());
         let candidate = format!("{}{}", base.chars().take(keep).collect::<String>(), suffix);
         if !exists(&candidate) {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    base
+    Err("No unused tunnel name could be found; choose a different name.".into())
 }
 
 pub fn read_config(name: &str) -> Result<String, String> {
@@ -336,59 +569,12 @@ pub fn get_detail(name: &str) -> Detail {
         .or_else(|| parsed.listen_port.clone())
         .unwrap_or_default();
 
-    let peers = parsed
-        .peers
-        .into_iter()
-        .map(|p| {
-            let lp = live
-                .as_ref()
-                .and_then(|l| l.peers.iter().find(|x| x.public_key == p.public_key));
-            Peer {
-                preshared: !p.preshared_key.is_empty(),
-                allowed_ips: if p.allowed_ips.is_empty() {
-                    lp.map(|x| x.allowed_ips.clone()).unwrap_or_default()
-                } else {
-                    p.allowed_ips.clone()
-                },
-                endpoint: lp
-                    .map(|x| x.endpoint.clone())
-                    .filter(|s| !s.is_empty() && s != "(none)")
-                    .unwrap_or(p.endpoint.clone()),
-                keepalive: p.keepalive.clone(),
-                latest_handshake: lp
-                    .map(|x| fmt_handshake(x.latest_handshake))
-                    .unwrap_or_default(),
-                transfer: lp.map(|x| fmt_transfer(x.rx, x.tx)).unwrap_or_default(),
-                public_key: p.public_key,
-            }
-        })
-        .collect();
-
-    // Live interface totals + most-recent handshake age, for throughput/health.
-    let (rx_bytes, tx_bytes) = live
-        .as_ref()
-        .map(|l| {
-            l.peers
-                .iter()
-                .fold((0u64, 0u64), |(r, t), p| (r + p.rx, t + p.tx))
-        })
-        .unwrap_or((0, 0));
-    let handshake_age = live.as_ref().and_then(|l| {
-        let latest = l
-            .peers
-            .iter()
-            .map(|p| p.latest_handshake)
-            .max()
-            .unwrap_or(0);
-        if latest == 0 {
-            return None;
-        }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(latest);
-        Some(now.saturating_sub(latest))
-    });
+    let peers = merge_peers(parsed.peers, live.as_ref());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (rx_bytes, tx_bytes, handshake_age) = live_totals(live.as_ref(), now);
 
     Detail {
         name: name.to_string(),
@@ -530,24 +716,40 @@ pub fn diagnose_report(name: &str) -> String {
 
 /// `wg pubkey` is pure crypto and needs no privilege.
 fn pubkey_of(private_key: &str) -> Option<String> {
-    let mut child = Command::new("wg")
-        .arg("pubkey")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()?
-        .write_all(format!("{private_key}\n").as_bytes())
-        .ok()?;
-    let out = child.wait_with_output().ok()?;
-    if out.status.success() {
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        None
+    if !config::is_wg_key(private_key) {
+        return None;
     }
+    let output = wg_output("pubkey", Some(format!("{private_key}\n"))).ok()?;
+    output
+        .status
+        .success()
+        .then(|| key_output(&output.stdout))
+        .flatten()
+}
+
+fn wg_output(verb: &str, input: Option<String>) -> Result<std::process::Output, String> {
+    use std::os::unix::process::CommandExt;
+    let executable = if unsafe { libc::geteuid() } == 0 && !cfg!(debug_assertions) {
+        ["/usr/sbin/wg", "/usr/bin/wg", "/sbin/wg", "/bin/wg"]
+            .into_iter()
+            .find(|path| trusted_helper(std::path::Path::new(path)))
+            .ok_or("No trusted wg executable found.")?
+    } else {
+        "wg"
+    };
+    let mut command = Command::new(executable);
+    command
+        .arg(verb)
+        .process_group(0)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = command.spawn().map_err(|e| format!("wg {verb}: {e}"))?;
+    helper_output_timeout(child, input, std::time::Duration::from_secs(10))
 }
 
 // ---------------------------------------------------------------------------
@@ -556,8 +758,10 @@ fn pubkey_of(private_key: &str) -> Option<String> {
 
 struct LivePeer {
     public_key: String,
+    preshared: bool,
     endpoint: String,
     allowed_ips: String,
+    keepalive: String,
     latest_handshake: u64,
     rx: u64,
     tx: u64,
@@ -575,31 +779,108 @@ struct LiveDump {
 ///                       latest-handshake  rx  tx  persistent-keepalive
 fn parse_dump(text: &str) -> Option<LiveDump> {
     let mut lines = text.lines();
-    let first = lines.next()?;
-    let f: Vec<&str> = first.split('\t').collect();
-    if f.len() < 3 {
+    let fields: Vec<_> = lines.next()?.split('\t').collect();
+    if fields.len() != 4 || fields[2].parse::<u16>().is_err() {
         return None;
     }
     let mut dump = LiveDump {
-        iface_public: f.get(1).unwrap_or(&"").to_string(),
-        listen_port: f.get(2).unwrap_or(&"").to_string(),
+        iface_public: if fields[1] == "(none)" {
+            String::new()
+        } else {
+            fields[1].to_string()
+        },
+        listen_port: fields[2].to_string(),
         peers: Vec::new(),
     };
     for line in lines {
-        let p: Vec<&str> = line.split('\t').collect();
-        if p.len() < 7 {
+        let p: Vec<_> = line.split('\t').collect();
+        if p.len() != 8 || !config::is_wg_key(p[0]) {
+            continue;
+        }
+        let (Ok(latest_handshake), Ok(rx), Ok(tx)) = (p[4].parse(), p[5].parse(), p[6].parse())
+        else {
+            continue;
+        };
+        if p[7] != "off" && p[7].parse::<u16>().is_err() {
             continue;
         }
         dump.peers.push(LivePeer {
             public_key: p[0].to_string(),
-            endpoint: p[2].to_string(),
-            allowed_ips: p[3].to_string(),
-            latest_handshake: p[4].parse().unwrap_or(0),
-            rx: p[5].parse().unwrap_or(0),
-            tx: p[6].parse().unwrap_or(0),
+            preshared: p[1] != "(none)",
+            endpoint: if p[2] == "(none)" {
+                String::new()
+            } else {
+                p[2].to_string()
+            },
+            allowed_ips: if p[3] == "(none)" {
+                String::new()
+            } else {
+                p[3].to_string()
+            },
+            keepalive: p[7].to_string(),
+            latest_handshake,
+            rx,
+            tx,
         });
     }
     Some(dump)
+}
+
+fn merge_peers(saved: Vec<config::ParsedPeer>, live: Option<&LiveDump>) -> Vec<Peer> {
+    let mut peers = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for p in saved {
+        seen.insert(p.public_key.clone());
+        let lp = live.and_then(|dump| dump.peers.iter().find(|v| v.public_key == p.public_key));
+        peers.push(Peer {
+            public_key: p.public_key,
+            preshared: lp
+                .map(|p| p.preshared)
+                .unwrap_or(!p.preshared_key.is_empty()),
+            allowed_ips: lp.map(|p| p.allowed_ips.clone()).unwrap_or(p.allowed_ips),
+            endpoint: lp
+                .map(|p| p.endpoint.clone())
+                .filter(|p| !p.is_empty())
+                .unwrap_or(p.endpoint),
+            keepalive: lp.map(|p| p.keepalive.clone()).unwrap_or(p.keepalive),
+            latest_handshake: lp
+                .map(|p| fmt_handshake(p.latest_handshake))
+                .unwrap_or_default(),
+            transfer: lp.map(|p| fmt_transfer(p.rx, p.tx)).unwrap_or_default(),
+        });
+    }
+    if let Some(dump) = live {
+        for p in &dump.peers {
+            if seen.insert(p.public_key.clone()) {
+                peers.push(Peer {
+                    public_key: p.public_key.clone(),
+                    preshared: p.preshared,
+                    allowed_ips: p.allowed_ips.clone(),
+                    endpoint: p.endpoint.clone(),
+                    keepalive: p.keepalive.clone(),
+                    latest_handshake: fmt_handshake(p.latest_handshake),
+                    transfer: fmt_transfer(p.rx, p.tx),
+                });
+            }
+        }
+    }
+    peers
+}
+
+fn live_totals(live: Option<&LiveDump>, now: u64) -> (u64, u64, Option<u64>) {
+    let Some(live) = live else {
+        return (0, 0, None);
+    };
+    let (rx, tx) = live.peers.iter().fold((0u64, 0u64), |(rx, tx), p| {
+        (rx.saturating_add(p.rx), tx.saturating_add(p.tx))
+    });
+    let latest = live
+        .peers
+        .iter()
+        .map(|p| p.latest_handshake)
+        .max()
+        .unwrap_or(0);
+    (rx, tx, (latest != 0 && latest <= now).then(|| now - latest))
 }
 
 // ---------------------------------------------------------------------------
@@ -614,7 +895,10 @@ fn fmt_handshake(epoch: u64) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(epoch);
-    let secs = now.saturating_sub(epoch);
+    if epoch > now {
+        return "in the future (check system clock)".to_string();
+    }
+    let secs = now - epoch;
 
     match secs {
         0 => "now".to_string(),
@@ -656,14 +940,12 @@ pub fn validate_config(text: &str) -> Result<(), String> {
 
 /// Generate a fresh WireGuard keypair via `wg genkey` / `wg pubkey` (no root).
 pub fn generate_keypair() -> Result<(String, String), String> {
-    let genkey = Command::new("wg")
-        .arg("genkey")
-        .output()
-        .map_err(|e| format!("wg genkey: {e}"))?;
+    let genkey = wg_output("genkey", None)?;
     if !genkey.status.success() {
         return Err("wg genkey failed".into());
     }
-    let private = String::from_utf8_lossy(&genkey.stdout).trim().to_string();
+    let private =
+        key_output(&genkey.stdout).ok_or("wg genkey returned an invalid WireGuard key")?;
     let public = pubkey_of(&private).ok_or("wg pubkey failed")?;
     Ok((private, public))
 }
@@ -680,14 +962,16 @@ pub fn public_key_for_config(text: &str) -> String {
 
 /// Generate a fresh preshared key via `wg genpsk` (no root).
 pub fn generate_psk() -> Result<String, String> {
-    let out = Command::new("wg")
-        .arg("genpsk")
-        .output()
-        .map_err(|e| format!("wg genpsk: {e}"))?;
+    let out = wg_output("genpsk", None)?;
     if !out.status.success() {
         return Err("wg genpsk failed".into());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    key_output(&out.stdout).ok_or("wg genpsk returned an invalid WireGuard key".into())
+}
+
+fn key_output(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    config::is_wg_key(text).then(|| text.to_string())
 }
 
 /// Apply the saved config to a RUNNING tunnel without dropping sessions
@@ -708,49 +992,102 @@ pub fn persist_live(name: &str) -> Result<(), String> {
 }
 
 /// All tunnel configs as (filename, contents), for export.
-pub fn read_all_configs() -> Vec<(String, String)> {
-    list_tunnels()
+pub fn read_all_configs() -> Result<Vec<(String, String)>, String> {
+    collect_configs(saved_tunnel_names()?, read_config)
+}
+
+fn collect_configs(
+    names: impl IntoIterator<Item = String>,
+    mut read: impl FnMut(&str) -> Result<String, String>,
+) -> Result<Vec<(String, String)>, String> {
+    names
         .into_iter()
-        .filter_map(|t| {
-            read_config(&t.name)
-                .ok()
-                .map(|c| (format!("{}.conf", t.name), c))
+        .map(|name| {
+            validate_tunnel_name(&name)?;
+            let content = read(&name)?;
+            Ok((format!("{name}.conf"), content))
         })
         .collect()
 }
 
-/// Write every tunnel config into a `.zip` at `dest`. Returns the count.
+/// Export is all-or-error: unreadable configs never silently disappear from a
+/// successful backup, and failed writes preserve an existing destination.
 pub fn export_zip(dest: &std::path::Path) -> Result<usize, String> {
-    let files = read_all_configs();
+    let files = read_all_configs()?;
+    write_zip_files(dest, &files, true)
+}
+
+fn write_zip_files(
+    dest: &std::path::Path,
+    files: &[(String, String)],
+    replace: bool,
+) -> Result<usize, String> {
     if files.is_empty() {
         return Err("No tunnels to export.".into());
     }
-    // This archive bundles every tunnel's PrivateKey/PresharedKey, so create it
-    // 0600 and refuse to follow a symlink at the destination (a predictable
-    // export path is a classic symlink-clobber / key-leak target).
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(dest)
-        .map_err(|e| format!("create {}: {e}", dest.display()))?;
-    // Tighten perms even if the file pre-existed with a looser mode.
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(f);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .unix_permissions(0o600);
-    for (name, content) in &files {
-        zip.start_file(name, opts).map_err(|e| e.to_string())?;
-        zip.write_all(content.as_bytes())
-            .map_err(|e| e.to_string())?;
+    atomic_private_write(dest, replace, |file| {
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o600);
+        for (name, content) in files {
+            zip.start_file(name, opts).map_err(|e| e.to_string())?;
+            zip.write_all(content.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+        Ok(files.len())
+    })
+}
+
+/// Publish a completed 0600 sibling file. Replacing a hardlink changes only
+/// the requested directory entry; a partial write never truncates another file.
+fn atomic_private_write<T>(
+    dest: &std::path::Path,
+    replace: bool,
+    write: impl FnOnce(&mut std::fs::File) -> Result<T, String>,
+) -> Result<T, String> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    if std::fs::symlink_metadata(dest).is_ok_and(|meta| !meta.is_file()) {
+        return Err("Destination must be a regular file, not a directory or symlink.".into());
     }
-    zip.finish().map_err(|e| e.to_string())?;
-    Ok(files.len())
+    let dir = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let template = dir.join(".wireguard-export-XXXXXX");
+    let mut name = std::ffi::CString::new(template.as_os_str().as_bytes())
+        .map_err(|e| e.to_string())?
+        .into_bytes_with_nul();
+    let fd = unsafe { libc::mkstemp(name.as_mut_ptr().cast()) };
+    if fd < 0 {
+        return Err(format!(
+            "create private file: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    name.pop();
+    let tmp = PathBuf::from(std::ffi::OsString::from_vec(name));
+    let result = (|| {
+        let result = write(&mut file)?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        if replace {
+            std::fs::rename(&tmp, dest).map_err(|e| format!("publish {}: {e}", dest.display()))?;
+        } else {
+            // link is an atomic no-clobber publication; remove the temporary
+            // link afterward, leaving the completed archive with one link.
+            std::fs::hard_link(&tmp, dest)
+                .map_err(|e| format!("publish {}: {e}", dest.display()))?;
+        }
+        if let Ok(parent) = std::fs::File::open(dir) {
+            let _ = parent.sync_all();
+        }
+        Ok(result)
+    })();
+    let _ = std::fs::remove_file(tmp);
+    result
 }
 
 // ===========================================================================
@@ -773,19 +1110,38 @@ pub struct BackupInfo {
 /// the archives bundle private keys, so keep the whole tree private. The dir is
 /// shared with wireguard-tui (same /etc/wireguard configs).
 pub fn backup_dir() -> Result<PathBuf, String> {
-    use std::os::unix::fs::DirBuilderExt;
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .ok_or("Can't locate a home directory for backups.")?;
+        .filter(|p| p.is_absolute())
+        .ok_or("Can't locate an absolute home directory for backups.")?;
+    ensure_backup_dir(&base)
+}
+
+fn ensure_backup_dir(base: &std::path::Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    std::fs::create_dir_all(base).map_err(|e| e.to_string())?;
     let dir = base.join("wireguard").join("backups");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)
-        .map_err(|e| format!("create {}: {e}", dir.display()))?;
-    Ok(dir)
+    for path in [base.join("wireguard"), dir.clone()] {
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return Err("Backup directory is not owned by the current user.".into());
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    dir.canonicalize().map_err(|e| e.to_string())
 }
 
 fn now_secs() -> i64 {
@@ -845,9 +1201,15 @@ pub fn fmt_size(bytes: u64) -> String {
 pub fn create_backup() -> Result<BackupInfo, String> {
     let dir = backup_dir()?;
     let secs = now_secs();
-    let name = format!("wg-backup-{}.zip", stamp_compact(secs));
+    static NEXT_BACKUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT_BACKUP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!(
+        "wg-backup-{}-{}-{sequence}.zip",
+        stamp_compact(secs),
+        std::process::id()
+    );
     let path = dir.join(&name);
-    let count = export_zip(&path)?; // reuses the 0600 / O_NOFOLLOW writer
+    let count = write_zip_files(&path, &read_all_configs()?, false)?;
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(BackupInfo {
         path,
@@ -859,10 +1221,22 @@ pub fn create_backup() -> Result<BackupInfo, String> {
 }
 
 fn count_zip_entries(path: &std::path::Path) -> usize {
-    std::fs::File::open(path)
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut file) = open_backup(path) else {
+        return 0;
+    };
+    let Ok(meta) = file.metadata() else {
+        return 0;
+    };
+    if preflight_zip_directory(&mut file, meta.len()).is_err()
+        || file.seek(SeekFrom::Start(0)).is_err()
+    {
+        return 0;
+    }
+    zip::ZipArchive::new(file)
         .ok()
-        .and_then(|f| zip::ZipArchive::new(f).ok())
-        .map(|z| z.len())
+        .filter(|zip| !zip.has_duplicate_names() && zip.len() <= 4096)
+        .map(|zip| zip.len())
         .unwrap_or(0)
 }
 
@@ -881,7 +1255,10 @@ pub fn list_backups() -> Vec<BackupInfo> {
         if path.extension().and_then(|e| e.to_str()) != Some("zip") {
             continue;
         }
-        let Ok(md) = ent.metadata() else { continue };
+        let Ok(file) = open_backup(&path) else {
+            continue;
+        };
+        let Ok(md) = file.metadata() else { continue };
         let when_secs = md
             .modified()
             .ok()
@@ -900,41 +1277,184 @@ pub fn list_backups() -> Vec<BackupInfo> {
     out
 }
 
-/// Confirm `path` resolves to a regular file directly inside the backup dir.
-fn backup_path_ok(path: &std::path::Path) -> Result<PathBuf, String> {
+const MAX_BACKUP_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Open relative to the already-open backup directory. Do not canonicalize a
+/// file then reopen its spelling: a symlink swap could redirect that second IO.
+fn open_backup(path: &std::path::Path) -> Result<std::fs::File, String> {
     let dir = backup_dir()?;
-    let canon = path
+    open_backup_in(&dir, path)
+}
+
+fn open_backup_in(dir: &std::path::Path, path: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    if path
+        .parent()
+        .ok_or("Backup path has no directory.")?
         .canonicalize()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    let dir = dir.canonicalize().map_err(|e| e.to_string())?;
-    if canon.parent() != Some(dir.as_path()) || !canon.is_file() {
-        return Err("Refusing to act on a path outside the backup directory.".into());
+        .map_err(|e| e.to_string())?
+        != dir
+    {
+        return Err("Refusing a path outside the backup directory.".into());
     }
-    Ok(canon)
+    let name = path.file_name().ok_or("Backup path has no filename.")?;
+    let name = std::ffi::CString::new(name.as_bytes()).map_err(|e| e.to_string())?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
+        .map_err(|e| e.to_string())?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(format!("open backup: {}", std::io::Error::last_os_error()));
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file()
+        || meta.nlink() != 1
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.len() > MAX_BACKUP_BYTES
+    {
+        return Err(
+            "Backup must be an owned regular file with one link and at most 64 MiB.".into(),
+        );
+    }
+    Ok(file)
 }
 
 /// Restore every `.conf` inside a backup archive (overwriting tunnels of the
 /// same name). Returns the number restored.
 pub fn restore_backup(path: &std::path::Path) -> Result<usize, String> {
-    let canon = backup_path_ok(path)?;
-    let f = std::fs::File::open(&canon).map_err(|e| e.to_string())?;
-    let configs = backup_configs(f)?;
+    let configs = backup_configs(open_backup(path)?)?;
     for (name, content) in &configs {
         save_config(name, content)?;
     }
     Ok(configs.len())
 }
 
+// ZIP metadata is eagerly allocated by ZipArchive::new. Read only the bounded
+// end records first so a huge declared/actual entry count cannot allocate that
+// metadata before the archive's entry limit is enforced.
+fn preflight_zip_directory(
+    reader: &mut (impl std::io::Read + std::io::Seek),
+    length: u64,
+) -> Result<(), String> {
+    use std::io::SeekFrom;
+    if !(22..=MAX_BACKUP_BYTES).contains(&length) {
+        return Err("Invalid or oversized ZIP file.".into());
+    }
+    // zip may fall back among EOCD64 records anywhere before a locator. Scan
+    // every structurally possible record with a bounded overlapping buffer,
+    // rather than trusting just the locator's optimistic offset.
+    reader.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut consumed = 0u64;
+    let mut carry = Vec::new();
+    while consumed < length {
+        let count = (length - consumed).min(64 * 1024) as usize;
+        let base = consumed.saturating_sub(carry.len() as u64);
+        let mut bytes = carry;
+        let old_len = bytes.len();
+        bytes.resize(old_len + count, 0);
+        reader
+            .read_exact(&mut bytes[old_len..])
+            .map_err(|e| e.to_string())?;
+        consumed += count as u64;
+        for index in 0..bytes.len().saturating_sub(55) {
+            if !bytes[index..].starts_with(b"PK\x06\x06") {
+                continue;
+            }
+            let size = u64::from_le_bytes(bytes[index + 4..index + 12].try_into().unwrap());
+            if size < 40
+                || base
+                    .checked_add(index as u64)
+                    .and_then(|offset| offset.checked_add(12))
+                    .and_then(|offset| offset.checked_add(size))
+                    .is_none_or(|end| end > length)
+            {
+                continue;
+            }
+            for offset in [24, 32] {
+                if u64::from_le_bytes(
+                    bytes[index + offset..index + offset + 8]
+                        .try_into()
+                        .unwrap(),
+                ) > 4096
+                {
+                    return Err("Backup contains too many archive entries.".into());
+                }
+            }
+        }
+        carry = bytes[bytes.len().saturating_sub(55)..].to_vec();
+    }
+    // zip9 searches a bounded tail for *all* EOCD candidates and accepts
+    // trailing garbage (comment end <= EOF). Use a wider bound and inspect
+    // every candidate: a small fake footer must not mask a huge earlier one.
+    let tail_len = length.min(128 * 1024) as usize;
+    reader
+        .seek(SeekFrom::Start(length - tail_len as u64))
+        .map_err(|e| e.to_string())?;
+    let mut tail = vec![0; tail_len];
+    reader.read_exact(&mut tail).map_err(|e| e.to_string())?;
+    let mut found = false;
+    for index in 0..=tail.len() - 22 {
+        if !tail[index..].starts_with(b"PK\x05\x06")
+            || index + 22 + u16::from_le_bytes([tail[index + 20], tail[index + 21]]) as usize
+                > tail.len()
+        {
+            continue;
+        }
+        found = true;
+        let disk_entries = u16::from_le_bytes([tail[index + 8], tail[index + 9]]);
+        let entries = u16::from_le_bytes([tail[index + 10], tail[index + 11]]);
+        let zip64_locator = index >= 20 && tail[index - 20..].starts_with(b"PK\x06\x07");
+        if entries == u16::MAX || disk_entries == u16::MAX {
+            if !zip64_locator {
+                return Err("ZIP64 end locator is missing.".into());
+            }
+        } else if entries > 4096 || disk_entries > 4096 {
+            return Err("Backup contains too many archive entries.".into());
+        }
+    }
+    if !found {
+        return Err("ZIP end record is missing or inconsistent.".into());
+    }
+    Ok(())
+}
+
 // Validate the whole archive before the first privileged write. Bound both
 // declared and actual uncompressed sizes so a corrupt backup cannot exhaust
 // memory or overwrite earlier tunnels before a later invalid entry is found.
 fn backup_configs<R: std::io::Read + std::io::Seek>(
-    reader: R,
+    mut reader: R,
 ) -> Result<Vec<(String, String)>, String> {
     use std::io::Read;
     const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
     const MAX_TOTAL_BYTES: u64 = 16 * MAX_CONFIG_BYTES;
+    let length = reader
+        .seek(std::io::SeekFrom::End(0))
+        .map_err(|e| e.to_string())?;
+    if length > MAX_BACKUP_BYTES {
+        return Err("Backup exceeds 64 MiB.".into());
+    }
+    preflight_zip_directory(&mut reader, length)?;
+    reader
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+    if zip.has_duplicate_names() {
+        return Err("Backup contains duplicate archive filenames.".into());
+    }
+    if zip.len() > 4096 {
+        return Err("Backup contains too many archive entries.".into());
+    }
     let mut configs = Vec::new();
     let mut names = std::collections::HashSet::new();
     let mut total = 0;
@@ -979,50 +1499,106 @@ fn backup_configs<R: std::io::Read + std::io::Seek>(
 
 /// Delete a backup archive (only within the backup directory).
 pub fn delete_backup(path: &std::path::Path) -> Result<(), String> {
-    let canon = backup_path_ok(path)?;
-    std::fs::remove_file(&canon).map_err(|e| e.to_string())
-}
-
-/// Copy a file to `dest`, 0600, refusing to follow a symlink there.
-fn write_private(dest: &std::path::Path, data: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(dest)
-        .map_err(|e| format!("create {}: {e}", dest.display()))?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let _file = open_backup(path)?;
+    let dir = backup_dir()?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
         .map_err(|e| e.to_string())?;
-    f.write_all(data).map_err(|e| e.to_string())
+    let name = std::ffi::CString::new(
+        path.file_name()
+            .ok_or("Missing backup filename.")?
+            .as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
 }
 
-/// Copy a backup archive out to an external destination.
+fn write_private(dest: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    atomic_private_write(dest, true, |file| {
+        file.write_all(data).map_err(|e| e.to_string())
+    })
+}
+
 pub fn export_backup_to(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    let canon = backup_path_ok(src)?;
-    let data = std::fs::read(&canon).map_err(|e| format!("read {}: {e}", canon.display()))?;
+    use std::io::Read;
+    let mut data = Vec::new();
+    open_backup(src)?
+        .take(MAX_BACKUP_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| e.to_string())?;
+    if data.len() as u64 > MAX_BACKUP_BYTES {
+        return Err("Backup exceeds 64 MiB.".into());
+    }
     write_private(dest, &data)
 }
 
-/// Write arbitrary text (e.g. a saved log) to a file, 0600.
 pub fn save_text_to(dest: &std::path::Path, text: &str) -> Result<(), String> {
     write_private(dest, text.as_bytes())
 }
 
 /// Decode a QR-code image file into its text (a WireGuard `.conf`).
 pub fn decode_qr(path: &std::path::Path) -> Result<String, String> {
-    let img = image::open(path)
-        .map_err(|e| format!("Couldn't open image: {e}"))?
+    let file = std::fs::File::open(path).map_err(|e| format!("Couldn't open image: {e}"))?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > 32 * 1024 * 1024 {
+        return Err("QR image exceeds the 32 MiB file limit.".into());
+    }
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    // Bounds cover a full-size screenshot while limiting both decoder buffers
+    // and rqrr's additional per-pixel working memory.
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader
+        .decode()
+        .map_err(|e| format!("Couldn't decode bounded QR image: {e}"))?
         .to_luma8();
     let mut prepared = rqrr::PreparedImage::prepare(img);
     let grids = prepared.detect_grids();
-    let grid = grids.first().ok_or("No QR code found in the image.")?;
-    let (_meta, content) = grid
-        .decode()
-        .map_err(|e| format!("QR decode failed: {e}"))?;
-    Ok(content)
+    if grids.is_empty() {
+        return Err("No QR code found in the image.".into());
+    }
+    select_qr_config(grids.iter().map(|grid| {
+        grid.decode()
+            .map(|(_, content)| content)
+            .map_err(|e| e.to_string())
+    }))
+}
+
+fn select_qr_config(
+    results: impl IntoIterator<Item = Result<String, String>>,
+) -> Result<String, String> {
+    let mut configs = Vec::new();
+    for result in results {
+        let Ok(content) = result else {
+            continue;
+        };
+        if config::validate_basic_wireguard_config(&content).is_ok()
+            && !config_runs_scripts(&content)
+            && !configs.contains(&content)
+        {
+            configs.push(content);
+            if configs.len() > 1 {
+                return Err("Image contains multiple different WireGuard configs; use an image with one tunnel.".into());
+            }
+        }
+    }
+    configs
+        .pop()
+        .ok_or("No valid WireGuard config QR code found in the image.".into())
 }
 
 /// Whether `wg-quick@<name>` is enabled to start on boot.
@@ -1081,7 +1657,445 @@ mod tests {
     use super::*;
 
     // A syntactically valid 44-char base64 WireGuard key (43 chars + '=').
-    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+    const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopo=";
+
+    #[test]
+    fn offline_saved_configs_do_not_depend_on_live_status_fixture() {
+        let Some(path) = std::env::var_os("WG_TEST_SAVED_CONFIG_HELPER") else {
+            return;
+        };
+        HELPER
+            .set(Some(PathBuf::from(&path).to_string_lossy().into_owned()))
+            .unwrap();
+        assert!(ESC.set(Escalation::Direct).is_ok());
+        assert!(try_list_tunnels().is_err());
+        assert_eq!(unique_name("wg0").unwrap(), "wg0-2");
+        assert_eq!(read_all_configs().unwrap().len(), 1);
+        let dest = PathBuf::from(path)
+            .parent()
+            .unwrap()
+            .join("offline-backup.zip");
+        assert_eq!(export_zip(&dest).unwrap(), 1);
+        assert!(dest.is_file());
+    }
+
+    #[test]
+    fn offline_backup_and_name_checks_survive_a_failed_active_query() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        let dir = scratch_dir();
+        let helper = dir.join("wg-helper");
+        std::fs::write(&helper, format!("#!/bin/sh\ncase \"$1\" in\nlist) printf 'wg0\\n';;\nactive) echo 'active query failed' >&2; exit 2;;\nread) printf '[Interface]\\nPrivateKey = {KEY}\\n';;\n*) exit 2;;\nesac\n")).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "backend::tests::offline_saved_configs_do_not_depend_on_live_status_fixture",
+                "--nocapture",
+            ])
+            .env("WG_TEST_SAVED_CONFIG_HELPER", &helper)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = helper_output_timeout(
+            command.spawn().unwrap(),
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(dir.join("offline-backup.zip").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn generated_keys_must_be_valid_utf8_and_canonical_wireguard_keys() {
+        assert_eq!(
+            key_output(format!("{KEY}\n").as_bytes()),
+            Some(KEY.to_string())
+        );
+        assert!(key_output(b"invalid").is_none());
+        assert!(key_output(&[0xff]).is_none());
+        assert!(key_output(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=").is_none());
+    }
+
+    #[test]
+    fn helper_capture_drains_both_streams_and_caps_memory() {
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = helper_output(child, None).unwrap();
+        assert!(out.status.success());
+        assert_eq!((out.stdout.len(), out.stderr.len()), (262144, 262144));
+        let child = Command::new("sh")
+            .args(["-c", "head -c 4194305 /dev/zero"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert!(helper_output(child, None).unwrap_err().contains("4 MiB"));
+    }
+
+    #[test]
+    fn helper_escaped_pipe_fixture() {
+        if std::env::var_os("WG_TEST_ESCAPE_PIPE").is_none() {
+            return;
+        }
+        // Fork after exec: doing this in pre_exec would also inherit Rust's
+        // exec-error pipe and make Command::spawn itself wait for the sleeper.
+        unsafe {
+            let pid = libc::fork();
+            assert!(pid >= 0);
+            if pid == 0 {
+                libc::setsid();
+                libc::sleep(2);
+                libc::_exit(0);
+            }
+        }
+    }
+
+    #[test]
+    fn helper_deadlines_cover_blocked_stdin_and_escaped_output_pipes() {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        cmd.process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        let error = helper_output_timeout(
+            cmd.spawn().unwrap(),
+            Some("x".repeat(1024 * 1024)),
+            std::time::Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "backend::tests::helper_escaped_pipe_fixture",
+            "--nocapture",
+        ])
+        .env("WG_TEST_ESCAPE_PIPE", "1");
+        cmd.process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        assert!(
+            helper_output_timeout(
+                cmd.spawn().unwrap(),
+                None,
+                std::time::Duration::from_millis(100)
+            )
+            .unwrap_err()
+            .contains("timed out")
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn helper_discovery_requires_a_trusted_executable() {
+        assert!(!trusted_helper(std::path::Path::new("relative-helper")));
+        let dir = scratch_dir();
+        let helper = dir.join("wg-helper");
+        std::fs::write(&helper, b"untrusted file").unwrap();
+        assert!(!trusted_helper(&helper));
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(trusted_helper(std::path::Path::new("/bin/sh")));
+    }
+
+    #[test]
+    fn background_reads_never_request_interactive_authentication() {
+        for verb in [
+            "list",
+            "active",
+            "read",
+            "dump",
+            "is-enabled",
+            "showconf",
+            "log",
+            "killswitch-status",
+        ] {
+            assert!(read_only_helper_verb(verb));
+        }
+        for verb in [
+            "save",
+            "up",
+            "down",
+            "delete",
+            "rename",
+            "persist",
+            "killswitch-enable",
+        ] {
+            assert!(!read_only_helper_verb(verb));
+        }
+        let fields = (3..=22)
+            .map(|field| if field == 22 { "123456" } else { "0" })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            polkit_subject(&format!("42 (name with ) spaces) {fields}"), 42, 1000),
+            Some("42,123456,1000".into())
+        );
+        assert_eq!(polkit_subject("bad proc text", 42, 1000), None);
+    }
+
+    fn scratch_dir() -> PathBuf {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let template = std::env::temp_dir().join("wireguard-backend-test-XXXXXX");
+        let mut bytes = std::ffi::CString::new(template.as_os_str().as_bytes())
+            .unwrap()
+            .into_bytes_with_nul();
+        assert!(!unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null());
+        bytes.pop();
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+            .canonicalize()
+            .unwrap()
+    }
+
+    #[test]
+    fn atomic_exports_preserve_old_data_and_other_hardlinks_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir();
+        let dest = dir.join("export.zip");
+        let other = dir.join("other-file");
+        std::fs::write(&dest, b"old archive").unwrap();
+        std::fs::hard_link(&dest, &other).unwrap();
+        let failed: Result<(), String> = atomic_private_write(&dest, true, |file| {
+            file.write_all(b"partial secret").unwrap();
+            Err("simulated full disk".into())
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old archive");
+        write_private(&dest, b"new secret").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new secret");
+        assert_eq!(std::fs::read(&other).unwrap(), b"old archive");
+        assert_eq!(dest.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(
+            atomic_private_write(&dest, false, |f| f
+                .write_all(b"overwrite")
+                .map_err(|e| e.to_string()))
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new secret");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_refuses_symlinks_and_never_silently_omits_failed_reads() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch_dir();
+        let real = dir.join("real");
+        let link = dir.join("link");
+        std::fs::write(&real, b"do not touch").unwrap();
+        symlink(&real, &link).unwrap();
+        assert!(write_private(&link, b"secret").is_err());
+        assert_eq!(std::fs::read(&real).unwrap(), b"do not touch");
+        let result = collect_configs(["wg0".to_string(), "wg1".to_string()], |name| {
+            if name == "wg0" {
+                Ok("valid content".into())
+            } else {
+                Err("permission denied".into())
+            }
+        });
+        assert_eq!(result.unwrap_err(), "permission denied");
+        assert!(unique_name_with("wg0", |_| true).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backup_storage_rejects_symlink_directories_and_linked_archives() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let base = scratch_dir();
+        let outside = scratch_dir();
+        symlink(&outside, base.join("wireguard")).unwrap();
+        assert!(ensure_backup_dir(&base).is_err());
+        assert!(!outside.join("backups").exists());
+        std::fs::remove_file(base.join("wireguard")).unwrap();
+        let dir = ensure_backup_dir(&base).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_backup_dir(&base).unwrap();
+        assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        let real = dir.join("real.zip");
+        let linked = dir.join("linked.zip");
+        std::fs::write(&real, b"archive").unwrap();
+        assert!(open_backup_in(&dir, &real).is_ok());
+        symlink(&real, &linked).unwrap();
+        assert!(open_backup_in(&dir, &linked).is_err());
+        std::fs::remove_file(&linked).unwrap();
+        std::fs::hard_link(&real, &linked).unwrap();
+        assert!(open_backup_in(&dir, &real).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn zip_entry_budget_is_checked_before_eager_metadata_allocation() {
+        let mut end = vec![0; 22];
+        end[..4].copy_from_slice(b"PK\x05\x06");
+        end[8..10].copy_from_slice(&4097u16.to_le_bytes());
+        end[10..12].copy_from_slice(&4097u16.to_le_bytes());
+        assert!(
+            backup_configs(std::io::Cursor::new(end))
+                .unwrap_err()
+                .contains("too many")
+        );
+        let mut zip64 = vec![0; 56 + 20 + 22];
+        zip64[..4].copy_from_slice(b"PK\x06\x06");
+        zip64[4..12].copy_from_slice(&44u64.to_le_bytes());
+        zip64[24..32].copy_from_slice(&4097u64.to_le_bytes());
+        zip64[32..40].copy_from_slice(&4097u64.to_le_bytes());
+        zip64[56..60].copy_from_slice(b"PK\x06\x07");
+        zip64[76..80].copy_from_slice(b"PK\x05\x06");
+        zip64[84..86].copy_from_slice(&u16::MAX.to_le_bytes());
+        zip64[86..88].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(
+            backup_configs(std::io::Cursor::new(zip64))
+                .unwrap_err()
+                .contains("too many")
+        );
+    }
+
+    #[test]
+    fn small_fake_zip_footer_cannot_mask_an_oversized_fallback_directory() {
+        let mut entries = vec![0; 44];
+        entries[..4].copy_from_slice(b"PK\x05\x06");
+        entries[8..10].copy_from_slice(&4097u16.to_le_bytes());
+        entries[10..12].copy_from_slice(&4097u16.to_le_bytes());
+        entries[20..22].copy_from_slice(&22u16.to_le_bytes());
+        entries[22..26].copy_from_slice(b"PK\x05\x06");
+        assert!(
+            backup_configs(std::io::Cursor::new(entries))
+                .unwrap_err()
+                .contains("too many")
+        );
+        // A ZIP64 candidate can cross the scanner's chunk boundary and the
+        // parser also accepts a 40-byte declared body before its later checks.
+        let mut zip64 = vec![0; 64 * 1024 + 80];
+        let index = 64 * 1024 - 20;
+        zip64[index..index + 4].copy_from_slice(b"PK\x06\x06");
+        zip64[index + 4..index + 12].copy_from_slice(&40u64.to_le_bytes());
+        zip64[index + 24..index + 32].copy_from_slice(&4097u64.to_le_bytes());
+        assert!(
+            preflight_zip_directory(&mut std::io::Cursor::new(&zip64), zip64.len() as u64)
+                .unwrap_err()
+                .contains("too many")
+        );
+        let valid = format!("[Interface]\nPrivateKey = {KEY}\n");
+        let mut trailing = backup_archive(&[("wg0.conf", &valid)]).into_inner();
+        trailing.extend_from_slice(b"harmless trailing data");
+        assert_eq!(
+            backup_configs(std::io::Cursor::new(trailing))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn duplicate_central_directory_names_are_not_hidden_by_zip_indexing() {
+        let valid = format!("[Interface]\nPrivateKey = {KEY}\n");
+        let mut archive =
+            backup_archive(&[("wg0.conf", &valid), ("wg1.conf", &valid)]).into_inner();
+        for index in 0..archive.len().saturating_sub(8) {
+            if &archive[index..index + 8] == b"wg1.conf" {
+                archive[index + 2] = b'0';
+            }
+        }
+        assert!(
+            backup_configs(std::io::Cursor::new(archive))
+                .unwrap_err()
+                .contains("duplicate")
+        );
+    }
+
+    #[test]
+    fn oversized_zip_is_rejected_before_parsing_metadata() {
+        let dir = scratch_dir();
+        let path = dir.join("large.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_BACKUP_BYTES + 1).unwrap();
+        drop(file);
+        assert!(
+            backup_configs(std::fs::File::open(path).unwrap())
+                .unwrap_err()
+                .contains("64 MiB")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn live_dump_keeps_unsaved_peers_and_actual_runtime_settings() {
+        let other = "A".repeat(43) + "=";
+        let dump = parse_dump(&format!("private\t{KEY}\t51820\toff\n{KEY}\t(none)\t(none)\t10.0.0.0/24\t100\t20\t30\toff\n{other}\t{KEY}\t[::1]:5\t::/0\t200\t40\t50\t25\n")).unwrap();
+        let saved = config::ParsedPeer {
+            public_key: KEY.into(),
+            allowed_ips: "old".into(),
+            keepalive: "old".into(),
+            endpoint: "saved:1".into(),
+            ..Default::default()
+        };
+        let peers = merge_peers(vec![saved], Some(&dump));
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].allowed_ips, "10.0.0.0/24");
+        assert_eq!(peers[0].keepalive, "off");
+        assert_eq!(peers[0].endpoint, "saved:1");
+        assert!(peers[1].preshared);
+        assert_eq!(live_totals(Some(&dump), 300), (60, 80, Some(100)));
+        assert_eq!(live_totals(Some(&dump), 150).2, None);
+        let mut dump = dump;
+        dump.peers[0].rx = u64::MAX;
+        assert_eq!(live_totals(Some(&dump), 300).0, u64::MAX);
+        assert!(parse_dump("invalid\tdump\t0").is_none());
+    }
+
+    #[test]
+    fn qr_selection_skips_bad_grids_and_refuses_ambiguous_tunnels() {
+        let valid = format!("[Interface]\nPrivateKey = {KEY}\n");
+        assert_eq!(
+            select_qr_config([
+                Err("decode failed".into()),
+                Ok("unrelated QR".into()),
+                Ok(valid.clone())
+            ])
+            .unwrap(),
+            valid
+        );
+        assert!(
+            select_qr_config([
+                Ok(valid.clone()),
+                Ok(format!("{valid}Address = 10.0.0.1/24\n"))
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            select_qr_config([Ok(valid.clone()), Ok(valid.clone())]).unwrap(),
+            valid
+        );
+    }
+
+    #[test]
+    fn qr_decoder_rejects_oversized_dimensions() {
+        let dir = scratch_dir();
+        let path = dir.join("wide.png");
+        image::GrayImage::new(4097, 1).save(&path).unwrap();
+        assert!(decode_qr(&path).unwrap_err().contains("bounded QR image"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn backup_archive(files: &[(&str, &str)]) -> std::io::Cursor<Vec<u8>> {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -1194,7 +2208,7 @@ mod tests {
         let name = unique_name_with("vpn config", |candidate| {
             matches!(candidate, "vpn_config" | "vpn_config-2")
         });
-        assert_eq!(name, "vpn_config-3");
+        assert_eq!(name.unwrap(), "vpn_config-3");
     }
 
     #[test]

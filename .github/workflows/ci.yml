@@ -45,6 +45,12 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
+      - name: Firewall integration in isolated network namespace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables iptables
+          bash tests/firewall-namespace.sh
+
       - name: Build (release)
         run: cargo build --release --locked
 
@@ -77,9 +83,6 @@ jobs:
           fi
           if [ "$rc" -eq 124 ]; then
             echo "GUI launched and stayed alive 8s under Xvfb — OK"
-          elif grep -qiE "GLX|EGL|libGL|GL context|glutin|NotSupported|xkbcommon|could not" /tmp/gui-launch.log; then
-            echo "::warning::GUI exited early on a headless GL/X11 limitation (rc=$rc); zbus path clean"
-            cat /tmp/gui-launch.log
           else
             echo "::error::wireguard-gui crashed on launch (rc=$rc)"
             cat /tmp/gui-launch.log; exit 1
@@ -91,7 +94,8 @@ jobs:
           bash -n install.sh
           bash -n tests/helper-validation.sh
           bash -n tests/installer-sanity.sh
-          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh
+          bash -n tests/firewall-namespace.sh
+          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh tests/firewall-namespace.sh
           bash tests/helper-validation.sh target/release/wg-helper
           bash tests/installer-sanity.sh
 

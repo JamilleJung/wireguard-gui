@@ -1,8 +1,8 @@
 # 📦 Packaging wireguard-gui
 
-The current application version is **1.9.1**. The release workflow produces an
+The current application version is **1.9.2**. The release workflow produces an
 x86_64 `.deb`, x86_64/ARM64 Linux tarballs, and an optional x86_64 AppImage
-(present in 1.9.1), with signed checksums. See [releases](../docs/RELEASES.md).
+(attached if its optional build succeeds), with signed checksums. See [releases](../docs/RELEASES.md).
 The other files here are source-package recipes; their presence does not mean
 an AUR, COPR, Alpine or Void publication is current or officially distributed.
 
@@ -31,15 +31,18 @@ SSH sessions do not satisfy the rule's active-local condition.
 The rule and helper discovery expect the standard `/usr/local` or `/usr` helper
 locations. A custom prefix needs corresponding integration work; changing
 `PREFIX` alone is not a complete polkit/helper-discovery configuration.
+Existing app/helper targets must be root-owned regular files with one link and
+no group/other write bits; the installed helper must be executable before an
+authorization grant is written.
 
 ## Debian / Ubuntu `.deb`
 
 `[package.metadata.deb]` in [Cargo.toml](../Cargo.toml) supplies assets and runtime
 dependencies. The release workflow uses `cargo-deb 3.8.0` after the SBOM-enabled
-build, tests and compression; output is `wireguard-gui_1.9.1-1_amd64.deb`.
+build, tests and compression; output is `wireguard-gui_1.9.2-1_amd64.deb`.
 
 ```sh
-sudo apt install ./wireguard-gui_1.9.1-1_amd64.deb
+sudo apt install ./wireguard-gui_1.9.2-1_amd64.deb
 ```
 
 Inspect the final package's control metadata, helper location and rule path
@@ -111,3 +114,49 @@ Verify checksums for source recipes, real package contents, authorization/user
 enrollment instructions and source-versus-binary archive layout. Follow
 [release automation](../docs/RELEASES.md#how-releases-are-built) and keep the
 committed public signing key consistent with the release signing secret.
+
+## 1.9.2 compatibility and validation
+
+Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
+path containing only letters, digits, `/`, `_`, `.` and `-`, with no empty,
+`.` or `..` components or trailing slash. Existing directory ancestors must be
+root-owned without group/other write permission; symlinks are refused. A
+group-writable `/usr/local` can therefore fail these checks. An administrator
+must choose or prepare a protected path; the installer does not take ownership
+of caller directories. `--polkit` supports only `/usr` or `/usr/local`, matching
+the bundled rule. Custom sudoers prefixes still require matching frontend helper
+discovery configuration.
+
+Installer options are validated; unknown options fail instead of being ignored.
+Source builds use the lockfile. Switching sudoers/polkit modes installs and
+validates the selected grant before removing the previous grant. Failed sudoers
+validation or group enrollment reports failure and keeps prior authorization.
+`--polkit` requires pkexec up front; it does not install a rule and then claim
+success without the escalation tool. Packages still do not enroll users.
+
+Release helper discovery uses this project's own standard `/usr/local/lib/`
+and `/usr/lib/` paths, or an adjacent **trusted** executable. The executable must
+be root-owned, executable and not group/other writable; its directory ancestry
+must also be trusted. A normal user-owned extracted helper is not automatically
+trusted: install the verified bundle first. Release builds no longer fall back
+to the source build directory or another application's helper. Debug overrides
+remain available for development; they do not create an authorization grant.
+
+Background read-only requests use a noninteractive polkit check before pkexec,
+so missing authorization produces an actionable error instead of repeated
+password dialogs. Explicit mutating actions can still request authentication.
+Helper IPC drains input/output concurrently, retains at most 4 MiB per output
+stream, and has an overall 90-second deadline plus bounded pipe cleanup. Local
+key-generation commands have a 10-second deadline. A privileged process that
+the UI user cannot signal may finish independently after a UI-side timeout;
+check actual tunnel state before retrying.
+
+Ship the matching helper with the app: release discovery no longer borrows a
+helper from the sibling project or an old source build tree. Background reads
+need an already authorized sudo/polkit path. The conditional kill-switch
+fallback needs iptables-restore and, on IPv6-capable kernels, ip6tables plus
+ip6tables-restore; no package recipe should promise a complete firewall setup
+from installing the rule alone. User backups require owned private directories
+and single-link regular archives; root configs reject symlinks/hardlinks/FIFOs
+and group/other write permission. Run the regression and isolated Linux checks
+before publishing a new package.
