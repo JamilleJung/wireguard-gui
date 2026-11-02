@@ -99,9 +99,11 @@ pub fn latest_tag() -> Result<String, String> {
         "https://api.github.com/repos/{OWNER}/{REPO}/releases/latest"
     ))?;
     let body = String::from_utf8_lossy(&body);
-    extract_json_string(&body, "tag_name")
-        .map(|t| t.trim_start_matches('v').to_string())
-        .ok_or_else(|| "no tag_name in release JSON".to_string())
+    let tag = extract_json_string(&body, "tag_name")
+        .ok_or_else(|| "no tag_name in release JSON".to_string())?;
+    let version = tag.strip_prefix('v').unwrap_or(&tag);
+    parse(version).ok_or_else(|| "invalid release version".to_string())?;
+    Ok(version.to_string())
 }
 
 /// Minimal, dependency-free extraction of a top-level JSON string field
@@ -127,10 +129,13 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     idx += 1;
     let start = idx;
     while idx < bytes.len() && bytes[idx] != b'"' {
-        if bytes[idx] == b'\\' {
+        if bytes[idx] == b'\\' || bytes[idx].is_ascii_control() {
             return None; // refuse escapes -> not a plain tag
         }
         idx += 1;
+    }
+    if idx == bytes.len() {
+        return None; // unterminated string
     }
     let val = &json[start..idx];
     if val.is_empty() || val.len() > 32 {
@@ -142,10 +147,16 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 /// Parse a strict `MAJOR.MINOR.PATCH` triple (release tags are validated against
 /// `^v[0-9]+\.[0-9]+\.[0-9]+$` in the workflow, so this is exact).
 fn parse(v: &str) -> Option<(u64, u64, u64)> {
-    let mut it = v.trim().trim_start_matches('v').split('.');
-    let a = it.next()?.parse().ok()?;
-    let b = it.next()?.parse().ok()?;
-    let c = it.next()?.parse().ok()?;
+    let mut it = v.strip_prefix('v').unwrap_or(v).split('.');
+    let component = |part: &str| {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    let a = component(it.next()?)?;
+    let b = component(it.next()?)?;
+    let c = component(it.next()?)?;
     if it.next().is_some() {
         return None; // reject 4+ components
     }
@@ -192,9 +203,7 @@ pub fn download_and_verify() -> Result<PathBuf, String> {
     let base = format!("https://github.com/{OWNER}/{REPO}/releases/download/v{latest}");
 
     // A private scratch dir under the user's runtime/tmp dir.
-    let workdir = std::env::temp_dir().join(format!("wg-update.{}", std::process::id()));
-    let _ = fs::remove_dir_all(&workdir);
-    fs::create_dir_all(&workdir).map_err(|e| format!("mkdir: {e}"))?;
+    let workdir = private_workdir()?;
 
     curl_to(&format!("{base}/{tarname}"), &workdir.join(&tarname))?;
     curl_to(&format!("{base}/SHA256SUMS"), &workdir.join("SHA256SUMS"))?;
@@ -203,7 +212,7 @@ pub fn download_and_verify() -> Result<PathBuf, String> {
         &workdir.join("SHA256SUMS.minisig"),
     )?;
 
-    verify_release(&workdir)?;
+    verify_release(&workdir, &tarname)?;
 
     // Unpack the verified tarball.
     let st = Command::new("tar")
@@ -235,7 +244,7 @@ pub fn download_and_verify() -> Result<PathBuf, String> {
 
 /// Authenticate the downloaded artifact against the baked-in trust anchor.
 /// `workdir` must contain the tarball, `SHA256SUMS`, and `SHA256SUMS.minisig`.
-pub fn verify_release(workdir: &Path) -> Result<(), String> {
+pub fn verify_release(workdir: &Path, tarball: &str) -> Result<(), String> {
     ensure_minisign()?; // installs via PM once, else Err -> caller refuses to apply
 
     // 1) Write the *baked-in* pubkey to a temp file (never an on-disk one, and
@@ -258,18 +267,51 @@ pub fn verify_release(workdir: &Path) -> Result<(), String> {
         return Err("signature verification FAILED — refusing to update".into());
     }
 
-    // 3) SHA256SUMS is now trusted; verify the tarball's digest is listed in it.
-    //    --ignore-missing lets the single downloaded tarball line match even
-    //    though SHA256SUMS lists every release asset.
+    // 3) Check exactly this archive. A suffix match or --ignore-missing can
+    // accidentally accept a manifest that only names a different file.
+    let sums = std::fs::read_to_string(workdir.join("SHA256SUMS")).map_err(|e| e.to_string())?;
+    let checksum = tarball_checksum(&sums, tarball)?;
+    let selected = workdir.join("selected.sha256");
+    std::fs::write(&selected, checksum).map_err(|e| e.to_string())?;
     let st = Command::new("sha256sum")
-        .args(["-c", "--ignore-missing", "--strict", "SHA256SUMS"])
+        .args(["-c", "--strict"])
+        .arg(&selected)
         .current_dir(workdir)
         .status()
         .map_err(|e| format!("sha256sum spawn: {e}"))?;
     if !st.success() {
-        return Err("checksum mismatch on downloaded tarball — refusing".into());
+        return Err("checksum mismatch on downloaded tarball - refusing".into());
     }
     Ok(())
+}
+
+fn private_workdir() -> Result<PathBuf, String> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let template = std::env::temp_dir().join("wireguard-gui-update-XXXXXX");
+    let mut name = std::ffi::CString::new(template.as_os_str().as_bytes())
+        .map_err(|e| format!("temp dir: {e}"))?
+        .into_bytes_with_nul();
+    let result = unsafe { libc::mkdtemp(name.as_mut_ptr().cast()) };
+    if result.is_null() {
+        return Err(format!("temp dir: {}", std::io::Error::last_os_error()));
+    }
+    name.pop();
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(name)))
+}
+
+fn tarball_checksum(sums: &str, tarball: &str) -> Result<String, String> {
+    let mut matching = sums.lines().filter_map(|line| {
+        let (hash, name) = line.split_once("  ").or_else(|| line.split_once(" *"))?;
+        (name == tarball).then_some((hash, line))
+    });
+    let (hash, line) = matching
+        .next()
+        .ok_or("downloaded tarball is not listed in SHA256SUMS - refusing")?;
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) || matching.next().is_some()
+    {
+        return Err("invalid or duplicate tarball checksum - refusing".into());
+    }
+    Ok(format!("{line}\n"))
 }
 
 /// Install the verified update by re-running the tarball's own `install.sh`.
@@ -295,6 +337,7 @@ pub fn apply(tardir: &Path) -> Result<(), String> {
         // resolves to the staged target/release/ binaries.
         Command::new("bash")
             .arg(&installer)
+            .arg("--allow-root")
             .env("WG_USE_PREBUILT", "1")
             .current_dir(tardir)
             .status()
@@ -427,6 +470,47 @@ pub fn disabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_release_strings_are_rejected() {
+        assert_eq!(
+            extract_json_string("{\"tag_name\":\"v1.9.1", "tag_name"),
+            None
+        );
+        assert_eq!(
+            extract_json_string("{\"tag_name\":\"v1.9\n.1\"}", "tag_name"),
+            None
+        );
+        for invalid in ["../1.2.3", "+1.2.3", "vv1.2.3", "1.2.3 ", "1.2.3/evil"] {
+            assert_eq!(parse(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn checksum_requires_one_exact_archive_name() {
+        let hash = "a".repeat(64);
+        let name = "wireguard-gui-1.9.1-x86_64-linux.tar.gz";
+        let line = format!("{hash}  {name}\n");
+        assert_eq!(tarball_checksum(&line, name).unwrap(), line);
+        assert!(tarball_checksum(&format!("{hash}  prefix-{name}\n"), name).is_err());
+        assert!(tarball_checksum(&format!("{line}{line}"), name).is_err());
+        assert!(tarball_checksum(&format!("invalid  {name}\n"), name).is_err());
+        assert!(tarball_checksum("", name).is_err());
+    }
+
+    #[test]
+    fn private_update_directories_are_exclusive_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let first = private_workdir().unwrap();
+        let second = private_workdir().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            std::fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::remove_dir(first).unwrap();
+        std::fs::remove_dir(second).unwrap();
+    }
 
     #[test]
     fn extract_json_string_basic() {

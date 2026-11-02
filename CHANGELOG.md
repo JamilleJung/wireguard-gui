@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-11-02
+
+### Fixed
+- Kill-switch rules now match the exact tunnel name, so disabling `wg0` never
+  removes `wg01` protection. Rejection precedes existing OUTPUT accept rules.
+- Large helper output no longer fills a pipe and hangs; timeouts also terminate
+  child processes holding output pipes open.
+- Valid WireGuard inline comments are accepted. The form keeps comments and
+  unrecognized section headers in raw text to preserve the original config.
+- Backup restore validates every tunnel before writing, skips unrelated files,
+  rejects unsafe names and script hooks, and bounds decompressed config sizes.
+- ZIP backup restore supports the updated zip 9 filename API.
+- Release tarballs preserve installer assets under `packaging/`, and updates
+  launched by root pass the installer's explicit root-install flag.
+
+### Security
+- Update downloads use exclusive private temporary directories and require one
+  exact archive checksum from the signed manifest.
+- Refreshed direct and transitive dependencies and pinned GitHub Actions.
+
+### Changed
+- Aligned AUR, RPM, Alpine and Void package versions with this release.
+
 ## [1.9.0] - 2026-07-27
 
 ### Fixed

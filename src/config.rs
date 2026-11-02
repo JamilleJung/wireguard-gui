@@ -30,7 +30,7 @@ pub fn parse_config(text: &str) -> ParsedConfig {
     let mut cfg = ParsedConfig::default();
     let mut section = "";
     for raw in text.lines() {
-        let line = raw.trim();
+        let line = raw.split_once('#').map_or(raw, |(line, _)| line).trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -176,9 +176,12 @@ pub fn looks_like_inet(s: &str) -> bool {
 /// be absent for interface-only setups, but if fields are present they must be
 /// shaped like WireGuard expects.
 pub fn validate_basic_wireguard_config(text: &str) -> Result<(), String> {
-    let has_iface = text
-        .lines()
-        .any(|l| l.trim().eq_ignore_ascii_case("[Interface]"));
+    let has_iface = text.lines().any(|l| {
+        l.split_once('#')
+            .map_or(l, |(line, _)| line)
+            .trim()
+            .eq_ignore_ascii_case("[Interface]")
+    });
     if !has_iface {
         return Err("Missing an [Interface] section.".into());
     }
@@ -308,6 +311,20 @@ mod tests {
         assert_eq!(p.address.as_deref(), Some("10.0.0.2/24, fd00::2/64"));
         assert_eq!(p.peers[0].allowed_ips, "0.0.0.0/0, ::/0");
         assert!(validate_basic_wireguard_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn inline_comments_match_wg_quick_parsing() {
+        let text = format!(
+            "[Interface] # home\nPrivateKey = {KEY} # secret\n\
+             Address = 10.0.0.2/24 # client\n[Peer] # gateway\n\
+             PublicKey = {KEY} # server\nAllowedIPs = 0.0.0.0/0 # all IPv4\n\
+             Endpoint = vpn.example.com:51820 # remote\nPersistentKeepalive = 25 # seconds\n"
+        );
+        assert!(validate_basic_wireguard_config(&text).is_ok());
+        let parsed = parse_config(&text);
+        assert_eq!(parsed.private_key.as_deref(), Some(KEY));
+        assert_eq!(parsed.peers[0].endpoint, "vpn.example.com:51820");
     }
 
     #[test]

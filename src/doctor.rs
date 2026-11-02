@@ -73,6 +73,7 @@ impl Report {
 
 /// Whether the system clock is disciplined by NTP. `None` if it can't be told.
 /// Read-only adjtimex (modes stays 0) — never changes the clock.
+#[cfg(target_os = "linux")]
 pub fn clock_synced() -> Option<bool> {
     let mut tx: libc::timex = unsafe { std::mem::zeroed() };
     let ret = unsafe { libc::adjtimex(&mut tx) };
@@ -80,6 +81,11 @@ pub fn clock_synced() -> Option<bool> {
         return None;
     }
     Some((tx.status & libc::STA_UNSYNC) == 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn clock_synced() -> Option<bool> {
+    None
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -906,7 +906,8 @@ fn backup_path_ok(path: &std::path::Path) -> Result<PathBuf, String> {
     let canon = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    if canon.parent() != Some(dir.as_path()) {
+    let dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    if canon.parent() != Some(dir.as_path()) || !canon.is_file() {
         return Err("Refusing to act on a path outside the backup directory.".into());
     }
     Ok(canon)
@@ -915,33 +916,65 @@ fn backup_path_ok(path: &std::path::Path) -> Result<PathBuf, String> {
 /// Restore every `.conf` inside a backup archive (overwriting tunnels of the
 /// same name). Returns the number restored.
 pub fn restore_backup(path: &std::path::Path) -> Result<usize, String> {
-    use std::io::Read;
     let canon = backup_path_ok(path)?;
     let f = std::fs::File::open(&canon).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
-    let mut restored = 0usize;
+    let configs = backup_configs(f)?;
+    for (name, content) in &configs {
+        save_config(name, content)?;
+    }
+    Ok(configs.len())
+}
+
+// Validate the whole archive before the first privileged write. Bound both
+// declared and actual uncompressed sizes so a corrupt backup cannot exhaust
+// memory or overwrite earlier tunnels before a later invalid entry is found.
+fn backup_configs<R: std::io::Read + std::io::Seek>(
+    reader: R,
+) -> Result<Vec<(String, String)>, String> {
+    use std::io::Read;
+    const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 16 * MAX_CONFIG_BYTES;
+    let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+    let mut configs = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    let mut total = 0;
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        let entry = zip.by_index(i).map_err(|e| e.to_string())?;
         if !entry.is_file() {
             continue;
         }
-        let raw = entry.name().to_string();
-        let stem = std::path::Path::new(&raw)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let name = sanitize_name(stem);
+        let raw = entry.name().map_err(|e| e.to_string())?.into_owned();
+        let Some(name) = raw.strip_suffix(".conf") else {
+            continue;
+        };
+        validate_tunnel_name(name)?;
+        if name.trim() != name || !names.insert(name.to_string()) {
+            return Err(format!("Invalid or duplicate tunnel name in backup: {raw}"));
+        }
+        if entry.size() > MAX_CONFIG_BYTES || configs.len() >= 1024 {
+            return Err("Backup exceeds the tunnel config size limit.".into());
+        }
         let mut content = String::new();
         entry
+            .take(MAX_CONFIG_BYTES + 1)
             .read_to_string(&mut content)
             .map_err(|e| e.to_string())?;
-        save_config(&name, &content)?;
-        restored += 1;
+        total += content.len() as u64;
+        if content.len() as u64 > MAX_CONFIG_BYTES || total > MAX_TOTAL_BYTES {
+            return Err("Backup exceeds the tunnel config size limit.".into());
+        }
+        crate::config::validate_basic_wireguard_config(&content)?;
+        if config_runs_scripts(&content) {
+            return Err(format!(
+                "Script hooks are not allowed in backup tunnel {name}."
+            ));
+        }
+        configs.push((name.to_string(), content));
     }
-    if restored == 0 {
+    if configs.is_empty() {
         return Err("The backup contained no tunnel configs.".into());
     }
-    Ok(restored)
+    Ok(configs)
 }
 
 /// Delete a backup archive (only within the backup directory).
@@ -1049,6 +1082,54 @@ mod tests {
 
     // A syntactically valid 44-char base64 WireGuard key (43 chars + '=').
     const KEY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
+
+    fn backup_archive(files: &[(&str, &str)]) -> std::io::Cursor<Vec<u8>> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, content) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap()
+    }
+
+    #[test]
+    fn backup_restore_only_reads_tunnel_configs() {
+        let valid = format!("[Interface]\nPrivateKey = {KEY}\n");
+        let configs = backup_configs(backup_archive(&[
+            ("README.txt", "not a config"),
+            ("wg0.conf", &valid),
+        ]))
+        .unwrap();
+        assert_eq!(configs, vec![("wg0".to_string(), valid)]);
+        assert!(backup_configs(backup_archive(&[("notes.txt", "text")])).is_err());
+    }
+
+    #[test]
+    fn backup_restore_preflights_names_and_all_content() {
+        let valid = format!("[Interface]\nPrivateKey = {KEY}\n");
+        for name in ["../wg0.conf", "nested/wg0.conf", "wg 0.conf", " wg0.conf"] {
+            assert!(
+                backup_configs(backup_archive(&[(name, &valid)])).is_err(),
+                "{name}"
+            );
+        }
+        assert!(
+            backup_configs(backup_archive(&[
+                ("wg0.conf", &valid),
+                ("wg1.conf", "invalid config"),
+            ]))
+            .is_err()
+        );
+        let scripted = format!("{valid}PostUp = id\n");
+        assert!(backup_configs(backup_archive(&[("wg0.conf", &scripted)])).is_err());
+    }
+
+    #[test]
+    fn backup_restore_rejects_oversized_configs() {
+        let oversized = "x".repeat(1024 * 1024 + 1);
+        assert!(backup_configs(backup_archive(&[("wg0.conf", &oversized)])).is_err());
+    }
 
     // The previous if/else ladder, kept here as the behavioral oracle so the
     // closed-form `fmt_bytes` is proven byte-for-byte identical to it.

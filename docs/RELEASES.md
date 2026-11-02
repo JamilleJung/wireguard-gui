@@ -77,7 +77,7 @@ version-aligned**: a given version number means the same capabilities and the
 same fixes in both. When you read a version below, the matching `wg-tui` release
 covers the same ground (with the obvious interface differences - menus and a tray
 on the GUI side, key bindings on the TUI side). The current version of both is
-**1.6.3**.
+**1.9.1**.
 
 ---
 
@@ -106,18 +106,24 @@ Supply-chain hygiene is built in: third-party GitHub Actions are pinned to commi
 SHAs, the AppImage tool (`linuxdeploy`) is pinned to a release with a verified
 SHA-256, and the job aborts if the `.deb` or checksums are missing.
 
-CI also runs `cargo audit` against the RUSTSEC advisory database. A handful of
-advisories are flagged on transitive **build-time / proc-macro / optional**
-dependencies of Slint and `ksni` (`ansi_term`, `atty`, `bincode`, `paste`) -
-none ship in the runtime binary and none are exploitable. They are documented
-`--ignore` entries (the gate still fails on real or new vulnerabilities), and
-every release binary embeds an SBOM via `cargo auditable build`, so
-`cargo audit bin <file>` audits exactly what was compiled in. Dependabot watches
-for upstream fixes so the ignores can be removed once a clean update lands.
+CI and release workflows run `cargo audit --deny warnings` against the RUSTSEC
+advisory database. The shared policy in `.cargo/audit.toml` lists five
+unmaintained dependency notices without upstream fixes: optional Slint renderer
+dependencies and the zvariant family required by ksni's zbus 5 dependency.
+Actual vulnerabilities, unsoundness, and new advisories fail the gate. Release
+binaries embed an SBOM through `cargo auditable build`.
 
 ---
 
 ## 📋 Version history
+
+### 1.9.1 (2026-11-02)
+
+Fixes kill-switch isolation and rule ordering, helper output hangs, inline
+config comments, backup restore validation, and private update staging.
+Dependencies and package versions are current. See [CHANGELOG.md](../CHANGELOG.md)
+for the full change list, including the 1.9.0 DNS fix incorporated in this release.
+
 
 ### 1.6.0 (2026-06-17)
 
