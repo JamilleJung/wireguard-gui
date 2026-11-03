@@ -4,7 +4,12 @@ labels: ["bug"]
 body:
   - type: markdown
     attributes:
-      value: Thanks for the report! A few details make bugs much faster to fix.
+      value: |
+        Describe the problem below. Accessibility reports are welcome too.
+        Do not post private keys, preshared keys, full tunnel configs, QR codes
+        or backup archives. Redact sensitive addresses and account details.
+        Report security vulnerabilities privately using
+        [SECURITY.md](https://github.com/JamilleJung/wireguard-gui/blob/main/SECURITY.md).
   - type: textarea
     id: what
     attributes:
@@ -46,6 +51,7 @@ body:
     id: session
     attributes:
       label: Desktop / session
+      description: Include display scaling and, if relevant, the assistive tool or input method involved. Personal or medical information is not needed.
       placeholder: "GNOME on Wayland, KDE on X11, …  (echo $XDG_SESSION_TYPE)"
   - type: textarea
     id: logs

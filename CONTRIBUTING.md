@@ -165,6 +165,9 @@ production tunnels or a shared host firewall.
 
 ## 🐛 Issues and contributions
 
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Accessibility barriers
+can be reported using the guidance in [ACCESSIBILITY.md](ACCESSIBILITY.md).
+
 Describe the version/commit, distro, steps, expected and actual behavior. Redact
 private keys, preshared keys, QR screenshots and production configs. Report
 exploitable issues privately using [SECURITY.md](SECURITY.md). Keep changes
