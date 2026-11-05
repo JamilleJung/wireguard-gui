@@ -432,7 +432,7 @@ jobs:
                 libxi6 libxrandr2 libxrender1 libxcb1 libwayland-client0"
               # The runner's container DNS occasionally fails once; retry.
               for attempt in 1 2 3 4 5; do
-                apt-get -o Acquire::Retries=3 update -qq && break
+                apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update -qq && break
                 echo "apt-get update failed (attempt $attempt); retrying"; sleep 10
               done
               # shellcheck disable=SC2086 # package list is word-split on purpose
@@ -467,7 +467,10 @@ jobs:
             cat /tmp/gui-launch.log; exit 1
           fi
           SMOKE
-          docker run --rm --platform "$PLATFORM" \
+          # Host networking: the default bridge's DNS fails in the linux/386
+          # userland on the runner, and these throwaway containers need only
+          # the package mirrors.
+          docker run --rm --platform "$PLATFORM" --network host \
             -v "$PWD:/w:ro" -v "$RUNNER_TEMP/smoke.sh:/smoke.sh:ro" -w /w \
             -e V="$V" -e D="dist/wireguard-gui-${V}-${ARCH}-linux" -e LAUNCH="$LAUNCH" \
             "$IMAGE" bash /smoke.sh
