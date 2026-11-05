@@ -1,6 +1,6 @@
 [package]
 name = "wireguard-gui"
-version = "1.9.3"
+version = "1.10.0"
 edition = "2024"
 rust-version = "1.92"
 description = "A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick."

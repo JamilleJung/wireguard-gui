@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.10.0] - 2026-11-05
 
 ### Security and networking
 
@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified.
 - The helper writes one structured, redacted `key=value` journal record per
   mutating verb, including its result.
+- QR images are decoded in a short-lived child process with a memory limit
+  and a deadline. A crafted image that trips an assertion in the QR library
+  (rqrr 0.11, found by fuzzing) or makes the decoder hang now fails only that
+  import instead of aborting the app.
 
 ### Reliability and data integrity
 
@@ -93,6 +97,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicitly in every recipe and the `.deb`; Fedora package names fixed.
 - New `--binaries=DIR` installs locally built binaries; `uninstall` removes
   everything the installer added.
+- On a `noexec` mount the installer now names the mount instead of blaming
+  SELinux, rollback also removes the desktop database cache it created, and it
+  no longer reports restored SELinux labels when the helper's label is wrong.
+- Recipes: `python3` added as a test dependency everywhere; AUR depends on
+  `hicolor-icon-theme` and sets `!debug`; Void skips one test that needs a
+  root-owned `/bin/sh`.
+- GUI recipes add a DejaVu font for the UI tests, run them in the test
+  profile on RPM and Void, and limit Fedora debug info so the RPM builds within
+  common memory limits.
 - AUR, RPM, Alpine and Void recipes are ready for repository submission:
   checksums synced by `packaging/update-checksums.sh`, offline builds, tests
   in `check()`/`%check`, licenses installed, `.SRCINFO` generated. The Void
@@ -107,12 +120,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build and latest-compatible-dependency tests.
 - An installation matrix installs, upgrades, rolls back and uninstalls on
   Debian, Ubuntu, Fedora, Arch, Alpine and Void.
+- A real SELinux test boots an enforcing Fedora VM and checks the helper's
+  label, sudoers and polkit access, the absence of AVC denials, rollback on a
+  `noexec` or denied mount, and a clean uninstall (`tests/selinux-vm.sh`).
+- Real package builds (makepkg, rpmbuild, abuild, xbps-src) run from the
+  checkout, including each package's tests, then install the package in a clean
+  container and run it (`tests/package-build.sh`).
+- The release workflow has a dry-run mode (manual run with a version): every
+  gate runs and the artifacts are verified, signed with a throwaway key, and
+  nothing is published.
 - Publishing a release is gated on every check, including per-architecture
   smoke tests under QEMU and automated verification of signatures, checksums,
   archive contents and embedded versions (`scripts/verify-release.sh`).
   Tarballs are reproducible and root-owned.
+- Release binaries are built in Ubuntu 22.04 and need only glibc 2.35, so they
+  run on Debian 12, Ubuntu 22.04 and newer (1.9.3's aarch64 build needed
+  2.39). The release fails if any binary needs a newer glibc.
+- New i686 and armv7 (armhf) tarballs. x86_64 and aarch64 are smoke-tested on
+  Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Fedora, i686 on Debian 12, armv7
+  on Debian 12 and Ubuntu 22.04 under QEMU.
+- The updater and installer pick the tarball for the running CPU, the
+  installer refuses a bundle built for another CPU, and the `.deb` now
+  declares its libc6 and fontconfig dependencies.
 - Property tests with deterministic fixtures, cargo-fuzz targets with a
   nightly run, and weekly mutation testing of validation and helper code.
+- Backup ZIP and QR import parsing moved to `src/import_parse.rs` so it can
+  be fuzzed (`backup_zip`, `qr_select`) and property-tested
+  (`tests/prop_import.rs`): archive limits, unsafe and duplicate names, and
+  QR selection.
 - Dependabot updates are grouped by risk; auto-merge is limited to patch and
   minor updates of CI and development dependencies and still waits for every
   required check.
