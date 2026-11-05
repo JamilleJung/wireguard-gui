@@ -50,7 +50,13 @@ lint_arch() {
         diff -u .SRCINFO /tmp/srcinfo
         echo ".SRCINFO matches makepkg --printsrcinfo"
         namcap PKGBUILD
-        runuser -u builder -- makepkg --verifysource --noconfirm
+        # Placeholder checksums mean the version is not tagged yet, so the
+        # release archive does not exist to verify against.
+        if grep -q "^sha256sums=(.SKIP.)" PKGBUILD; then
+            echo "makepkg --verifysource: skipped (placeholder checksum; not tagged yet)"
+        else
+            runuser -u builder -- makepkg --verifysource --noconfirm
+        fi
         if [ "$BUILD" = 1 ]; then
             pacman -S --noconfirm --needed rust >/dev/null
             runuser -u builder -- makepkg --noconfirm
@@ -87,7 +93,11 @@ lint_alpine() {
         cd /home/builder/apk
         apkbuild-lint APKBUILD
         echo "apkbuild-lint: clean"
-        su builder -c "abuild -q verify" || su builder -c "abuild fetch && abuild verify"
+        if grep -q "^SKIP  " APKBUILD; then
+            echo "abuild verify: skipped (placeholder checksum; not tagged yet)"
+        else
+            su builder -c "abuild -q verify" || su builder -c "abuild fetch && abuild verify"
+        fi
         if [ "$BUILD" = 1 ]; then
             su builder -c "abuild-keygen -a -n -q" >/dev/null
             su builder -c "abuild -r"

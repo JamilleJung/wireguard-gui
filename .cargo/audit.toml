@@ -6,6 +6,10 @@ ignore = [
     # Optional Slint renderer dependencies retained in the cross-platform lockfile.
     "RUSTSEC-2025-0141", # bincode: unmaintained
     "RUSTSEC-2026-0192", # ttf-parser: unmaintained
+    # Build-time only: slint-build and slint-macros (proc-macro) use spin_on,
+    # which uses pin-utils. Nothing of it is linked into the binaries and no
+    # maintained release exists yet.
+    "RUSTSEC-2026-0441", # pin-utils: unmaintained
     # ksni 0.3 still requires zbus 5. These crates were merged into zbus 6;
     # remove these entries when ksni migrates to zbus 6.
     "RUSTSEC-2026-0370", # zvariant: unmaintained

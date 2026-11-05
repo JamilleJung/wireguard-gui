@@ -40,6 +40,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Allow user namespaces for xbps-src
+        if: matrix.format == 'void'
+        # Ubuntu 24.04 runners restrict unprivileged user namespaces through
+        # AppArmor; xbps-src builds in one ("uid_map: Operation not permitted").
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build, test, install and smoke-test the package
         env:
           FORMAT: ${{ matrix.format }}
