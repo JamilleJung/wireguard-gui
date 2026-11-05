@@ -1,0 +1,781 @@
+// Small reusable, keyboard-accessible pieces. Every interactive element has
+// an accessible role and label, takes Tab focus, shows a focus ring, and
+// activates with Enter or Space.
+
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme, TooltipState, FocusTrack } from "theme.slint";
+
+// A Windows-style push button. Icons are drawn (vector) so they render
+// regardless of the system font.
+export component PushButton inherits Rectangle {
+    property <bool> track-focus: fs.has-focus;
+    changed track-focus => {
+        if (self.track-focus) {
+            FocusTrack.y = self.absolute-position.y;
+            FocusTrack.h = self.height;
+        }
+    }
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    in property <bool> arrow;          // show a dropdown triangle
+    in property <string> tooltip: "";
+    in property <string> tooltip-align: "left";   // "left" | "right"
+    // Accessible name when the visible text is a symbol (defaults to text).
+    in property <string> label: "";
+    out property <bool> has-focus: fs.has-focus;
+    callback clicked;
+
+    accessible-role: button;
+    accessible-label: root.label != "" ? root.label : root.text;
+    accessible-description: root.tooltip;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    forward-focus: fs;
+
+    min-width: label.preferred-width + (root.arrow ? 40px : 26px);
+    max-width: label.preferred-width + (root.arrow ? 56px : 42px);
+    height: 29px;
+    vertical-stretch: 0;
+    horizontal-stretch: 0;
+    border-radius: 3px;
+    border-width: fs.has-focus ? Theme.focus-width : Theme.border-width;
+    background: !root.enabled ? Theme.disabled-bg
+        : root.primary ? (ta.pressed ? Theme.accent-pressed : (ta.has-hover ? Theme.accent-hover : Theme.accent))
+        : (ta.pressed ? Theme.control-pressed : (ta.has-hover ? Theme.control-hover : Theme.control-bg));
+    border-color: fs.has-focus ? (root.primary && !Theme.high-contrast ? #003e73 : Theme.focus)
+        : !root.enabled ? Theme.disabled-border
+        : root.primary ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
+        : (ta.has-hover ? Theme.focus : Theme.control-border);
+
+    label := Text {
+        x: root.arrow ? (parent.width - self.width - 14px) / 2 : (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        text: root.text;
+        font-size: 13px;
+        color: !root.enabled ? Theme.disabled-text : (root.primary ? Theme.on-accent : Theme.text);
+        accessible-role: none;
+    }
+
+    // dropdown triangle
+    if root.arrow: Path {
+        x: label.x + label.width + 7px;
+        y: (parent.height - self.height) / 2 + 1px;
+        width: 9px;
+        height: 5px;
+        viewbox-width: 9;
+        viewbox-height: 5;
+        fill: root.primary ? Theme.on-accent : Theme.text;
+        commands: "M 0 0 L 9 0 L 4.5 5 Z";
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            clicked => {
+                if (root.enabled) {
+                    root.clicked();
+                }
+            }
+        }
+    }
+
+    // Report hover/focus into the TooltipState global, which drives a single
+    // overlay in the window that renders above everything (so it never clips
+    // or bleeds across neighbours).
+    property <bool> tip-hover: ta.has-hover || fs.has-focus;
+    changed tip-hover => {
+        if (root.tooltip != "") {
+            if (root.tip-hover) {
+                TooltipState.text = root.tooltip;
+                TooltipState.ax = root.absolute-position.x;
+                TooltipState.ay = root.absolute-position.y;
+                TooltipState.aw = root.width;
+            } else if (TooltipState.text == root.tooltip) {
+                TooltipState.text = "";
+            }
+        }
+    }
+}
+
+// A small square icon button. kind = "delete", "new", "export", or "menu".
+// The tooltip doubles as its accessible name.
+export component IconButton inherits Rectangle {
+    property <bool> track-focus: fs.has-focus;
+    changed track-focus => {
+        if (self.track-focus) {
+            FocusTrack.y = self.absolute-position.y;
+            FocusTrack.h = self.height;
+        }
+    }
+    in property <bool> enabled: true;
+    in property <string> kind: "delete";
+    in property <string> tooltip: "";
+    out property <bool> has-focus: fs.has-focus;
+    property <bool> danger: root.kind == "delete";
+    callback clicked;
+
+    accessible-role: button;
+    accessible-label: root.tooltip;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    forward-focus: fs;
+
+    width: Theme.ascii ? glyph.preferred-width + 14px : 29px;
+    height: 29px;
+    border-radius: 3px;
+    border-width: fs.has-focus ? Theme.focus-width : Theme.border-width;
+    background: !root.enabled ? Theme.disabled-bg
+        : (ta.pressed ? Theme.control-pressed : (ta.has-hover ? Theme.control-hover : Theme.control-bg));
+    border-color: fs.has-focus ? Theme.focus
+        : !root.enabled ? Theme.disabled-border
+        : (ta.has-hover ? (root.danger ? Theme.danger : Theme.focus) : Theme.control-border);
+
+    // Plain-text fallback: a short ASCII label instead of the drawn icon.
+    glyph := Text {
+        visible: Theme.ascii;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        text: root.kind == "delete" ? "Del" : (root.kind == "new" ? "New" : (root.kind == "menu" ? "Menu" : "Export"));
+        font-size: 12px;
+        color: root.enabled ? Theme.text : Theme.disabled-text;
+        accessible-role: none;
+    }
+    // delete: an X
+    if !Theme.ascii && root.kind == "delete": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 11px;
+        height: 11px;
+        viewbox-width: 11;
+        viewbox-height: 11;
+        stroke: root.enabled ? Theme.danger : Theme.disabled-text;
+        stroke-width: 1.6px;
+        commands: "M 1 1 L 10 10 M 10 1 L 1 10";
+    }
+    if !Theme.ascii && root.kind == "new": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 13px;
+        height: 13px;
+        viewbox-width: 13;
+        viewbox-height: 13;
+        stroke: root.enabled ? Theme.good : Theme.disabled-text;
+        stroke-width: 1.5px;
+        commands: "M 6.5 1.5 L 6.5 11.5 M 1.5 6.5 L 11.5 6.5";
+    }
+    // menu: a hamburger — three evenly-spaced horizontal bars
+    if !Theme.ascii && root.kind == "menu": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 11px;
+        viewbox-width: 14;
+        viewbox-height: 11;
+        stroke: root.enabled ? Theme.text : Theme.disabled-text;
+        stroke-width: 1.6px;
+        commands: "M 1 1.5 L 13 1.5 M 1 5.5 L 13 5.5 M 1 9.5 L 13 9.5";
+    }
+    // export: a download arrow into a tray
+    if !Theme.ascii && root.kind == "export": Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 13px;
+        height: 13px;
+        viewbox-width: 13;
+        viewbox-height: 13;
+        stroke: root.enabled ? Theme.link : Theme.disabled-text;
+        stroke-width: 1.4px;
+        commands: "M 6.5 1 L 6.5 8 M 3 5 L 6.5 8.5 L 10 5 M 1.5 11.5 L 11.5 11.5";
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            clicked => {
+                if (root.enabled) {
+                    root.clicked();
+                }
+            }
+        }
+    }
+
+    property <bool> tip-hover: ta.has-hover || fs.has-focus;
+    changed tip-hover => {
+        if (root.tooltip != "") {
+            if (root.tip-hover) {
+                TooltipState.text = root.tooltip;
+                TooltipState.ax = root.absolute-position.x;
+                TooltipState.ay = root.absolute-position.y;
+                TooltipState.aw = root.width;
+            } else if (TooltipState.text == root.tooltip) {
+                TooltipState.text = "";
+            }
+        }
+    }
+}
+
+// A text-styled, focusable toggle ("Advanced ▾"). Reports expanded state.
+export component Disclosure inherits Rectangle {
+    property <bool> track-focus: fs.has-focus;
+    changed track-focus => {
+        if (self.track-focus) {
+            FocusTrack.y = self.absolute-position.y;
+            FocusTrack.h = self.height;
+        }
+    }
+    in property <string> text;
+    in property <bool> expanded;
+    callback toggled;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-expandable: true;
+    accessible-expanded: root.expanded;
+    accessible-action-default => { root.toggled(); }
+    accessible-action-expand => { root.toggled(); }
+    forward-focus: fs;
+    height: 26px;
+    min-width: t.preferred-width + 10px;
+    border-width: fs.has-focus ? Theme.focus-width : 0px;
+    border-color: Theme.focus;
+    border-radius: 3px;
+    t := Text {
+        x: 4px;
+        text: root.text + " " + (root.expanded ? Theme.collapse-glyph : Theme.expand-glyph);
+        color: ta.has-hover || fs.has-focus ? Theme.text : Theme.faint;
+        font-size: 12px;
+        vertical-alignment: center;
+        height: parent.height;
+        accessible-role: none;
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.toggled();
+                return accept;
+            }
+            reject
+        }
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.toggled(); }
+        }
+    }
+}
+
+// A "label : value" line. Clicking the value or the trailing copy button
+// copies it; the copy button is a keyboard stop of its own.
+export component DetailRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <string> copy-value: root.value;
+    in property <bool> copyable: false;
+    in property <color> value-color: Theme.text;
+    callback copy(string);
+    spacing: 8px;
+    Text {
+        text: root.label;
+        width: Theme.narrow ? 104px : 132px;
+        color: Theme.muted;
+        font-size: 13px;
+        horizontal-alignment: right;
+        vertical-alignment: top;
+        wrap: word-wrap;
+    }
+    if root.copyable: HorizontalLayout {
+        spacing: 2px;
+        horizontal-stretch: 1;
+        alignment: start;
+        TouchArea {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            clicked => { root.copy(root.copy-value); }
+            Text {
+                text: root.value;
+                color: root.value-color;
+                font-size: 13px;
+                wrap: word-wrap;
+                horizontal-alignment: left;
+                vertical-alignment: top;
+            }
+        }
+        copy-btn := Rectangle {
+            property <bool> track-focus: copy-fs.has-focus;
+            changed track-focus => {
+                if (self.track-focus) {
+                    FocusTrack.y = self.absolute-position.y;
+                    FocusTrack.h = self.height;
+                }
+            }
+            width: copy-glyph.preferred-width + 6px;
+            height: 18px;
+            accessible-role: button;
+            accessible-label: "Copy " + root.label;
+            accessible-action-default => { root.copy(root.copy-value); }
+            border-width: copy-fs.has-focus ? Theme.focus-width : 0px;
+            border-color: Theme.focus;
+            border-radius: 3px;
+            copy-glyph := Text {
+                text: Theme.copy-glyph;
+                font-size: 12px;
+                color: copy-fs.has-focus ? Theme.text : Theme.faint;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                accessible-role: none;
+            }
+            copy-fs := FocusScope {
+                focus-on-click: false;
+                key-pressed(event) => {
+                    if (event.text == Key.Return || event.text == " ") {
+                        root.copy(root.copy-value);
+                        return accept;
+                    }
+                    reject
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.copy(root.copy-value); }
+                }
+            }
+        }
+    }
+    if !root.copyable: Text {
+        text: root.value;
+        color: root.value-color;
+        font-size: 13px;
+        horizontal-stretch: 1;
+        wrap: word-wrap;
+    }
+}
+
+// A titled, bordered group box (the "Interface" / "Peer" cards).
+export component Card inherits Rectangle {
+    in property <string> title;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+    background: Theme.card-bg;
+    border-color: Theme.card-border;
+    border-width: Theme.border-width;
+    border-radius: 3px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 7px;
+        Text {
+            text: root.title;
+            font-size: 14px;
+            font-weight: 700;
+            color: Theme.text-strong;
+            wrap: word-wrap;
+        }
+        @children
+    }
+}
+
+// An amber (or red) message banner with up to three actions.
+export component Banner inherits Rectangle {
+    in property <string> text;
+    in property <bool> error: false;
+    in property <string> action1: "";
+    in property <string> action2: "";
+    in property <string> action3: "";
+    in property <string> tip1: "";
+    callback act1;
+    callback act2;
+    callback act3;
+    background: root.error ? Theme.error-bg : Theme.banner-bg;
+    border-radius: 6px;
+    border-width: Theme.border-width;
+    border-color: root.error ? Theme.error-border : Theme.banner-border;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+        Text {
+            text: root.text;
+            color: root.error ? Theme.bad : Theme.banner-text;
+            font-size: 12px;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+        if root.action1 != "": HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            PushButton {
+                text: root.action1;
+                tooltip: root.tip1;
+                clicked => { root.act1(); }
+            }
+            if root.action2 != "": PushButton {
+                text: root.action2;
+                clicked => { root.act2(); }
+            }
+            if root.action3 != "": PushButton {
+                text: root.action3;
+                clicked => { root.act3(); }
+            }
+        }
+    }
+}
+
+// One row in a selectable list (tunnels, backups): focusable, Enter selects,
+// Up/Down move the selection through `moved`.
+export component ListRow inherits Rectangle {
+    property <bool> track-focus: fs.has-focus;
+    changed track-focus => {
+        if (self.track-focus) {
+            FocusTrack.y = self.absolute-position.y;
+            FocusTrack.h = self.height;
+        }
+    }
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked;
+    callback moved(int);
+    accessible-role: list-item;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: fs;
+    background: root.selected ? Theme.selected-bg : (touch.has-hover ? Theme.hover-bg : transparent);
+    border-color: fs.has-focus ? Theme.focus : (root.selected ? Theme.selected-border : transparent);
+    border-width: fs.has-focus ? Theme.focus-width : 1px;
+    border-radius: 2px;
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.moved(1);
+                return accept;
+            }
+            if (event.text == Key.UpArrow) {
+                root.moved(-1);
+                return accept;
+            }
+            reject
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+    @children
+}
+
+// A menu entry inside a popup menu.
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    callback chosen;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.chosen(); }
+    forward-focus: fs;
+    height: 34px;
+    background: t.has-hover || fs.has-focus ? Theme.accent : Theme.card-bg;
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.chosen();
+                return accept;
+            }
+            reject
+        }
+        t := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.chosen(); }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 18px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.text;
+                font-size: 13px;
+                color: t.has-hover || fs.has-focus ? Theme.on-accent : Theme.text;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
+// One line in a virtualized doc view (Log / Diagnostics). Click-to-copy.
+export component DocLine inherits Rectangle {
+    in property <string> text;
+    callback copy(string);
+    height: 16px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    background: line-touch.has-hover ? Theme.line-hover : transparent;
+    line-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.copy(root.text); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        Text {
+            text: root.text;
+            font-family: "monospace";
+            font-size: 12px;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: clip;
+        }
+    }
+}
+
+// One line of a rendered-markdown doc (Help / changelog), styled by kind.
+// `kind` selects the styling: "h1" "h2" "h3" "bullet" "quote" "code" "rule"
+// "blank" "normal". The text is already stripped of markdown in Rust.
+export struct DocItem {
+    text: string,
+    kind: string,
+}
+
+export component MdRow inherits Rectangle {
+    in property <DocItem> item;
+    callback copy(string);
+    // Non-interactive spacers don't get a pointer/hover (blank & rule).
+    property <bool> interactive: item.kind != "blank" && item.kind != "rule";
+    accessible-role: AccessibleRole.text;
+    accessible-label: item.text;
+    // Size the row to its content. A bare Rectangle does NOT auto-size to its
+    // children, so WITHOUT a height every row collapses to 0px. The max()
+    // gives a non-zero floor per kind AND grows to fit word-wrapped lines.
+    height: max(item.kind == "blank" ? 8px : (item.kind == "rule" ? 14px : 18px), body.preferred-height);
+    background: row-touch.has-hover && interactive ? Theme.line-hover
+        : (item.kind == "code" ? Theme.code-bg : transparent);
+    row-touch := TouchArea {
+        mouse-cursor: interactive ? pointer : default;
+        enabled: interactive;
+        clicked => { root.copy(item.text); }
+    }
+
+    body := VerticalLayout {
+        if item.kind == "rule": HorizontalLayout {
+            padding-top: 7px;
+            padding-bottom: 7px;
+            padding-left: 8px;
+            padding-right: 8px;
+            Rectangle { height: 1px; background: Theme.divider; }
+        }
+        if item.kind == "blank": Rectangle { height: 8px; }
+
+        if item.kind != "rule" && item.kind != "blank": HorizontalLayout {
+            padding-top: item.kind == "h1" ? 8px : (item.kind == "h2" ? 6px : 3px);
+            padding-bottom: 3px;
+            padding-left: item.kind == "bullet" ? 22px : (item.kind == "quote" ? 26px : 8px);
+            padding-right: 10px;
+            Text {
+                text: item.text;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                font-family: item.kind == "code" ? "monospace" : "Noto Sans";
+                font-size: item.kind == "h1" ? 20px
+                    : (item.kind == "h2" ? 16px
+                    : (item.kind == "h3" ? 14px
+                    : (item.kind == "code" ? 12px : 13px)));
+                font-weight: item.kind == "h1" || item.kind == "h2" || item.kind == "h3" ? 700 : 400;
+                color: item.kind == "h3" ? Theme.text-strong
+                    : (item.kind == "quote" ? Theme.muted
+                    : (item.kind == "code" ? Theme.code-text : Theme.text));
+            }
+        }
+    }
+}
+
+// A top tab, Windows-style with an accent underline.
+export component TabButton inherits Rectangle {
+    property <bool> track-focus: fs.has-focus;
+    changed track-focus => {
+        if (self.track-focus) {
+            FocusTrack.y = self.absolute-position.y;
+            FocusTrack.h = self.height;
+        }
+    }
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: fs;
+    height: 34px;
+    background: ta.has-hover ? Theme.hover-bg : transparent;
+    border-width: fs.has-focus ? Theme.focus-width : 0px;
+    border-color: Theme.focus;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.text;
+                font-size: 13px;
+                font-weight: root.selected && Theme.high-contrast ? 700 : 400;
+                color: root.selected ? Theme.link : Theme.text;
+                accessible-role: none;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 3px;
+        height: 3px;
+        background: root.selected ? Theme.link : transparent;
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+// A single labelled field used by the structured (form) editor. An optional
+// `hint` is shown muted underneath. `focused` reports the field's position
+// in its layout so the editor can scroll it into view.
+export component FormField {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <string> hint: "";
+    in-out property <string> value;
+    callback edited;
+    callback focused(length, length);
+    out property <bool> field-focused: le.has-focus;
+    changed field-focused => {
+        if (self.field-focused) {
+            FocusTrack.y = self.absolute-position.y;
+            FocusTrack.h = self.height;
+            root.focused(root.y, root.height);
+        }
+    }
+    forward-focus: le;
+    VerticalLayout {
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.label;
+                width: 120px;
+                color: Theme.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            le := LineEdit {
+                horizontal-stretch: 1;
+                text <=> root.value;
+                placeholder-text: root.placeholder;
+                accessible-label: root.label;
+                accessible-description: root.hint;
+                edited => { root.edited(); }
+            }
+        }
+        if root.hint != "": Text {
+            x: 128px;
+            text: root.hint;
+            color: Theme.faint;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// The single tooltip overlay. Place it as the very last child of a window.
+export component TooltipOverlay inherits Rectangle {
+    in property <length> window-width;
+    visible: TooltipState.text != "";
+    x: min(root.window-width - self.width - 6px, max(6px, TooltipState.ax + TooltipState.aw / 2 - self.width / 2));
+    y: max(4px, TooltipState.ay - self.height - 6px);
+    width: tip-label.preferred-width + 16px;
+    height: tip-label.preferred-height + 10px;
+    background: Theme.status-bg;
+    border-radius: 4px;
+    tip-label := Text {
+        x: 8px;
+        y: 5px;
+        text: TooltipState.text;
+        color: Theme.status-text;
+        font-size: 11px;
+        accessible-role: none;
+    }
+}
+
+// A vertical scroll pane whose content stays reachable with Tab: before Tab
+// (or Shift+Tab) moves focus, the strip just after (before) the focused
+// control is scrolled into view, so controls below the fold can take focus
+// and are then fully revealed. PageUp/PageDown scroll requests come in via
+// `page-request` (a counter) and `page-direction`.
+export component KeyScroll inherits ScrollView {
+    in property <int> page-request;
+    in property <int> page-direction;
+    property <length> lead: 96px;
+    changed page-request => {
+        root.content-y = max(min(0px, root.visible-height - root.content-height),
+            min(0px, root.content-y - root.page-direction * root.visible-height * 0.9));
+    }
+    // Scroll so `y..y+h` (content coordinates) is visible.
+    public function reveal(y: length, h: length) {
+        if (y < -root.content-y || h > root.visible-height) {
+            root.content-y = max(min(0px, root.visible-height - root.content-height), -y);
+        } else if (y + h > -root.content-y + root.visible-height) {
+            root.content-y = max(min(0px, root.visible-height - root.content-height), -(y + h - root.visible-height));
+        }
+    }
+    content-height: keys.height;
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        width: root.visible-width;
+        height: max(root.visible-height, inner.preferred-height);
+        capture-key-pressed(event) => {
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                let top = FocusTrack.y - root.absolute-position.y - root.content-y;
+                if (event.text == Key.Tab && !event.modifiers.shift) {
+                    root.reveal(top + FocusTrack.h, root.lead);
+                } else {
+                    root.reveal(max(0px, top - root.lead), root.lead);
+                }
+            }
+            reject
+        }
+        inner := VerticalLayout {
+            @children
+        }
+    }
+}

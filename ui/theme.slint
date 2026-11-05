@@ -1,0 +1,83 @@
+// Colour, focus and glyph tokens. Rust sets `high-contrast` / `ascii` from
+// `--theme` or `WG_GUI_THEME` on every window (see src/theme.rs).
+
+export global Theme {
+    in-out property <bool> high-contrast: false;
+    // Plain-text fallback: symbol glyphs become ASCII labels.
+    in-out property <bool> ascii: false;
+    // Set by MainWindow below its width breakpoint (see src/layout.rs).
+    in-out property <bool> narrow: false;
+
+    out property <color> window-bg: white;
+    out property <color> panel-bg: high-contrast ? white : #f6f6f6;
+    out property <color> bar-bg: high-contrast ? white : #fafafa;
+    out property <color> tabbar-bg: high-contrast ? white : #f3f3f3;
+    out property <color> card-bg: white;
+    out property <color> text: high-contrast ? black : #1b1b1b;
+    out property <color> text-strong: high-contrast ? black : #202020;
+    out property <color> muted: high-contrast ? black : #6a6a6a;
+    out property <color> faint: high-contrast ? #1b1b1b : #8a8a8a;
+    out property <color> divider: high-contrast ? black : #e0e0e0;
+    out property <color> card-border: high-contrast ? black : #e3e3e3;
+    out property <color> control-border: high-contrast ? black : #c4c4c4;
+    out property <color> control-bg: high-contrast ? white : #fdfdfd;
+    out property <color> control-hover: high-contrast ? #e6e6e6 : #e9f3fc;
+    out property <color> control-pressed: high-contrast ? #bdbdbd : #d6d6d6;
+    out property <color> disabled-bg: high-contrast ? white : #f3f3f3;
+    out property <color> disabled-border: high-contrast ? #595959 : #e0e0e0;
+    out property <color> disabled-text: high-contrast ? #595959 : #a6a6a6;
+    out property <color> accent: high-contrast ? black : #0078d4;
+    out property <color> accent-hover: high-contrast ? #333333 : #1a86d9;
+    out property <color> accent-pressed: high-contrast ? #000000 : #005a9e;
+    out property <color> on-accent: white;
+    out property <color> link: high-contrast ? #00008b : #0067c0;
+    out property <color> hover-bg: high-contrast ? #e6e6e6 : #f1f1f1;
+    out property <color> selected-bg: high-contrast ? #00008b : #cce8ff;
+    out property <color> selected-border: high-contrast ? black : #99d1ff;
+    out property <color> selected-text: high-contrast ? white : #1b1b1b;
+    out property <color> good: high-contrast ? #005a00 : #2cbe4e;
+    out property <color> warn: high-contrast ? #7a3d00 : #b06a00;
+    out property <color> bad: high-contrast ? #a00000 : #c0392b;
+    out property <color> danger: high-contrast ? #a00000 : #b23b3b;
+    out property <color> banner-bg: high-contrast ? white : #fff6e0;
+    out property <color> banner-border: high-contrast ? black : #e6c560;
+    out property <color> banner-text: high-contrast ? black : #6a5300;
+    out property <color> error-bg: high-contrast ? white : #fdecea;
+    out property <color> error-border: high-contrast ? #a00000 : #e3a29a;
+    out property <color> status-bg: high-contrast ? black : #2f2f2f;
+    out property <color> status-text: white;
+    out property <color> code-bg: high-contrast ? white : #f3f3f3;
+    out property <color> code-text: high-contrast ? black : #b23b3b;
+    out property <color> line-hover: high-contrast ? #e6e6e6 : #eef3fc;
+    out property <color> focus: high-contrast ? black : #0067c0;
+    out property <length> focus-width: high-contrast ? 3px : 2px;
+    out property <length> border-width: high-contrast ? 2px : 1px;
+
+    // Glyphs with ASCII fallbacks.
+    out property <string> copy-glyph: ascii ? "[copy]" : "⧉";
+    out property <string> expand-glyph: ascii ? "[+]" : "▾";
+    out property <string> collapse-glyph: ascii ? "[-]" : "▴";
+    out property <string> closed-glyph: ascii ? "[+]" : "▸";
+    out property <string> open-glyph: ascii ? "[-]" : "▾";
+    out property <string> ellipsis: ascii ? "..." : "…";
+    out property <string> dash: ascii ? "-" : "—";
+    out property <string> lq: ascii ? "\"" : "“";
+    out property <string> rq: ascii ? "\"" : "”";
+    out property <string> sep: ascii ? "|" : "·";
+}
+
+// Shared hover tooltip state (one overlay per window renders it).
+export global TooltipState {
+    in-out property <string> text;
+    in-out property <length> ax;   // hovered button's left edge, window coords
+    in-out property <length> ay;   // hovered button's top edge, window coords
+    in-out property <length> aw;   // hovered button's width
+}
+
+// Position (window coordinates) of the control that most recently took
+// keyboard focus; scroll panes use it to bring the next control into view
+// before Tab moves on.
+export global FocusTrack {
+    in-out property <length> y;
+    in-out property <length> h;
+}

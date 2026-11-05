@@ -507,6 +507,25 @@ fn dns_check(state: DnsResolverState) -> Check {
     }
 }
 
+/// The clock line of the system check. Never claims the clock is the cause of
+/// a handshake failure: it is only a possible cause if handshakes fail.
+fn clock_check(synced: Option<bool>) -> (Status, String, Option<String>) {
+    match synced {
+        Some(true) => (Status::Ok, "system clock is NTP-synced".to_string(), None),
+        Some(false) => (
+            Status::Warning,
+            "clock not NTP-synced; if handshakes fail, a clock that is far off is one possible cause"
+                .to_string(),
+            Some("enable NTP: timedatectl set-ntp true (or install chrony)".to_string()),
+        ),
+        None => (
+            Status::Unknown,
+            "could not read clock-sync status".to_string(),
+            None,
+        ),
+    }
+}
+
 /// Run all checks. Read-only; does not require root and never modifies anything.
 pub fn system_check() -> Report {
     let mut checks = Vec::new();
@@ -535,23 +554,10 @@ pub fn system_check() -> Report {
     // DNS integration is optional because DNS-less tunnels work without it.
     checks.push(dns_check(dns_resolver_state()));
 
-    // A wrong system clock makes the server reject WireGuard handshakes via the
-    // TAI64N anti-replay timestamp: the tunnel comes up but never connects. Not
-    // critical (only matters once a tunnel is active), but a common silent cause.
-    let (clock_status, clock_detail, clock_fix) = match clock_synced() {
-        Some(true) => (Status::Ok, "system clock is NTP-synced".to_string(), None),
-        Some(false) => (
-            Status::Warning,
-            "clock not NTP-synced — can break WireGuard handshakes (server anti-replay)"
-                .to_string(),
-            Some("enable NTP: timedatectl set-ntp true (or install chrony)".to_string()),
-        ),
-        None => (
-            Status::Unknown,
-            "could not read clock-sync status".to_string(),
-            None,
-        ),
-    };
+    // A clock that is far off can make a peer reject handshakes (TAI64N
+    // anti-replay). An unsynced clock is not evidence of that by itself, so the
+    // check only names it as a possible cause should handshakes fail.
+    let (clock_status, clock_detail, clock_fix) = clock_check(clock_synced());
     checks.push(Check {
         name: "System clock (NTP)",
         status: clock_status,
@@ -803,6 +809,17 @@ mod tests {
         assert_eq!(r.exit_code(), 2);
         assert!(!r.critical_ok());
         assert_eq!(r.blocking().len(), 1);
+    }
+
+    #[test]
+    fn unsynced_clock_is_only_a_possible_cause() {
+        let (status, detail, fix) = clock_check(Some(false));
+        assert!(matches!(status, Status::Warning));
+        assert!(detail.contains("possible cause"), "{detail}");
+        assert!(!detail.contains("can break"), "{detail}");
+        assert!(fix.is_some());
+        assert!(matches!(clock_check(Some(true)).0, Status::Ok));
+        assert!(matches!(clock_check(None).0, Status::Unknown));
     }
 
     #[test]

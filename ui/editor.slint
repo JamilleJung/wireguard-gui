@@ -1,0 +1,454 @@
+// The tunnel editor as a SEPARATE top-level window. A fresh window gets a
+// clean initial paint, so its text-input widgets render immediately — unlike
+// an in-place overlay, which on this Wayland setup stays blank until clicked.
+
+import { ScrollView, LineEdit, TextEdit, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { PushButton, Banner, TabButton, FormField, Disclosure, TooltipOverlay, KeyScroll } from "widgets.slint";
+
+export component EditWindow inherits Window {
+    title: "Edit Tunnel";
+    preferred-width: 600px;
+    preferred-height: 640px;
+    // Keep in sync with src/layout.rs EDITOR_MIN.
+    min-width: 520px;
+    min-height: 520px;
+    forward-focus: keys;
+
+    in-out property <bool> is-new: false;
+    in-out property <string> tunnel-name: "";
+    // The name the tunnel had when the editor opened ("" for a new one).
+    in-out property <string> original-name: "";
+    in-out property <string> config-text: "";
+    in property <string> error: "";
+    in property <string> warning: "";
+    in property <string> public-key: "";
+    // A save is in flight (Save buttons disabled; the draft is kept).
+    in property <bool> busy: false;
+    // Shown after a failed save/validation or a refused close: the draft is
+    // kept and the user chooses Retry / Re-edit / Discard.
+    in property <string> recovery: "";
+
+    // Form view: structured fields. `form-mode` toggles between the form and
+    // the raw config text; peer-index/peer-count drive multi-peer navigation.
+    in-out property <bool> form-mode: false;
+    in-out property <bool> show-advanced-fields: false;
+    in-out property <int> peer-index: 0;
+    in property <int> peer-count: 1;
+    in property <string> peer-label: "1 of 1";
+    in-out property <string> f-private-key;
+    in-out property <string> f-address;
+    in-out property <string> f-dns;
+    in-out property <string> f-listen-port;
+    in-out property <string> f-mtu;
+    in-out property <string> f-peer-public-key;
+    in-out property <string> f-preshared-key;
+    in-out property <string> f-allowed-ips;
+    in-out property <string> f-endpoint;
+    in-out property <string> f-keepalive;
+
+    callback save(string, string);
+    callback cancel();
+    callback generate-key();
+    callback generate-psk();
+    callback config-changed(string);
+    callback fields-changed();
+    callback switch-mode(bool);
+    callback peer-prev();
+    callback peer-next();
+    callback peer-add();
+    callback peer-remove();
+    callback create-preset(string);
+    callback copy(string);
+    callback save-and-activate(string, string);
+    callback show-help();
+    callback draft-edited();
+    callback recover-retry();
+    callback recover-reedit();
+    callback recover-discard();
+
+    // Move keyboard focus back into the draft (Re-edit).
+    property <int> focus-request: 0;
+    public function focus-draft() {
+        root.focus-request += 1;
+    }
+
+    // Force the light palette so the text inputs use dark-text-on-light fills —
+    // which is what makes them visible on a white background. (No `min-height`
+    // on the TextEdit either — Slint #6896.)
+    init => { Palette.color-scheme = ColorScheme.light; }
+
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        capture-key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "s" || event.text == "S") && !root.busy) {
+                root.save(root.tunnel-name, root.config-text);
+                return accept;
+            }
+            reject
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.is-new ? "Create new tunnel" : ("Edit " + Theme.lq + root.tunnel-name + Theme.rq);
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                PushButton {
+                    text: "? Help";
+                    label: "Help";
+                    tooltip: "Open the in-app help guide";
+                    tooltip-align: "right";
+                    clicked => { root.show-help(); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 8px;
+            Text {
+                text: "Name:";
+                width: 56px;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
+            LineEdit {
+                horizontal-stretch: 1;
+                text <=> root.tunnel-name;
+                placeholder-text: "tunnel name";
+                accessible-label: "Tunnel name";
+                edited => { root.draft-edited(); }
+            }
+        }
+
+        // Public key — derived live from the PrivateKey in the config.
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 8px;
+            Text {
+                text: "Public key:";
+                width: 80px;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.public-key != "" ? root.public-key : Theme.dash;
+                color: Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            PushButton {
+                text: "Copy";
+                label: "Copy public key";
+                enabled: root.public-key != "";
+                clicked => { root.copy(root.public-key); }
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 8px;
+            PushButton {
+                text: "Generate keypair";
+                tooltip: "Generate a new private/public key";
+                clicked => { root.generate-key(); }
+            }
+            PushButton {
+                text: "Generate PSK";
+                label: "Generate preshared key";
+                tooltip: "Generate a preshared key for the peer";
+                clicked => { root.generate-psk(); }
+            }
+            PushButton {
+                text: "Copy config";
+                clicked => { root.copy(root.config-text); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        if root.is-new: Rectangle {
+            vertical-stretch: 0;
+            background: Theme.high-contrast ? white : #f7fbff;
+            border-color: Theme.high-contrast ? black : #d6e9fb;
+            border-width: Theme.border-width;
+            border-radius: 3px;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 8px;
+                Text {
+                    text: "Preset:";
+                    width: 56px;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                PushButton {
+                    text: "Interface only";
+                    tooltip: "Generate only an [Interface] section";
+                    clicked => { root.create-preset("interface"); }
+                }
+                PushButton {
+                    text: "Full tunnel";
+                    tooltip: "Default AllowedIPs route all traffic through the peer";
+                    clicked => { root.create-preset("full"); }
+                }
+                PushButton {
+                    text: "Split tunnel";
+                    tooltip: "Default AllowedIPs route only a private subnet";
+                    clicked => { root.create-preset("split"); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        // Mode toggle: structured fields vs. raw config text.
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 0px;
+            accessible-role: tab-list;
+            TabButton {
+                text: "Edit fields";
+                selected: root.form-mode;
+                clicked => { root.switch-mode(true); }
+            }
+            TabButton {
+                text: "Config text";
+                selected: !root.form-mode;
+                clicked => { root.switch-mode(false); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // ---- structured form view ----
+        // Tabbing through the fields scrolls the focused one into view
+        // (same rule as src/layout.rs ensure_visible).
+        if root.form-mode: form := KeyScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-right: 16px;
+                spacing: 6px;
+                Text {
+                    text: "Interface";
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+                FormField {
+                    label: "Private key";
+                    placeholder: "base64 private key";
+                    hint: "Your secret " + Theme.dash + " never share it; use Generate keypair";
+                    value <=> root.f-private-key;
+                    property <int> fr: root.focus-request;
+                    changed fr => { self.focus(); }
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                FormField {
+                    label: "Address";
+                    placeholder: "10.0.0.2/32, fd00::2/128";
+                    hint: "Your IP inside the tunnel, e.g. 10.100.0.17/24";
+                    value <=> root.f-address;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                FormField {
+                    label: "DNS";
+                    placeholder: "1.1.1.1, 8.8.8.8";
+                    hint: "DNS server while connected (optional), e.g. 1.1.1.1";
+                    value <=> root.f-dns;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+
+                // ---- Advanced interface fields (collapsed by default) ----
+                Disclosure {
+                    text: "Advanced fields";
+                    expanded: root.show-advanced-fields;
+                    toggled => { root.show-advanced-fields = !root.show-advanced-fields; }
+                }
+                if root.show-advanced-fields: FormField {
+                    label: "Listen port";
+                    placeholder: "optional";
+                    hint: "Local UDP port to listen on (optional, usually auto)";
+                    value <=> root.f-listen-port;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                if root.show-advanced-fields: FormField {
+                    label: "MTU";
+                    placeholder: "optional";
+                    hint: "Packet size (optional); lower to e.g. 1380 on flaky links";
+                    value <=> root.f-mtu;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                Rectangle { height: 4px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Peer";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.peer-label;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    PushButton {
+                        text: "Prev";
+                        label: "Previous peer";
+                        enabled: root.peer-index > 0;
+                        clicked => { root.peer-prev(); }
+                    }
+                    PushButton {
+                        text: "Next";
+                        label: "Next peer";
+                        enabled: root.peer-index + 1 < root.peer-count;
+                        clicked => { root.peer-next(); }
+                    }
+                    PushButton {
+                        text: "Add peer";
+                        clicked => { root.peer-add(); root.draft-edited(); }
+                    }
+                    PushButton {
+                        text: "Remove";
+                        label: "Remove this peer";
+                        enabled: root.peer-count > 1;
+                        clicked => { root.peer-remove(); root.draft-edited(); }
+                    }
+                }
+                FormField {
+                    label: "Public key";
+                    placeholder: "peer's base64 public key";
+                    hint: "The server's public key";
+                    value <=> root.f-peer-public-key;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                FormField {
+                    label: "Preshared key";
+                    placeholder: "optional";
+                    hint: "Optional extra shared secret; use Generate PSK";
+                    value <=> root.f-preshared-key;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                FormField {
+                    label: "Allowed IPs";
+                    placeholder: "0.0.0.0/0, ::/0";
+                    hint: "What routes into the tunnel " + Theme.dash + " 0.0.0.0/0 = everything (full tunnel)";
+                    value <=> root.f-allowed-ips;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                FormField {
+                    label: "Endpoint";
+                    placeholder: "host:51820";
+                    hint: "Where to reach the server: host:port, e.g. 1.2.3.4:51820";
+                    value <=> root.f-endpoint;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+                FormField {
+                    label: "Persistent keepalive";
+                    placeholder: "optional, e.g. 25";
+                    hint: "Keep-alive seconds (25 is typical behind NAT)";
+                    value <=> root.f-keepalive;
+                    edited => { root.fields-changed(); root.draft-edited(); }
+                    focused(y, h) => { form.reveal(y, h); }
+                }
+            }
+        }
+
+        // ---- raw config text view ----
+        if !root.form-mode: TextEdit {
+            vertical-stretch: 1;
+            text <=> root.config-text;
+            accessible-label: "Config text";
+            property <int> fr: root.focus-request;
+            changed fr => { self.focus(); }
+            edited => { root.config-changed(self.text); root.draft-edited(); }
+        }
+
+        if root.warning != "": Text {
+            text: root.warning;
+            color: Theme.warn;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.bad;
+            font-size: 12px;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+
+        // Draft recovery: never discard the user's text implicitly.
+        if root.recovery != "": Banner {
+            error: true;
+            text: root.recovery;
+            action1: "Retry";
+            tip1: "Save this draft again";
+            action2: "Re-edit";
+            action3: "Discard";
+            act1 => { root.recover-retry(); }
+            act2 => { root.recover-reedit(); }
+            act3 => { root.recover-discard(); }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 8px;
+            alignment: end;
+            PushButton {
+                text: "Cancel";
+                tooltip: "Close the editor (Escape)";
+                clicked => { root.cancel(); }
+            }
+            PushButton {
+                text: root.busy ? "Saving" + Theme.ellipsis : (root.is-new ? "Create" : "Save");
+                primary: true;
+                enabled: !root.busy;
+                tooltip: "Save (Ctrl+S)";
+                clicked => { root.save(root.tunnel-name, root.config-text); }
+            }
+            if root.is-new: PushButton {
+                text: "Create & Activate";
+                primary: true;
+                enabled: !root.busy;
+                clicked => { root.save-and-activate(root.tunnel-name, root.config-text); }
+            }
+        }
+    }
+    }
+
+    TooltipOverlay { window-width: root.width; }
+}

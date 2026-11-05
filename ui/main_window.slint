@@ -1,0 +1,1091 @@
+import { ListView, ScrollView, LineEdit, Palette, CheckBox } from "std-widgets.slint";
+import { StatusDot } from "components/statusdot.slint";
+import { Theme, TooltipState } from "theme.slint";
+import {
+    PushButton, IconButton, Disclosure, DetailRow, Card, Banner, ListRow, MenuItem,
+    DocLine, TabButton, TooltipOverlay, KeyScroll,
+} from "widgets.slint";
+
+// ---- data shared with the Rust backend ------------------------------------
+
+export struct TunnelItem {
+    name: string,
+    active: bool,
+}
+
+export struct PeerInfo {
+    public-key: string,
+    preshared: bool,
+    allowed-ips: string,
+    endpoint: string,
+    keepalive: string,
+    latest-handshake: string,
+    transfer: string,
+    // Per-peer health line and its level: "good" | "warn" | "bad" | "neutral".
+    health: string,
+    health-level: string,
+    // 1-based position among all peers of the tunnel.
+    number: int,
+}
+
+export struct BackupRow {
+    name: string,
+    date: string,
+    size: string,
+    count: string,
+}
+
+export struct TunnelDetail {
+    name: string,
+    active: bool,
+    autostart: bool,
+    // The kill switch was requested (Enabled, Missing or Mismatch).
+    killswitch: bool,
+    // "enabled" | "disabled" | "missing" | "mismatch" | "unknown"
+    killswitch-state: string,
+    public-key: string,
+    listen-port: string,
+    addresses: string,
+    dns: string,
+    // Only the current page of (filtered) peers.
+    peers: [PeerInfo],
+    peer-count: int,
+    // Live connection health + throughput (filled by the background poller).
+    health: string,
+    health-level: string,
+    speed: string,
+}
+
+// Width breakpoint and list widths: keep in sync with src/layout.rs.
+global Layout {
+    out property <length> breakpoint: 860px;
+    out property <length> list-wide: 270px;
+    out property <length> list-narrow: 240px;
+}
+
+export component MainWindow inherits Window {
+    title: "WireGuard";
+    default-font-family: "Noto Sans";
+    default-font-size: 13px;
+    preferred-width: 1000px;
+    preferred-height: 720px;
+    min-width: 720px;
+    min-height: 480px;
+    background: Theme.window-bg;
+    forward-focus: shortcuts;
+
+    // ---- state driven by Rust ----
+    in property <[TunnelItem]> tunnels;
+    in-out property <int> selected-index: -1;
+    in property <bool> has-selection: false;
+    in property <TunnelDetail> detail;
+    in property <string> status: "";
+    // Connection problem (failed / stale handshake) for the selected tunnel.
+    in property <string> conn-warning: "";
+    // Kill switch problem for the selected tunnel, and whether "Repair now"
+    // applies (active tunnel, protection lost).
+    in property <string> ks-warning: "";
+    in property <bool> ks-repairable: false;
+    // Saved file and running interface differ after a failed live sync.
+    in property <string> sync-problem: "";
+    in property <string> sync-tunnel: "";
+    in property <bool> sync-needs-reconnect: false;
+    // Peer paging/filtering in the detail pane.
+    in-out property <int> peer-page: 0;
+    in property <int> peer-pages: 1;
+    in property <string> peer-page-label: "";
+    in-out property <string> peer-filter: "";
+
+    // tabs (0 = Tunnels, 1 = Log, 2 = Backup) + log contents
+    in-out property <int> active-tab: 0;
+    in property <[string]> log-lines;
+    in-out property <string> log-filter: "";
+    in-out property <bool> log-this-tunnel: false;
+
+    // Backup manager: the archive list + which row is selected.
+    in property <[BackupRow]> backups;
+    in-out property <int> backup-sel: -1;
+
+    // Progressive disclosure for expert/raw runtime actions in the detail card.
+    in-out property <bool> show-advanced: false;
+
+    // Auto-update banner above the tab bar.
+    in property <bool> update-available: false;
+    in property <string> update-banner: "";
+
+    // ---- callbacks into Rust ----
+    callback persist-advanced(bool);
+    callback select(int);
+    callback activate(string);
+    callback deactivate(string);
+    callback diagnose-conn(string);
+    callback import-file();
+    callback add-empty();
+    callback delete-tunnel(string);
+    callback begin-edit(string);
+    callback refresh-log();
+    callback refresh-tunnels();
+    callback export-zip();
+    callback import-qr();
+    callback show-qr(string);
+    callback set-autostart(string, bool);
+    callback set-killswitch(string, bool);
+    callback repair-killswitch(string);
+    callback copy-value(string);
+    callback copy-raw(string);
+    callback show-about();
+    callback show-help();
+    callback show-update();
+    callback persist-live(string);
+    callback show-running(string);
+    callback peer-page-changed(int);
+    callback peer-filter-changed(string);
+    callback sync-retry(string);
+    callback sync-reconnect(string);
+    callback sync-dismiss();
+    // Log management
+    callback apply-log-filter();
+    callback save-log();
+    callback copy-log();
+    callback copy-line(string);
+    callback clear-log();
+    // Backup management
+    callback refresh-backups();
+    callback backup-create();
+    callback backup-restore(string);
+    callback backup-delete(string);
+    callback backup-export(string);
+
+    // Updated from a change handler, not a binding: a binding on the window
+    // width would loop through the layout's own size constraints.
+    property <bool> narrow: false;
+    changed width => {
+        root.narrow = root.width < Layout.breakpoint;
+        Theme.narrow = root.narrow;
+    }
+
+    // Force the light palette app-wide (Palette is a global). Without this,
+    // GNOME dark mode gives std-widgets near-white fills that vanish on our
+    // white backgrounds.
+    init => {
+        Palette.color-scheme = ColorScheme.light;
+        root.narrow = root.width < Layout.breakpoint;
+        Theme.narrow = root.narrow;
+    }
+
+    function switch-tab(tab: int) {
+        root.active-tab = tab;
+        if (tab == 1) {
+            root.refresh-log();
+        }
+        if (tab == 2) {
+            root.refresh-backups();
+        }
+    }
+
+    function move-selection(delta: int) {
+        if (root.tunnels.length > 0) {
+            root.select(max(0, min(root.tunnels.length - 1, root.selected-index + delta)));
+        }
+    }
+
+    function refresh-current() {
+        if (root.active-tab == 0) {
+            root.refresh-tunnels();
+        } else if (root.active-tab == 1) {
+            root.refresh-log();
+        } else {
+            root.refresh-backups();
+        }
+    }
+
+    // Scroll whichever long view is showing by a page (keyboard PageUp/Down).
+    // The views live inside conditional blocks, so they react to a request
+    // counter instead of being addressed by id.
+    property <int> scroll-request: 0;
+    property <int> scroll-direction: 0;
+    function page-scroll(direction: int) {
+        root.scroll-direction = direction;
+        root.scroll-request += 1;
+    }
+
+    // Keyboard shortcuts (listed in src/layout.rs SHORTCUTS and docs/help.md).
+    // Modifier and function-key shortcuts are captured before the focused
+    // control so they work everywhere; plain keys stay with the control.
+    shortcuts := FocusScope {
+        capture-key-pressed(event) => {
+            if (event.text == Key.F1) {
+                root.show-help();
+                return accept;
+            }
+            if (event.text == Key.F5) {
+                root.refresh-current();
+                return accept;
+            }
+            if (!event.modifiers.control || event.modifiers.alt) {
+                return reject;
+            }
+            if (event.text == "1") { root.switch-tab(0); return accept; }
+            if (event.text == "2") { root.switch-tab(1); return accept; }
+            if (event.text == "3") { root.switch-tab(2); return accept; }
+            if (event.text == "o" || event.text == "O") { root.import-file(); return accept; }
+            if (event.text == "i" || event.text == "I") { root.import-qr(); return accept; }
+            if (event.text == "n" || event.text == "N") { root.add-empty(); return accept; }
+            if (event.text == "u" || event.text == "U") { root.show-update(); return accept; }
+            if (event.text == "r" || event.text == "R") { root.refresh-current(); return accept; }
+            if (event.text == "s" || event.text == "S") {
+                if (root.active-tab == 1) {
+                    root.save-log();
+                } else {
+                    root.export-zip();
+                }
+                return accept;
+            }
+            if (root.has-selection && root.active-tab == 0) {
+                if (event.text == "e" || event.text == "E") { root.begin-edit(root.detail.name); return accept; }
+                if (event.text == "d" || event.text == "D") { root.diagnose-conn(root.detail.name); return accept; }
+                if (event.text == "t" || event.text == "T") {
+                    if (root.detail.active) {
+                        root.deactivate(root.detail.name);
+                    } else {
+                        root.activate(root.detail.name);
+                    }
+                    return accept;
+                }
+            }
+            reject
+        }
+        key-pressed(event) => {
+            if (event.text == Key.PageDown) { root.page-scroll(1); return accept; }
+            if (event.text == Key.PageUp) { root.page-scroll(-1); return accept; }
+            reject
+        }
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ===================== update banner =====================
+        if root.update-available: Rectangle {
+            height: 30px;
+            background: Theme.banner-bg;
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.banner-border; }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 8px;
+                Text {
+                    text: root.update-banner;
+                    color: Theme.banner-text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    PushButton {
+                        text: "Update now";
+                        primary: true;
+                        clicked => { root.show-update(); }
+                    }
+                }
+            }
+        }
+
+        // ===================== tab bar =====================
+        Rectangle {
+            height: 35px;
+            background: Theme.tabbar-bg;
+            accessible-role: tab-list;
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.divider; }
+            HorizontalLayout {
+                alignment: start;
+                TabButton {
+                    text: "Tunnels";
+                    selected: root.active-tab == 0;
+                    clicked => { root.switch-tab(0); }
+                }
+                TabButton {
+                    text: "Log";
+                    selected: root.active-tab == 1;
+                    clicked => { root.switch-tab(1); }
+                }
+                TabButton {
+                    text: "Backup";
+                    selected: root.active-tab == 2;
+                    clicked => { root.switch-tab(2); }
+                }
+            }
+        }
+
+        // ===================== Tunnels tab =====================
+        if root.active-tab == 0: HorizontalLayout {
+        vertical-stretch: 1;
+        spacing: 0px;
+
+        // ===================== left: tunnel list =====================
+        Rectangle {
+            width: root.narrow ? Layout.list-narrow : Layout.list-wide;
+            background: Theme.window-bg;
+            // right divider
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                background: Theme.divider;
+            }
+            VerticalLayout {
+                padding: 0px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    accessible-role: list;
+                    accessible-label: "Tunnels";
+                    for t[i] in root.tunnels: ListRow {
+                        height: 40px;
+                        label: t.name + (t.active ? ", active" : ", inactive");
+                        selected: i == root.selected-index;
+                        clicked => { root.select(i); }
+                        moved(delta) => { root.move-selection(delta); }
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 10px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                StatusDot { on: t.active; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: t.name;
+                                    font-size: 14px;
+                                    color: i == root.selected-index ? Theme.selected-text : Theme.text;
+                                    overflow: elide;
+                                    accessible-role: none;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // bottom action bar
+                Rectangle {
+                    height: 46px;
+                    background: Theme.bar-bg;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: Theme.divider;
+                    }
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Add Tunnel";
+                                arrow: true;
+                                tooltip: "Import or create a tunnel (Ctrl+O, Ctrl+I, Ctrl+N)";
+                                clicked => { add-popup.show(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                kind: "menu";
+                                tooltip: "Help, updates & about";
+                                clicked => { menu-popup.show(); }
+                            }
+                        }
+                        // Help is also in the menu and on F1; drop the extra
+                        // button when the list is narrow.
+                        if !root.narrow: VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "?";
+                                label: "Help";
+                                tooltip: "Help guide (F1)";
+                                clicked => { root.show-help(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                enabled: root.has-selection;
+                                tooltip: "Delete this tunnel";
+                                clicked => { root.delete-tunnel(root.detail.name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                kind: "export";
+                                tooltip: "Export all tunnels (Ctrl+S)";
+                                clicked => { root.export-zip(); }
+                            }
+                        }
+                    }
+
+                    add-popup := PopupWindow {
+                        x: 8px;
+                        y: -116px;
+                        width: 244px;
+                        height: 110px;
+                        Rectangle {
+                            background: Theme.card-bg;
+                            border-color: Theme.control-border;
+                            border-width: Theme.border-width;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: #00000030;
+                            VerticalLayout {
+                                padding: 1px;
+                                MenuItem {
+                                    text: "Import tunnel(s) from file" + Theme.ellipsis;
+                                    chosen => { add-popup.close(); root.import-file(); }
+                                }
+                                MenuItem {
+                                    text: "Import from QR code" + Theme.ellipsis;
+                                    chosen => { add-popup.close(); root.import-qr(); }
+                                }
+                                MenuItem {
+                                    text: "Create tunnel" + Theme.ellipsis;
+                                    chosen => { add-popup.close(); root.add-empty(); }
+                                }
+                            }
+                        }
+                    }
+
+                    // App-level menu (Help / Updates / About).
+                    menu-popup := PopupWindow {
+                        x: 108px;
+                        y: -116px;
+                        width: 200px;
+                        height: 110px;
+                        Rectangle {
+                            background: Theme.card-bg;
+                            border-color: Theme.control-border;
+                            border-width: Theme.border-width;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: #00000030;
+                            VerticalLayout {
+                                padding: 1px;
+                                MenuItem {
+                                    text: "Help" + Theme.ellipsis;
+                                    chosen => { menu-popup.close(); root.show-help(); }
+                                }
+                                MenuItem {
+                                    text: "Check for updates" + Theme.ellipsis;
+                                    chosen => { menu-popup.close(); root.show-update(); }
+                                }
+                                MenuItem {
+                                    text: "About" + Theme.ellipsis;
+                                    chosen => { menu-popup.close(); root.show-about(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===================== right: details =====================
+        Rectangle {
+            background: Theme.panel-bg;
+            horizontal-stretch: 1;
+            VerticalLayout {
+
+            // empty state - beginner-friendly when there are no tunnels at all
+            if !root.has-selection: VerticalLayout {
+                vertical-stretch: 1;
+                alignment: center;
+                spacing: 12px;
+                padding: 12px;
+                Text {
+                    text: root.tunnels.length == 0 ? "No tunnels yet" : "Select a tunnel on the left";
+                    color: Theme.text;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                if root.tunnels.length == 0: Text {
+                    text: "Import a WireGuard .conf file or a QR-code image to begin.";
+                    color: Theme.muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                if root.tunnels.length == 0: HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    PushButton {
+                        text: "Import .conf";
+                        primary: true;
+                        clicked => { root.import-file(); }
+                    }
+                    PushButton {
+                        text: "Import QR image";
+                        clicked => { root.import-qr(); }
+                    }
+                    PushButton {
+                        text: "New tunnel";
+                        clicked => { root.add-empty(); }
+                    }
+                }
+            }
+
+            // detail view: scrolls as a whole (PageUp/PageDown from the keyboard)
+            if root.has-selection: KeyScroll {
+                vertical-stretch: 1;
+                page-request: root.scroll-request;
+                page-direction: root.scroll-direction;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    if root.sync-problem != "": Banner {
+                        text: root.sync-problem;
+                        action1: "Retry sync";
+                        tip1: "Apply the saved file to the running interface again";
+                        action2: "Reconnect";
+                        action3: "Keep as is";
+                        act1 => { root.sync-retry(root.sync-tunnel); }
+                        act2 => { root.sync-reconnect(root.sync-tunnel); }
+                        act3 => { root.sync-dismiss(); }
+                    }
+
+                    // ---- Interface card ----
+                    Card {
+                        title: "Interface: " + root.detail.name;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Status:";
+                                width: Theme.narrow ? 104px : 132px;
+                                color: Theme.muted;
+                                font-size: 13px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                StatusDot { on: root.detail.active; }
+                            }
+                            Text {
+                                text: root.detail.active ? "Active" : "Inactive";
+                                color: Theme.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        if root.detail.active && root.detail.health != "": DetailRow {
+                            label: "Connection:";
+                            value: root.detail.health;
+                            value-color: root.detail.health-level == "good" ? Theme.good
+                                : (root.detail.health-level == "bad" ? Theme.bad
+                                : (root.detail.health-level == "warn" ? Theme.warn : Theme.text));
+                        }
+                        // Problem connection: points at Diagnose. The clock
+                        // is only named as a possible cause by Rust.
+                        if root.conn-warning != "": Banner {
+                            text: root.conn-warning;
+                            action1: "Diagnose";
+                            tip1: "Check why this tunnel isn't connecting";
+                            act1 => { root.diagnose-conn(root.detail.name); }
+                        }
+                        if root.ks-warning != "": Banner {
+                            error: root.ks-repairable;
+                            text: root.ks-warning;
+                            action1: root.ks-repairable ? "Repair now" : "";
+                            tip1: "Reinstall the kill switch from the live interface";
+                            act1 => { root.repair-killswitch(root.detail.name); }
+                        }
+
+                        if root.detail.active && root.detail.speed != "": DetailRow {
+                            label: "Speed:";
+                            value: root.detail.speed;
+                        }
+
+                        DetailRow {
+                            label: "Public key:";
+                            value: root.detail.public-key;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.public-key); }
+                        }
+                        if root.detail.listen-port != "": DetailRow {
+                            label: "Listen port:";
+                            value: root.detail.listen-port;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.listen-port); }
+                        }
+                        if root.detail.addresses != "": DetailRow {
+                            label: "Addresses:";
+                            value: root.detail.addresses;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.addresses); }
+                        }
+                        if root.detail.dns != "": DetailRow {
+                            label: "DNS servers:";
+                            value: root.detail.dns;
+                            copyable: true;
+                            copy => { root.copy-value(root.detail.dns); }
+                        }
+
+                        // Start-on-boot toggle (wg-quick@<name> systemd unit).
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { width: Theme.narrow ? 104px : 132px; }
+                            CheckBox {
+                                text: "Start on boot";
+                                checked: root.detail.autostart;
+                                toggled => {
+                                    root.set-autostart(root.detail.name, self.checked);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        // Activate / Deactivate + Diagnose + Show QR.
+                        HorizontalLayout {
+                            padding-top: 6px;
+                            spacing: 8px;
+                            Rectangle { width: Theme.narrow ? 104px : 132px; }
+                            PushButton {
+                                text: root.detail.active ? "Deactivate" : "Activate";
+                                primary: !root.detail.active;
+                                tooltip: root.detail.active ? "Take the tunnel down (Ctrl+T)" : "Bring the tunnel up (Ctrl+T)";
+                                clicked => {
+                                    if (root.detail.active) {
+                                        root.deactivate(root.detail.name);
+                                    } else {
+                                        root.activate(root.detail.name);
+                                    }
+                                }
+                            }
+                            PushButton {
+                                text: "Diagnose";
+                                tooltip: "Check why this tunnel isn't connecting (Ctrl+D)";
+                                clicked => { root.diagnose-conn(root.detail.name); }
+                            }
+                            PushButton {
+                                text: "Show QR";
+                                tooltip: "Show as a QR code to scan on a phone";
+                                clicked => { root.show-qr(root.detail.name); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        // ---- Advanced (progressive disclosure) ----
+                        HorizontalLayout {
+                            Rectangle { width: Theme.narrow ? 104px : 132px; }
+                            Disclosure {
+                                text: "Advanced";
+                                expanded: root.show-advanced;
+                                toggled => {
+                                    root.show-advanced = !root.show-advanced;
+                                    root.persist-advanced(root.show-advanced);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        if root.show-advanced: HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { width: Theme.narrow ? 104px : 132px; }
+                            CheckBox {
+                                text: "Kill switch";
+                                checked: root.detail.killswitch;
+                                enabled: root.detail.active && root.detail.killswitch-state != "unknown";
+                                toggled => {
+                                    root.set-killswitch(root.detail.name, self.checked);
+                                }
+                            }
+                            Text {
+                                text: !root.detail.active ? "requires an active tunnel"
+                                    : root.detail.killswitch-state == "missing" ? "ON, but rules missing"
+                                    : root.detail.killswitch-state == "mismatch" ? "ON, but rules stale"
+                                    : root.detail.killswitch-state == "unknown" ? "status unknown"
+                                    : "blocks non-local traffic outside this tunnel";
+                                color: root.detail.killswitch-state == "missing" || root.detail.killswitch-state == "mismatch" ? Theme.bad : Theme.muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        if root.show-advanced: HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { width: Theme.narrow ? 104px : 132px; }
+                            if root.detail.active: PushButton {
+                                text: "Running cfg";
+                                tooltip: "Copy the live running config (wg showconf)";
+                                clicked => { root.show-running(root.detail.name); }
+                            }
+                            if root.detail.active: PushButton {
+                                text: "Save live";
+                                tooltip: "Save the running state to disk (wg-quick save)";
+                                clicked => { root.persist-live(root.detail.name); }
+                            }
+                            if !root.detail.active: Text {
+                                text: "Activate the tunnel to access live runtime actions.";
+                                color: Theme.muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                            if root.detail.active: Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+
+                    // ---- Peer navigation (filter + pages) for many peers ----
+                    if root.detail.peer-count > 1: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: root.peer-page-label;
+                            color: Theme.muted;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            LineEdit {
+                                horizontal-stretch: 1;
+                                min-width: 100px;
+                                placeholder-text: "Filter peers" + Theme.ellipsis;
+                                accessible-label: "Filter peers by key, endpoint or allowed IPs";
+                                text: root.peer-filter;
+                                edited(s) => { root.peer-filter-changed(s); }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                PushButton {
+                                    text: "Prev";
+                                    label: "Previous peers";
+                                    enabled: root.peer-page > 0;
+                                    clicked => { root.peer-page-changed(root.peer-page - 1); }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                PushButton {
+                                    text: "Next";
+                                    label: "Next peers";
+                                    enabled: root.peer-page + 1 < root.peer-pages;
+                                    clicked => { root.peer-page-changed(root.peer-page + 1); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Peer cards (current page) ----
+                    for p in root.detail.peers: Card {
+                        title: root.detail.peer-count > 1 ? "Peer " + p.number : "Peer";
+                        if root.detail.active && p.health != "": DetailRow {
+                            label: "Health:";
+                            value: p.health;
+                            value-color: p.health-level == "good" ? Theme.good
+                                : (p.health-level == "bad" ? Theme.bad
+                                : (p.health-level == "warn" ? Theme.warn : Theme.text));
+                        }
+                        DetailRow {
+                            label: "Public key:";
+                            value: p.public-key;
+                            copyable: true;
+                            copy => { root.copy-value(p.public-key); }
+                        }
+                        if p.preshared: DetailRow {
+                            label: "Preshared key:";
+                            value: "enabled";
+                        }
+                        if p.allowed-ips != "": DetailRow {
+                            label: "Allowed IPs:";
+                            value: p.allowed-ips;
+                            copyable: true;
+                            copy => { root.copy-value(p.allowed-ips); }
+                        }
+                        if p.endpoint != "": DetailRow {
+                            label: "Endpoint:";
+                            value: p.endpoint;
+                            copyable: true;
+                            copy => { root.copy-value(p.endpoint); }
+                        }
+                        if p.keepalive != "": DetailRow {
+                            label: "Persistent keepalive:";
+                            value: p.keepalive == "0" || p.keepalive == "off" ? "off" : (p.keepalive + " seconds");
+                        }
+                        if p.latest-handshake != "": DetailRow {
+                            label: "Latest handshake:";
+                            value: p.latest-handshake;
+                        }
+                        if p.transfer != "": DetailRow {
+                            label: "Transfer:";
+                            value: p.transfer;
+                        }
+                    }
+                }
+            }
+
+            // ---- bottom-right action bar: Edit ----
+            Rectangle {
+                height: 46px;
+                background: Theme.bar-bg;
+                Rectangle { y: 0; height: 1px; background: Theme.divider; }
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.has-selection: VerticalLayout {
+                        alignment: center;
+                        PushButton {
+                            text: "Edit";
+                            tooltip: "Edit this tunnel's configuration (Ctrl+E)";
+                            tooltip-align: "right";
+                            clicked => { root.begin-edit(root.detail.name); }
+                        }
+                    }
+                }
+            }
+            }
+        }
+        }
+
+        // ===================== Log tab =====================
+        if root.active-tab == 1: Rectangle {
+            vertical-stretch: 1;
+            background: Theme.window-bg;
+            VerticalLayout {
+                // A virtualized ListView of one Text per line (only visible
+                // rows render, no editor caret/Timer).
+                ListView {
+                    vertical-stretch: 1;
+                    property <int> req: root.scroll-request;
+                    changed req => {
+                        self.content-y = max(min(0px, self.visible-height - self.content-height),
+                            min(0px, self.content-y - root.scroll-direction * self.visible-height * 0.9));
+                    }
+                    horizontal-stretch: 1;
+                    accessible-role: list;
+                    accessible-label: "Log";
+                    for line in root.log-lines: DocLine {
+                        text: line;
+                        copy(t) => { root.copy-line(t); }
+                    }
+                }
+                Rectangle {
+                    height: 20px;
+                    background: Theme.bar-bg;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        Text {
+                            text: "Tip: click a line to copy it " + Theme.sep + " Copy for everything " + Theme.sep + " PageUp/PageDown scroll";
+                            color: Theme.faint;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 46px;
+                    background: Theme.bar-bg;
+                    Rectangle { y: 0; height: 1px; background: Theme.divider; }
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Refresh";
+                                tooltip: "Reload the log (Ctrl+R)";
+                                clicked => { root.refresh-log(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            LineEdit {
+                                width: root.narrow ? 120px : 160px;
+                                placeholder-text: "Filter" + Theme.ellipsis;
+                                accessible-label: "Filter log lines";
+                                text: root.log-filter;
+                                edited(s) => { root.log-filter = s; root.apply-log-filter(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            CheckBox {
+                                text: "This tunnel";
+                                checked: root.log-this-tunnel;
+                                toggled => { root.log-this-tunnel = self.checked; root.apply-log-filter(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Save";
+                                label: "Save log";
+                                tooltip: "Save the log to a file (Ctrl+S)";
+                                clicked => { root.save-log(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Clear";
+                                label: "Clear log view";
+                                clicked => { root.clear-log(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Copy";
+                                label: "Copy log";
+                                clicked => { root.copy-log(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===================== Backup tab =====================
+        if root.active-tab == 2: Rectangle {
+            vertical-stretch: 1;
+            background: Theme.window-bg;
+            VerticalLayout {
+                // Column header
+                Rectangle {
+                    height: 28px;
+                    background: Theme.tabbar-bg;
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.divider; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        Text { text: "When"; width: 170px; vertical-alignment: center; color: Theme.muted; font-size: 12px; }
+                        Text { text: "Size"; width: 90px; vertical-alignment: center; color: Theme.muted; font-size: 12px; }
+                        Text { text: "Tunnels"; width: 70px; vertical-alignment: center; color: Theme.muted; font-size: 12px; }
+                        Text { text: "File"; vertical-alignment: center; color: Theme.muted; font-size: 12px; }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    accessible-role: list;
+                    accessible-label: "Backups";
+                    for b[i] in root.backups: ListRow {
+                        height: 30px;
+                        label: b.date + ", " + b.count + " tunnels, " + b.size;
+                        selected: i == root.backup-sel;
+                        clicked => { root.backup-sel = i; }
+                        moved(delta) => {
+                            root.backup-sel = max(0, min(root.backups.length - 1, root.backup-sel + delta));
+                        }
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 12px;
+                            Text { text: b.date; width: 170px; vertical-alignment: center; font-size: 12px; color: i == root.backup-sel ? Theme.selected-text : Theme.text; accessible-role: none; }
+                            Text { text: b.size; width: 90px; vertical-alignment: center; font-size: 12px; color: i == root.backup-sel ? Theme.selected-text : Theme.muted; accessible-role: none; }
+                            Text { text: b.count; width: 70px; vertical-alignment: center; font-size: 12px; color: i == root.backup-sel ? Theme.selected-text : Theme.muted; accessible-role: none; }
+                            Text { text: b.name; vertical-alignment: center; font-size: 12px; color: i == root.backup-sel ? Theme.selected-text : Theme.faint; overflow: elide; accessible-role: none; }
+                        }
+                    }
+                }
+                // Empty hint
+                if root.backups.length == 0: Rectangle {
+                    vertical-stretch: 1;
+                    Text {
+                        text: "No backups yet.\nClick " + Theme.lq + "New backup" + Theme.rq + " to archive every tunnel config.";
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        color: Theme.faint;
+                        wrap: word-wrap;
+                    }
+                }
+                // Action bar
+                Rectangle {
+                    height: 46px;
+                    background: Theme.bar-bg;
+                    Rectangle { y: 0; height: 1px; background: Theme.divider; }
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "New backup";
+                                clicked => { root.backup-create(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Restore";
+                                label: "Restore selected backup";
+                                tooltip: "Restore every tunnel in this backup (rolled back if one fails)";
+                                enabled: root.backup-sel >= 0;
+                                clicked => { root.backup-restore(root.backups[root.backup-sel].name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Export";
+                                label: "Export selected backup";
+                                enabled: root.backup-sel >= 0;
+                                clicked => { root.backup-export(root.backups[root.backup-sel].name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PushButton {
+                                text: "Delete";
+                                label: "Delete selected backup";
+                                enabled: root.backup-sel >= 0;
+                                clicked => { root.backup-delete(root.backups[root.backup-sel].name); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===================== status bar =====================
+        // A row of its own (not an overlay) so it never covers the action bars.
+        Rectangle {
+            height: 24px;
+            background: root.status != "" ? Theme.status-bg : Theme.bar-bg;
+            accessible-role: AccessibleRole.text;
+            accessible-label: root.status;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: root.status;
+                    color: Theme.status-text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+    }
+
+    // ===================== tooltip overlay =====================
+    // The VERY LAST child of the window root, so it renders on top.
+    TooltipOverlay { window-width: root.width; }
+}

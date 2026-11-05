@@ -1,7 +1,14 @@
+import { Theme } from "../theme.slint";
+
+// Active/inactive dot. Status is always also given as text or an accessible
+// label next to it; the dot is decoration only.
 export component StatusDot inherits Rectangle {
     in property <bool> on;
     width: 11px;
     height: 11px;
     border-radius: 5.5px;
-    background: on ? #2cbe4e : #b9b9b9;
+    background: on ? Theme.good : (Theme.high-contrast ? white : #b9b9b9);
+    border-width: Theme.high-contrast ? 1.5px : 0px;
+    border-color: black;
+    accessible-role: none;
 }

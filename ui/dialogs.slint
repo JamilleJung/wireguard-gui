@@ -1,0 +1,651 @@
+// Secondary windows: QR code, diagnostics, Help, Updates, About and Setup.
+// Each closes with Escape; the long views scroll with the keyboard.
+
+import { ListView, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { PushButton, DocLine, MdRow, DocItem } from "widgets.slint";
+
+export struct CheckItem {
+    name: string,
+    detail: string,
+    ok: bool,
+    warn: bool,
+}
+
+// ===========================================================================
+// A small window that shows a tunnel's config as a QR code (scan it from the
+// WireGuard mobile app to import the tunnel on a phone).
+// ===========================================================================
+export component QrWindow inherits Window {
+    title: "Tunnel QR code";
+    preferred-width: 360px;
+    preferred-height: 480px;
+    min-width: 340px;
+    min-height: 480px;
+    in property <string> name;
+    in property <image> qr;
+    callback close-me();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    forward-focus: keys;
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-me();
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 12px;
+        alignment: start;
+        Text {
+            text: "Scan to import " + Theme.lq + root.name + Theme.rq;
+            font-size: 15px;
+            font-weight: 700;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: root.qr;
+                width: 300px;
+                height: 300px;
+                image-rendering: pixelated;
+                accessible-role: image;
+                accessible-label: "QR code of the tunnel configuration";
+            }
+        }
+        Text {
+            text: "On your phone: WireGuard " + (Theme.ascii ? "->" : "→") + " + " + (Theme.ascii ? "->" : "→") + " Scan from QR code.";
+            color: Theme.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+    }
+}
+
+// ===========================================================================
+// Connection diagnostics window: a read-only monospace report explaining why a
+// tunnel that reads "active" may not actually be connected.
+// ===========================================================================
+export component DiagWindow inherits Window {
+    title: "Connection diagnostics";
+    preferred-width: 560px;
+    preferred-height: 380px;
+    min-width: 420px;
+    min-height: 280px;
+    in property <[string]> report-lines;
+    in property <string> full-text;
+    in-out property <string> copied-hint: "";
+    callback close-me();
+    callback copy-line(string);
+    callback copy-all();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    forward-focus: keys;
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-me();
+                return accept;
+            }
+            if (event.text == Key.PageDown || event.text == Key.PageUp || event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End) {
+                doc.content-y = max(min(0px, doc.visible-height - doc.content-height), min(0px,
+                    event.text == Key.Home ? 0px
+                    : event.text == Key.End ? doc.visible-height - doc.content-height
+                    : doc.content-y - (event.text == Key.PageDown ? doc.visible-height * 0.9
+                        : event.text == Key.PageUp ? -doc.visible-height * 0.9
+                        : event.text == Key.DownArrow ? 40px : -40px)));
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        // Virtualized ListView of one Text per line (was a whole-document
+        // read-only TextEdit, which relaid out every frame while scrolling).
+        // Each row is click-to-copy via DocLine.
+        doc := ListView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            for line in root.report-lines: DocLine {
+                text: line;
+                copy(t) => { root.copy-line(t); }
+            }
+        }
+
+        Text {
+            text: "Tip: click a line to copy it " + Theme.sep + " Copy all for everything " + Theme.sep + " PageUp/PageDown scroll";
+            color: Theme.faint;
+            font-size: 11px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Copy all";
+                tooltip: "Copy the whole report to the clipboard";
+                clicked => { root.copy-all(); }
+            }
+            Text {
+                text: root.copied-hint;
+                color: Theme.good;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+    }
+}
+
+// ===========================================================================
+// Help window: a scrollable, read-only view of the in-app guide (docs/help.md,
+// embedded at build time and passed in from Rust). Slint has no markdown
+// renderer, so the Rust side (md_items) tags each line with a kind and MdRow
+// styles it — headings, bullets, code, and rules render cleanly, virtualized,
+// still click-to-copy.
+// ===========================================================================
+export component HelpWindow inherits Window {
+    title: "WireGuard Help";
+    preferred-width: 720px;
+    preferred-height: 640px;
+    min-width: 420px;
+    min-height: 320px;
+    in property <[DocItem]> items;
+    in property <string> full-text;
+    in-out property <string> copied-hint: "";
+    callback close-me();
+    callback copy-line(string);
+    callback copy-all();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    forward-focus: keys;
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-me();
+                return accept;
+            }
+            if (event.text == Key.PageDown || event.text == Key.PageUp || event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End) {
+                doc.content-y = max(min(0px, doc.visible-height - doc.content-height), min(0px,
+                    event.text == Key.Home ? 0px
+                    : event.text == Key.End ? doc.visible-height - doc.content-height
+                    : doc.content-y - (event.text == Key.PageDown ? doc.visible-height * 0.9
+                        : event.text == Key.PageUp ? -doc.visible-height * 0.9
+                        : event.text == Key.DownArrow ? 40px : -40px)));
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        // Virtualized ListView of one styled MdRow per markdown line (was a
+        // whole-document read-only TextEdit, which relaid out every frame while
+        // scrolling). Each row is click-to-copy.
+        doc := ListView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            for it in root.items: MdRow {
+                item: it;
+                copy(t) => { root.copy-line(t); }
+            }
+        }
+
+        Text {
+            text: "Tip: click a line to copy it " + Theme.sep + " Copy all for everything " + Theme.sep + " PageUp/PageDown scroll";
+            color: Theme.faint;
+            font-size: 11px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Copy all";
+                tooltip: "Copy the whole guide to the clipboard";
+                clicked => { root.copy-all(); }
+            }
+            Text {
+                text: root.copied-hint;
+                color: Theme.good;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+    }
+}
+
+// ===========================================================================
+// Updates window: shows the installed version, a live status line, a
+// [Check for updates] / [Update now] pair, and the embedded changelog.
+// ===========================================================================
+export component UpdateWindow inherits Window {
+    title: "Updates";
+    in-out property <bool> busy: false;
+    preferred-width: 640px;
+    preferred-height: 600px;
+    min-width: 420px;
+    min-height: 360px;
+    in property <string> installed: "";
+    in property <string> status: "";
+    in property <bool> update-available: false;
+    in property <[DocItem]> changelog-items;
+    in property <string> changelog-text;
+    in-out property <string> copied-hint: "";
+    callback check-updates();
+    callback do-update();
+    callback close-me();
+    callback copy-line(string);
+    callback copy-all();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    forward-focus: keys;
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-me();
+                return accept;
+            }
+            if (event.text == Key.PageDown || event.text == Key.PageUp || event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End) {
+                doc.content-y = max(min(0px, doc.visible-height - doc.content-height), min(0px,
+                    event.text == Key.Home ? 0px
+                    : event.text == Key.End ? doc.visible-height - doc.content-height
+                    : doc.content-y - (event.text == Key.PageDown ? doc.visible-height * 0.9
+                        : event.text == Key.PageUp ? -doc.visible-height * 0.9
+                        : event.text == Key.DownArrow ? 40px : -40px)));
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        Text {
+            text: "Updates";
+            font-size: 18px;
+            font-weight: 800;
+            color: Theme.text;
+        }
+        Text {
+            text: "Installed: v" + root.installed;
+            color: Theme.text;
+            font-size: 13px;
+        }
+        Text {
+            visible: root.status != "";
+            text: root.status;
+            color: Theme.banner-text;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Check for updates";
+                enabled: !root.busy;
+                clicked => { root.check-updates(); }
+            }
+            PushButton {
+                text: "Update now";
+                primary: true;
+                visible: root.update-available;
+                enabled: root.update-available && !root.busy;
+                clicked => { root.do-update(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Text {
+            text: "Changelog";
+            font-size: 13px;
+            font-weight: 700;
+            color: Theme.text;
+        }
+        // Virtualized ListView of one styled MdRow per changelog line (was a
+        // whole-document read-only TextEdit, which relaid out every frame while
+        // scrolling). Each row is click-to-copy.
+        doc := ListView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            for it in root.changelog-items: MdRow {
+                item: it;
+                copy(t) => { root.copy-line(t); }
+            }
+        }
+
+        Text {
+            text: "Tip: click a line to copy it " + Theme.sep + " Copy all for everything " + Theme.sep + " PageUp/PageDown scroll";
+            color: Theme.faint;
+            font-size: 11px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Copy all";
+                tooltip: "Copy the whole changelog to the clipboard";
+                clicked => { root.copy-all(); }
+            }
+            Text {
+                text: root.copied-hint;
+                color: Theme.good;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+    }
+}
+
+// ===========================================================================
+// About window.
+// ===========================================================================
+export component AboutWindow inherits Window {
+    title: "About WireGuard GUI";
+    preferred-width: 460px;
+    preferred-height: 420px;
+    min-width: 400px;
+    min-height: 400px;
+    in property <string> version;
+    callback open-url(string);
+    callback close-me();
+    callback show-update();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    forward-focus: keys;
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-me();
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 0px;
+        alignment: start;
+
+        // ---- Brand: monogram tile + name + version ----
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 64px;
+                height: 64px;
+                border-radius: 14px;
+                background: Theme.accent;
+                Text {
+                    text: "WG";
+                    color: Theme.on-accent;
+                    font-size: 26px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle { height: 14px; }
+
+        Text {
+            text: "WireGuard GUI";
+            font-size: 23px;
+            font-weight: 800;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        Rectangle { height: 3px; }
+        Text {
+            text: "Version " + root.version;
+            color: Theme.muted;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 12px; }
+
+        // ---- Tagline ----
+        Text {
+            text: "A native Linux GUI for plain WireGuard configs: wg, wg-quick, and a small privileged helper.";
+            color: Theme.text;
+            font-size: 13px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 18px; }
+
+        // ---- Hairline separator ----
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+
+        Rectangle { height: 18px; }
+
+        // ---- Links ----
+        HorizontalLayout {
+            alignment: center;
+            spacing: 8px;
+            PushButton {
+                text: "GitHub";
+                tooltip: "View the source on GitHub";
+                clicked => { root.open-url("https://github.com/JamilleJung/wireguard-gui"); }
+            }
+            PushButton {
+                text: "Check for updates";
+                clicked => { root.show-update(); }
+            }
+            PushButton {
+                text: "Buy me a coffee";
+                tooltip: "Support development";
+                tooltip-align: "right";
+                clicked => { root.open-url("https://www.buymeacoffee.com/jamillejung"); }
+            }
+        }
+
+        // ---- Push the legal fine print + Close to the bottom ----
+        Rectangle { vertical-stretch: 1; min-height: 16px; }
+
+        Text {
+            text: "MIT License " + Theme.sep + " Built with Rust + Slint";
+            color: Theme.faint;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+        Rectangle { height: 4px; }
+        Text {
+            text: "WireGuard is a registered trademark of Jason A. Donenfeld. This is an independent, unofficial client.";
+            color: Theme.faint;
+            font-size: 10px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 16px; }
+
+        HorizontalLayout {
+            alignment: center;
+            PushButton {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-me(); }
+            }
+        }
+    }
+    }
+}
+
+// ===========================================================================
+// First-run Setup wizard: shown when a critical requirement is missing, so new
+// users get friendly guidance instead of an empty technical screen.
+// ===========================================================================
+export component SetupWindow inherits Window {
+    title: "Set up WireGuard";
+    preferred-width: 580px;
+    preferred-height: 480px;
+    min-width: 440px;
+    min-height: 400px;
+    in property <[CheckItem]> checks;
+    in property <string> commands: "";
+    in property <bool> show-commands: false;
+    in property <string> busy: "";
+    callback fix-automatically();
+    callback toggle-commands();
+    callback re-check();
+    callback skip();
+
+    init => { Palette.color-scheme = ColorScheme.light; }
+    forward-focus: keys;
+    background: Theme.window-bg;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.skip();
+                return accept;
+            }
+            reject
+        }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+
+        Text {
+            text: "Welcome to WireGuard";
+            font-size: 19px;
+            font-weight: 800;
+            color: Theme.text;
+        }
+        Text {
+            text: "Let's check your system is ready. Nothing is changed without your confirmation, and no tunnels are connected.";
+            color: Theme.muted;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+
+        for c in root.checks: HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: c.ok ? "OK" : (c.warn ? "!" : "X");
+                color: c.ok ? Theme.good : (c.warn ? Theme.warn : Theme.bad);
+                font-weight: 800;
+                font-size: 13px;
+                width: 26px;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                Text {
+                    text: c.name;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: c.detail;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.show-commands && root.commands != "": Rectangle {
+            background: Theme.code-bg;
+            border-radius: 4px;
+            VerticalLayout {
+                padding: 8px;
+                Text {
+                    text: root.commands;
+                    font-size: 12px;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if root.busy != "": Text {
+            text: root.busy;
+            color: Theme.link;
+            font-size: 13px;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            PushButton {
+                text: "Fix automatically";
+                primary: true;
+                tooltip: "Install missing pieces with your package manager (asks for your password)";
+                clicked => { root.fix-automatically(); }
+            }
+            PushButton {
+                text: "Show commands";
+                clicked => { root.toggle-commands(); }
+            }
+            PushButton {
+                text: "Re-check";
+                clicked => { root.re-check(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PushButton {
+                text: "Skip for now";
+                clicked => { root.skip(); }
+            }
+        }
+    }
+    }
+}

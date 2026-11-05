@@ -51,13 +51,42 @@ Saving an active tunnel attempts a live WireGuard sync. Address, DNS, MTU,
 Table and routing changes still require reconnecting. Renaming stops an active
 old interface; the renamed tunnel is not activated automatically.
 
+If a save fails or the config does not validate, your draft stays in the editor
+and a bar offers **Retry**, **Re-edit** or **Discard**. Closing the editor while a
+save failed or is still running keeps the draft and asks first. A save that
+timed out is checked afterwards: if the saved file matches your draft it counts
+as saved, otherwise the draft stays open.
+
+If the file was saved but applying it to the running interface failed, a banner
+says that the saved file and the running interface now differ and offers **Retry
+sync**, **Reconnect** or **Keep as is**. A FwMark change always needs a reconnect.
+
 ## 3. Day-to-day controls
 
 Select a tunnel on the left. **Activate / Deactivate** brings its interface
-up/down. Interface-up status is not proof of a handshake or working routes.
-The app includes runtime-only peers and actual runtime settings, plus
-recent handshake health, transfer totals and throughput;
-an idle peer can have an old handshake without being broken.
+up/down; afterwards the app re-checks that the interface really is up (or gone)
+and reports a mismatch instead of trusting the exit status. Rename and remove are
+checked the same way. Interface-up status is not proof of a handshake or working
+routes. The app includes runtime-only peers and actual runtime settings, plus
+transfer totals and throughput.
+
+**Connection** health is shown for the tunnel and for each peer:
+
+- **Healthy:** a handshake completed in the last 3 minutes.
+- **Idle:** no recent traffic and no persistent keepalive. WireGuard only
+  handshakes when there is traffic, so an old handshake here is normal.
+- **No traffic:** nothing has been sent or received yet.
+- **Connecting…:** a handshake is in progress (traffic started, or keepalive on).
+- **Handshake stale:** persistent keepalive is on, yet the handshake expired.
+- **Connection failed:** packets were sent for over 90 seconds without a reply,
+  or a keepalive peer never completed a handshake.
+
+Only the last two show a warning. If the system clock is also not NTP-synced,
+the warning names the clock as one possible cause; an unsynced clock alone is
+not reported as a connection problem.
+
+Tunnels with more than one peer show peers five at a time: **Prev**/**Next**
+page through them and **Filter peers** matches key, endpoint or AllowedIPs.
 
 Click a copyable value or its trailing **⧉** icon to copy it. **Show QR** exposes
 the full saved config, including its private key, for scanning on another device.
@@ -72,7 +101,11 @@ It needs systemd; OpenRC/runit require their own service setup.
   active interface and complete firewall tools, prefers atomic nft batches,
   and otherwise preflights IPv4/IPv6 restore transactions (atomic per family).
   Loopback/tunnel/marked-transport exceptions precede rejection. It affects host
-  output, not server NAT; remote access can be disrupted.
+  output, not server NAT; remote access can be disrupted. If its rules go
+  missing (for example after a firewall reload) or no longer match the tunnel,
+  a red banner says traffic is not protected and the app repairs it once
+  automatically, retrying twice with a growing delay; **Repair now** retries by
+  hand. An unreadable status is shown as unknown, never as off.
 - **Running cfg:** copy live WireGuard configuration, including private keys.
 - **Save live:** back up and write runtime state to disk with wg-quick save;
   this can replace hand-written file content.
@@ -96,13 +129,16 @@ replace destinations atomically; failed writes keep previous data.
 Restore preflights one owned single-link regular ZIP: at most 64 MiB compressed,
 4096 entries, 1024 configs, 1 MiB per config and 16 MiB total config text. It
 rejects duplicate names, unsafe paths, invalid content and root hooks, skipping
-unrelated files. Saves then occur sequentially; later failures can still leave
-a partial restore. Existing extra tunnels remain and running state is not synced.
+unrelated files. Saves then occur sequentially. If one fails, the tunnels already
+written are rolled back (previous contents restored, newly created ones removed)
+and the message lists exactly what was restored, removed, or could not be rolled
+back. Existing extra tunnels remain and running state is not synced.
 
 ## 5. When something is wrong
 
-**Diagnose** checks clock-sync status, interface/handshake state, endpoint ping
-and basic DNS. It gives troubleshooting hints, not a conclusive server test;
+**Diagnose** checks clock-sync status, interface/handshake health per peer,
+endpoint ping and basic DNS. The clock is named only as a possible cause, and
+only when handshakes are failing. It gives troubleshooting hints, not a conclusive server test;
 ICMP can be blocked and routing/firewall issues still need investigation.
 Check that the other peer knows your public key, endpoint and AllowedIPs.
 
@@ -124,10 +160,46 @@ Close hides the window only when a tray host is available; use tray Quit to exit
 Without a tray host, closing quits. Do not manage the same interface from both
 this application and NetworkManager or another service.
 
+## 6. Keyboard, themes and logging
+
+Every control can be reached with Tab and pressed with Enter or Space.
+
+- **Ctrl+1 / Ctrl+2 / Ctrl+3**: Tunnels / Log / Backup tab
+- **Ctrl+O**: Import tunnel(s) from file
+- **Ctrl+I**: Import from QR code
+- **Ctrl+N**: Create tunnel
+- **Ctrl+E**: Edit the selected tunnel
+- **Ctrl+T**: Activate / deactivate the selected tunnel
+- **Ctrl+D**: Diagnose the selected tunnel
+- **Ctrl+R / F5**: Refresh the current tab
+- **Ctrl+S**: Export all tunnels (Tunnels tab) / save the log (Log tab)
+- **F1**: Help
+- **Ctrl+U**: Check for updates
+- **Tab / Shift+Tab**: Move between controls
+- **Enter / Space**: Press the focused button or toggle
+- **Up / Down**: Previous / next tunnel in the list
+- **PageUp / PageDown**: Scroll the details, Help, log and changelog
+- **Escape**: Close a dialog window or the editor
+
+The editor saves with Ctrl+S and closes with Escape (a failed draft is kept).
+Help, Updates, About, diagnostics and QR windows close with Escape.
+
+Themes: start with `--theme NAME` or set `WG_GUI_THEME=NAME`. `default` is the
+normal palette, `high-contrast` uses black text, strong borders and wider focus
+rings, and `ascii` replaces symbols such as ⧉ ▾ → … with plain-text labels. Combine
+them with `+`, for example `--theme high-contrast+ascii`. The command line wins
+over the environment.
+
+Set `WG_GUI_LOG=/path/to/file` to append structured `key=value` lines about
+helper calls and operations (0600, never through a symlink). Private and
+preshared keys are redacted before anything is written.
+
 ## Audited input and operation limits
 
-Imported config files must be regular files at most 1 MiB. Named pipes and
-other special files are rejected without waiting for a writer.
+Imported config files and QR images must be regular files (at most 1 MiB and
+32 MiB). They are opened without following symlinks and without blocking, so
+named pipes, sockets, devices and directories are rejected immediately; backups
+are opened the same way.
 
 Config fields are validated on every occurrence, including canonical key pad
 bits, CIDR/keepalive bounds and exact section/field placement. Valid comments,

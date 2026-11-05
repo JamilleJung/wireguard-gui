@@ -11,6 +11,12 @@
 //!
 //! No binary is replaced before [`verify_release`] returns `Ok`.
 //!
+//! Before anything is downloaded the updater works out how this copy was
+//! installed. Only copies installed by `install.sh` (recorded in its
+//! `install-manifest`) are updated in place, with the same prefix and
+//! authorization mode; copies owned by a distro package, `cargo install` or an
+//! unknown method are left to that method.
+//!
 //! APPLY re-runs the verified tarball's own `install.sh` — the same trusted
 //! path as the initial install — so there is no new privileged surface.
 
@@ -207,6 +213,7 @@ pub struct VerifiedUpdate {
     workdir: PathBuf,
     directory: PathBuf,
     version: String,
+    setup: InstallerSetup,
 }
 
 impl VerifiedUpdate {
@@ -286,6 +293,8 @@ pub fn download_and_verify() -> Result<VerifiedUpdate, String> {
     if !cfg!(target_os = "linux") {
         return Err("automatic release updates are supported on Linux only".into());
     }
+    // Refuse before any download when another method owns this copy.
+    let setup = detect_installation()?;
     let latest = latest_tag()?;
     validate_update_version(&latest)?;
     let arch = arch_token()?;
@@ -297,6 +306,7 @@ pub fn download_and_verify() -> Result<VerifiedUpdate, String> {
         workdir: private_workdir()?,
         directory: PathBuf::new(),
         version: latest.clone(),
+        setup,
     };
     let workdir = &update.workdir;
 
@@ -402,7 +412,8 @@ fn tarball_checksum(sums: &str, tarball: &str) -> Result<String, String> {
 
 /// Install the verified update by re-running the tarball's own `install.sh`.
 /// With `WG_USE_PREBUILT=1` set, install.sh reuses the staged prebuilt binaries
-/// (no compile).
+/// (no compile). The prefix and authorization mode recorded at install time
+/// are passed on explicitly, so the update keeps them.
 ///
 /// Privilege escalation depends on how we're running:
 ///   * already root — run `bash install.sh` directly;
@@ -424,8 +435,12 @@ pub fn apply(update: &VerifiedUpdate) -> Result<(), String> {
         // resolves to the staged target/release/ binaries.
         Command::new("bash")
             .arg(&installer)
+            .args(installer_args(&update.setup))
             .arg("--allow-root")
             .env("WG_USE_PREBUILT", "1")
+            .env("PREFIX", &update.setup.prefix)
+            .env_remove("WG_PREBUILT_DIR")
+            .env_remove("WG_INSTALL_INJECT_FAILURE")
             .current_dir(tardir)
             .status()
             .map_err(|e| format!("install.sh spawn: {e}"))?
@@ -443,8 +458,10 @@ pub fn apply(update: &VerifiedUpdate) -> Result<(), String> {
             .arg("env")
             .arg(format!("WG_REAL_USER={user}"))
             .arg("WG_USE_PREBUILT=1")
+            .arg(format!("PREFIX={}", update.setup.prefix.display()))
             .arg("bash")
             .arg(&installer_abs)
+            .args(installer_args(&update.setup))
             .status()
             .map_err(|e| format!("pkexec spawn: {e}"))?
     } else {
@@ -541,9 +558,13 @@ fn try_install_minisign() {
     let attempts: &[&[&str]] = &[
         &["apt-get", "install", "-y", "minisign"],
         &["dnf", "install", "-y", "minisign"],
-        &["pacman", "-Sy", "--noconfirm", "minisign"],
+        // Never refresh pacman's databases without a full upgrade (-Sy):
+        // that risks a partial upgrade. Install against the synced databases.
+        &["pacman", "-S", "--needed", "--noconfirm", "minisign"],
         &["zypper", "--non-interactive", "install", "minisign"],
         &["apk", "add", "--no-cache", "minisign"],
+        &["xbps-install", "-Sy", "minisign"],
+        &["eopkg", "install", "-y", "minisign"],
     ];
     for cmd in attempts {
         if !which(cmd[0]) {
@@ -556,6 +577,333 @@ fn try_install_minisign() {
             return;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// INSTALLATION METHOD
+// ---------------------------------------------------------------------------
+
+/// The installer's record, next to the helper: `<prefix>/lib/<app>/install-manifest`.
+const MANIFEST_NAME: &str = "install-manifest";
+/// Executable name, used for the duplicate-copy check.
+const APP_BIN: &str = "wireguard-gui";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthMode {
+    Sudoers,
+    Polkit,
+    /// A root-only install without a passwordless helper grant.
+    None,
+}
+
+/// An installer-managed copy and the choices an update must keep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallerSetup {
+    prefix: PathBuf,
+    /// `None` for an install made before the manifest existed: install.sh
+    /// then keeps whatever grant it finds on disk.
+    auth: Option<AuthMode>,
+    /// The first install was forced next to a distro package copy.
+    force: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Manifest {
+    Installer(InstallerSetup),
+    /// Shipped by the distro recipes so the updater never touches their files.
+    Package {
+        manager: String,
+    },
+}
+
+/// Parse the `key=value` manifest. Unknown keys are ignored so later
+/// installers can add fields; anything the updater relies on is validated.
+fn parse_manifest(text: &str) -> Result<Manifest, String> {
+    let mut fields = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("malformed install manifest line: {line}"))?;
+        fields.entry(key.trim()).or_insert(value.trim());
+    }
+    let field = |key: &str| fields.get(key).copied().unwrap_or("");
+    if field("format") != "1" {
+        return Err("unsupported install manifest format".into());
+    }
+    if field("app") != REPO {
+        return Err(format!("install manifest belongs to '{}'", field("app")));
+    }
+    let flag = |key: &str| match field(key) {
+        "" | "0" => Ok(false),
+        "1" => Ok(true),
+        other => Err(format!("invalid install manifest {key}: {other}")),
+    };
+    match field("method") {
+        "installer" => {
+            let prefix = field("prefix");
+            let safe = prefix.starts_with('/')
+                && prefix.len() > 1
+                && !prefix.ends_with('/')
+                && prefix
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+                && prefix
+                    .split('/')
+                    .skip(1)
+                    .all(|part| !part.is_empty() && part != "." && part != "..");
+            if !safe {
+                return Err(format!("invalid install manifest prefix: {prefix}"));
+            }
+            let auth = match field("auth") {
+                "sudoers" => AuthMode::Sudoers,
+                "polkit" => AuthMode::Polkit,
+                "none" => AuthMode::None,
+                other => return Err(format!("invalid install manifest auth mode: {other}")),
+            };
+            Ok(Manifest::Installer(InstallerSetup {
+                prefix: PathBuf::from(prefix),
+                auth: Some(auth),
+                force: flag("force")?,
+            }))
+        }
+        "package" => Ok(Manifest::Package {
+            manager: field("manager").to_string(),
+        }),
+        other => Err(format!("unknown installation method '{other}'")),
+    }
+}
+
+/// Read the manifest only if root wrote it: it decides which privileged
+/// grant the installer re-creates.
+fn read_manifest(path: &Path) -> Result<Option<Manifest>, String> {
+    use std::os::unix::fs::MetadataExt;
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(md) => md,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("install manifest {}: {e}", path.display())),
+    };
+    if !md.file_type().is_file()
+        || md.uid() != 0
+        || md.mode() & 0o022 != 0
+        || md.nlink() != 1
+        || md.len() > 16 * 1024
+    {
+        return Err(format!(
+            "install manifest {} is not a root-owned, protected file - refusing to update",
+            path.display()
+        ));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("install manifest {}: {e}", path.display()))?;
+    parse_manifest(&text).map(Some)
+}
+
+/// `<prefix>` for an executable at `<prefix>/bin/<name>`.
+fn install_prefix(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    bin.parent().map(Path::to_path_buf)
+}
+
+/// Decide how the running copy was installed; `Err` explains which other
+/// method owns it and how to update through that method instead.
+fn detect_installation() -> Result<InstallerSetup, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("locate the running program: {e}"))?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    if let Some((manager, package)) = package_owner(&exe) {
+        return Err(package_refusal(manager, &package));
+    }
+    let prefix = install_prefix(&exe).ok_or_else(unknown_installation)?;
+    let setup = match read_manifest(&prefix.join("lib").join(REPO).join(MANIFEST_NAME))? {
+        Some(Manifest::Package { manager }) => return Err(package_refusal(&manager, REPO)),
+        Some(Manifest::Installer(setup)) => {
+            if setup.prefix != prefix {
+                return Err(format!(
+                    "the install manifest describes {} but this copy runs from {}; \
+                     reinstall with install.sh",
+                    setup.prefix.display(),
+                    prefix.display()
+                ));
+            }
+            setup
+        }
+        None => legacy_installation(prefix)?,
+    };
+    if let Some(copy) = duplicate_copy(&setup, |path| path.exists()) {
+        return Err(format!(
+            "another copy of {REPO} is installed at {}; an update here would keep both. \
+             Remove one of them (or reinstall with install.sh --force to keep both)",
+            copy.display()
+        ));
+    }
+    Ok(setup)
+}
+
+/// A copy installed by an installer that predates the manifest: a root-owned
+/// helper next to the executable. `cargo install` roots are not ours.
+fn legacy_installation(prefix: PathBuf) -> Result<InstallerSetup, String> {
+    use std::os::unix::fs::MetadataExt;
+    if prefix.join(".crates.toml").exists() || prefix.join(".crates2.json").exists() {
+        return Err(format!(
+            "{REPO} was installed with `cargo install`; update it the same way: \
+             cargo install --locked --force --git https://github.com/{OWNER}/{REPO} \
+             (then re-run install.sh from that release for the privileged helper)"
+        ));
+    }
+    let helper = prefix.join("lib").join(REPO).join("wg-helper");
+    match std::fs::symlink_metadata(&helper) {
+        Ok(md) if md.file_type().is_file() && md.uid() == 0 => Ok(InstallerSetup {
+            prefix,
+            auth: None,
+            force: false,
+        }),
+        _ => Err(unknown_installation()),
+    }
+}
+
+fn unknown_installation() -> String {
+    format!(
+        "cannot tell how this copy of {REPO} was installed (no install manifest and \
+         no package owns it); update it the way you installed it, or install the \
+         signed release with its install.sh"
+    )
+}
+
+/// A distro-package copy next to an installer copy elsewhere, unless the
+/// user deliberately forced both at install time.
+fn duplicate_copy(setup: &InstallerSetup, exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    if setup.force || setup.prefix == Path::new("/usr") {
+        return None;
+    }
+    [
+        PathBuf::from("/usr/bin").join(APP_BIN),
+        PathBuf::from("/usr/lib").join(REPO).join("wg-helper"),
+    ]
+    .into_iter()
+    .find(|path| exists(path))
+}
+
+/// Installer flags that reproduce the recorded setup.
+fn installer_args(setup: &InstallerSetup) -> Vec<&'static str> {
+    let mut args = vec!["--update"];
+    match setup.auth {
+        Some(AuthMode::Sudoers) => args.push("--sudoers"),
+        Some(AuthMode::Polkit) => args.push("--polkit"),
+        Some(AuthMode::None) | None => {}
+    }
+    if setup.force {
+        args.push("--force");
+    }
+    args
+}
+
+/// Ask each available package database who owns `path`.
+fn package_owner(path: &Path) -> Option<(&'static str, String)> {
+    let queries: [(&str, &str, &[&str]); 5] = [
+        ("dpkg", "dpkg-query", &["-S"]),
+        ("rpm", "rpm", &["-qf", "--queryformat", "%{NAME}\n"]),
+        ("pacman", "pacman", &["-Qqo"]),
+        ("apk", "apk", &["info", "--who-owns"]),
+        ("xbps", "xbps-query", &["-o"]),
+    ];
+    queries.into_iter().find_map(|(manager, program, args)| {
+        if !which(program) {
+            return None;
+        }
+        let out = Command::new(program)
+            .args(args)
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        parse_owner(manager, &String::from_utf8_lossy(&out.stdout)).map(|pkg| (manager, pkg))
+    })
+}
+
+/// Extract the owning package from a package database query's output.
+fn parse_owner(manager: &str, out: &str) -> Option<String> {
+    fn first(text: &str) -> Option<&str> {
+        text.lines().map(str::trim).find(|line| !line.is_empty())
+    }
+    let owner = match manager {
+        "dpkg" => out
+            .lines()
+            .filter(|line| !line.starts_with("diversion"))
+            .find_map(|line| line.split_once(": "))
+            .and_then(|(packages, _)| packages.split(", ").next())
+            .map(|package| package.split(':').next().unwrap_or(package)),
+        "apk" => out
+            .lines()
+            .find_map(|line| line.split_once(" is owned by "))
+            .map(|(_, package)| package),
+        "xbps" => first(out)
+            .and_then(|line| line.split_once(':'))
+            .map(|(package, _)| package),
+        _ => first(out),
+    }?
+    .trim();
+    let valid = !owner.is_empty()
+        && owner.len() <= 128
+        && owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+._@-".contains(&b));
+    valid.then(|| owner.to_string())
+}
+
+/// `name-1.2.3-r0` (apk) / `name-1.2.3_1` (xbps) -> `name`.
+fn strip_package_version(manager: &str, package: &str) -> String {
+    let mut parts: Vec<&str> = package.rsplitn(3, '-').collect();
+    parts.reverse();
+    match manager {
+        "apk" if parts.len() == 3 && parts[2].starts_with('r') => parts[0].to_string(),
+        "xbps" => match package.rsplit_once('-') {
+            Some((name, version)) if version.contains('_') => name.to_string(),
+            _ => package.to_string(),
+        },
+        _ => package.to_string(),
+    }
+}
+
+/// The refusal for a package-managed copy, naming the command that updates it.
+fn package_refusal(manager: &str, package: &str) -> String {
+    let name = strip_package_version(manager, package);
+    let command = match manager {
+        "dpkg" => format!("sudo apt update && sudo apt install --only-upgrade {name}"),
+        "rpm" if which("zypper") => format!("sudo zypper update {name}"),
+        "rpm" => format!("sudo dnf upgrade {name}"),
+        "pacman" if pacman_foreign(&name) => format!(
+            "sudo pacman -Syu, then rebuild the AUR package {name} (for example with your AUR helper)"
+        ),
+        "pacman" => "sudo pacman -Syu".to_string(),
+        "apk" => format!("sudo apk upgrade {name}"),
+        "xbps" => format!("sudo xbps-install -Su {name}"),
+        _ => "your distribution's package manager".to_string(),
+    };
+    format!(
+        "{REPO} is installed from the distribution package '{name}', so the package \
+         manager owns its files and the in-app updater will not replace them. \
+         Update it with: {command}"
+    )
+}
+
+/// Whether pacman lists `name` as a foreign (AUR / locally built) package.
+fn pacman_foreign(name: &str) -> bool {
+    Command::new("pacman")
+        .args(["-Qqm", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Path of a per-app state file under $XDG_CONFIG_HOME (or ~/.config)
@@ -623,6 +971,11 @@ mod tests {
             workdir,
             directory,
             version: "1.9.2".into(),
+            setup: InstallerSetup {
+                prefix: "/usr/local".into(),
+                auth: None,
+                force: false,
+            },
         }
     }
 
@@ -752,6 +1105,179 @@ mod tests {
     fn parse_rejects_non_numeric() {
         assert_eq!(parse("1.2.x"), None);
         assert_eq!(parse("abc"), None);
+    }
+
+    use std::path::{Path, PathBuf};
+
+    fn manifest(body: &str) -> String {
+        format!("# comment\nformat=1\napp={REPO}\n{body}")
+    }
+
+    #[test]
+    fn update_manifest_records_method_prefix_and_auth() {
+        let parsed = parse_manifest(&manifest(
+            "method=installer\norigin=release\nprefix=/usr/local\nauth=polkit\n\
+             auth_user=alice\ndesktop=0\nforce=0\nversion=1.9.3\nfuture_key=x\n",
+        ))
+        .unwrap();
+        let Manifest::Installer(setup) = parsed else {
+            panic!("installer manifest parsed as {parsed:?}");
+        };
+        assert_eq!(setup.prefix, PathBuf::from("/usr/local"));
+        assert_eq!(setup.auth, Some(AuthMode::Polkit));
+        assert!(!setup.force);
+        assert_eq!(installer_args(&setup), ["--update", "--polkit"]);
+        let package = parse_manifest(&manifest("method=package\nmanager=pacman\n")).unwrap();
+        assert_eq!(
+            package,
+            Manifest::Package {
+                manager: "pacman".into()
+            }
+        );
+    }
+
+    #[test]
+    fn update_preserves_auth_mode_and_force() {
+        let mut setup = InstallerSetup {
+            prefix: "/opt/wg".into(),
+            auth: Some(AuthMode::Sudoers),
+            force: true,
+        };
+        assert_eq!(installer_args(&setup), ["--update", "--sudoers", "--force"]);
+        setup.auth = Some(AuthMode::None);
+        setup.force = false;
+        assert_eq!(installer_args(&setup), ["--update"]);
+        setup.auth = None;
+        assert_eq!(installer_args(&setup), ["--update"]);
+    }
+
+    #[test]
+    fn update_manifest_rejects_unsafe_or_foreign_records() {
+        for body in [
+            "method=installer\nprefix=relative\nauth=sudoers\n",
+            "method=installer\nprefix=/usr/../tmp\nauth=sudoers\n",
+            "method=installer\nprefix=/usr/local/\nauth=sudoers\n",
+            "method=installer\nprefix=/usr/lo cal\nauth=sudoers\n",
+            "method=installer\nprefix=/usr/local\nauth=everyone\n",
+            "method=curl-pipe\n",
+            "garbage line\n",
+        ] {
+            assert!(parse_manifest(&manifest(body)).is_err(), "{body}");
+        }
+        assert!(parse_manifest("format=2\nmethod=installer\n").is_err());
+        assert!(
+            parse_manifest("format=1\napp=other\nmethod=installer\nprefix=/usr\nauth=none\n")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn update_manifest_must_be_protected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_workdir().unwrap();
+        let path = dir.join("install-manifest");
+        assert_eq!(read_manifest(&path), Ok(None));
+        std::fs::write(
+            &path,
+            manifest("method=installer\nprefix=/usr/local\nauth=sudoers\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(read_manifest(&path).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Only a root-written record may choose the privileged grant.
+        assert_eq!(
+            read_manifest(&path).is_ok(),
+            unsafe { libc::geteuid() } == 0
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn update_detects_package_owners() {
+        assert_eq!(
+            parse_owner("dpkg", "wireguard-gui: /usr/bin/wireguard-gui\n").as_deref(),
+            Some("wireguard-gui")
+        );
+        assert_eq!(
+            parse_owner(
+                "dpkg",
+                "diversion by x from: /usr/bin/wireguard-gui\nwireguard-gui:amd64, other: /usr/bin/wireguard-gui\n"
+            )
+            .as_deref(),
+            Some("wireguard-gui")
+        );
+        assert_eq!(
+            parse_owner("rpm", "wireguard-gui\n").as_deref(),
+            Some("wireguard-gui")
+        );
+        assert_eq!(
+            parse_owner("pacman", "wireguard-gui\n").as_deref(),
+            Some("wireguard-gui")
+        );
+        assert_eq!(
+            parse_owner(
+                "apk",
+                "/usr/bin/wireguard-gui is owned by wireguard-gui-1.9.3-r0\n"
+            )
+            .as_deref(),
+            Some("wireguard-gui-1.9.3-r0")
+        );
+        assert_eq!(
+            parse_owner(
+                "xbps",
+                "wireguard-gui-1.9.3_1: /usr/bin/wireguard-gui (regular file)\n"
+            )
+            .as_deref(),
+            Some("wireguard-gui-1.9.3_1")
+        );
+        assert_eq!(parse_owner("rpm", ""), None);
+        assert_eq!(parse_owner("pacman", "bad name; rm -rf /\n"), None);
+        assert_eq!(
+            strip_package_version("apk", "wireguard-gui-1.9.3-r0"),
+            "wireguard-gui"
+        );
+        assert_eq!(
+            strip_package_version("xbps", "wireguard-gui-1.9.3_1"),
+            "wireguard-gui"
+        );
+        let refusal = package_refusal("dpkg", "wireguard-gui");
+        assert!(refusal.contains("apt install --only-upgrade wireguard-gui"));
+        assert!(
+            package_refusal("apk", "wireguard-gui-1.9.3-r0").contains("apk upgrade wireguard-gui")
+        );
+    }
+
+    #[test]
+    fn update_refuses_duplicate_package_copy() {
+        let setup = InstallerSetup {
+            prefix: "/usr/local".into(),
+            auth: Some(AuthMode::Sudoers),
+            force: false,
+        };
+        assert_eq!(duplicate_copy(&setup, |_| false), None);
+        assert_eq!(
+            duplicate_copy(&setup, |path| path == Path::new("/usr/bin/wireguard-gui")),
+            Some(PathBuf::from("/usr/bin/wireguard-gui"))
+        );
+        let forced = InstallerSetup {
+            force: true,
+            ..setup.clone()
+        };
+        assert_eq!(duplicate_copy(&forced, |_| true), None);
+        let usr = InstallerSetup {
+            prefix: "/usr".into(),
+            ..setup
+        };
+        assert_eq!(duplicate_copy(&usr, |_| true), None);
+        assert_eq!(
+            install_prefix(Path::new("/usr/local/bin/wireguard-gui")),
+            Some(PathBuf::from("/usr/local"))
+        );
+        assert_eq!(
+            install_prefix(Path::new("/src/target/release/wireguard-gui")),
+            None
+        );
     }
 
     #[test]
