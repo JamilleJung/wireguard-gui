@@ -56,8 +56,29 @@ jobs:
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
           echo "Auto-merge eligible: $eligible (ecosystem=$ECOSYSTEM directory=$DIRECTORY)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enable auto-merge (waits for required checks)
+      - name: Require enforced status checks on the base branch
+        id: guard
         if: steps.decide.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Without an enforced required-status-checks rule, `gh pr merge
+          # --auto` merges immediately instead of waiting for CI. Fail closed:
+          # only continue when the base branch really requires checks.
+          checks="$(gh api "repos/$REPO/rules/branches/$BASE" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length' \
+            2>/dev/null || echo 0)"
+          if [ "${checks:-0}" -gt 0 ]; then
+            echo "protected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "protected=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::$BASE has no enforced required status checks; leaving this PR for a human to merge."
+          fi
+
+      - name: Enable auto-merge (waits for required checks)
+        if: steps.decide.outputs.eligible == 'true' && steps.guard.outputs.protected == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
