@@ -6,6 +6,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::error::HelperError;
+#[cfg(test)]
+use crate::import_parse::preflight_zip_directory;
+use crate::import_parse::{self, MAX_BACKUP_BYTES, backup_configs};
 use crate::safe_file;
 
 /// All tunnel configs as (filename, contents), for export.
@@ -235,23 +238,7 @@ pub fn create_backup() -> Result<BackupInfo, String> {
 }
 
 fn count_zip_entries(path: &Path) -> usize {
-    use std::io::{Seek, SeekFrom};
-    let Ok(mut file) = open_backup(path) else {
-        return 0;
-    };
-    let Ok(meta) = file.metadata() else {
-        return 0;
-    };
-    if preflight_zip_directory(&mut file, meta.len()).is_err()
-        || file.seek(SeekFrom::Start(0)).is_err()
-    {
-        return 0;
-    }
-    zip::ZipArchive::new(file)
-        .ok()
-        .filter(|zip| !zip.has_duplicate_names() && zip.len() <= 4096)
-        .map(|zip| zip.len())
-        .unwrap_or(0)
+    open_backup(path).map_or(0, import_parse::backup_entry_count)
 }
 
 /// List existing backups, newest first.
@@ -290,8 +277,6 @@ pub fn list_backups() -> Vec<BackupInfo> {
     out.sort_by_key(|b| std::cmp::Reverse(b.when_secs));
     out
 }
-
-pub(crate) const MAX_BACKUP_BYTES: u64 = 64 * safe_file::MIB;
 
 /// Open relative to the already-open backup directory. Do not canonicalize a
 /// file then reopen its spelling: a symlink swap could redirect that second IO.
@@ -494,163 +479,6 @@ pub(crate) fn restore_into(
 pub fn restore_backup(path: &Path) -> Result<RestoreReport, String> {
     let configs = backup_configs(open_backup(path)?)?;
     restore_into(&mut HelperStore, &configs)
-}
-
-// ZIP metadata is eagerly allocated by ZipArchive::new. Read only the bounded
-// end records first so a huge declared/actual entry count cannot allocate that
-// metadata before the archive's entry limit is enforced.
-pub(crate) fn preflight_zip_directory(
-    reader: &mut (impl std::io::Read + std::io::Seek),
-    length: u64,
-) -> Result<(), String> {
-    use std::io::SeekFrom;
-    if !(22..=MAX_BACKUP_BYTES).contains(&length) {
-        return Err("Invalid or oversized ZIP file.".into());
-    }
-    // zip may fall back among EOCD64 records anywhere before a locator. Scan
-    // every structurally possible record with a bounded overlapping buffer,
-    // rather than trusting just the locator's optimistic offset.
-    reader.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut consumed = 0u64;
-    let mut carry = Vec::new();
-    while consumed < length {
-        let count = (length - consumed).min(64 * 1024) as usize;
-        let base = consumed.saturating_sub(carry.len() as u64);
-        let mut bytes = carry;
-        let old_len = bytes.len();
-        bytes.resize(old_len + count, 0);
-        reader
-            .read_exact(&mut bytes[old_len..])
-            .map_err(|e| e.to_string())?;
-        consumed += count as u64;
-        for index in 0..bytes.len().saturating_sub(55) {
-            if !bytes[index..].starts_with(b"PK\x06\x06") {
-                continue;
-            }
-            let size = u64::from_le_bytes(bytes[index + 4..index + 12].try_into().unwrap());
-            if size < 40
-                || base
-                    .checked_add(index as u64)
-                    .and_then(|offset| offset.checked_add(12))
-                    .and_then(|offset| offset.checked_add(size))
-                    .is_none_or(|end| end > length)
-            {
-                continue;
-            }
-            for offset in [24, 32] {
-                if u64::from_le_bytes(
-                    bytes[index + offset..index + offset + 8]
-                        .try_into()
-                        .unwrap(),
-                ) > 4096
-                {
-                    return Err("Backup contains too many archive entries.".into());
-                }
-            }
-        }
-        carry = bytes[bytes.len().saturating_sub(55)..].to_vec();
-    }
-    // zip9 searches a bounded tail for *all* EOCD candidates and accepts
-    // trailing garbage (comment end <= EOF). Use a wider bound and inspect
-    // every candidate: a small fake footer must not mask a huge earlier one.
-    let tail_len = length.min(128 * 1024) as usize;
-    reader
-        .seek(SeekFrom::Start(length - tail_len as u64))
-        .map_err(|e| e.to_string())?;
-    let mut tail = vec![0; tail_len];
-    reader.read_exact(&mut tail).map_err(|e| e.to_string())?;
-    let mut found = false;
-    for index in 0..=tail.len() - 22 {
-        if !tail[index..].starts_with(b"PK\x05\x06")
-            || index + 22 + u16::from_le_bytes([tail[index + 20], tail[index + 21]]) as usize
-                > tail.len()
-        {
-            continue;
-        }
-        found = true;
-        let disk_entries = u16::from_le_bytes([tail[index + 8], tail[index + 9]]);
-        let entries = u16::from_le_bytes([tail[index + 10], tail[index + 11]]);
-        let zip64_locator = index >= 20 && tail[index - 20..].starts_with(b"PK\x06\x07");
-        if entries == u16::MAX || disk_entries == u16::MAX {
-            if !zip64_locator {
-                return Err("ZIP64 end locator is missing.".into());
-            }
-        } else if entries > 4096 || disk_entries > 4096 {
-            return Err("Backup contains too many archive entries.".into());
-        }
-    }
-    if !found {
-        return Err("ZIP end record is missing or inconsistent.".into());
-    }
-    Ok(())
-}
-
-// Validate the whole archive before the first privileged write. Bound both
-// declared and actual uncompressed sizes so a corrupt backup cannot exhaust
-// memory or overwrite earlier tunnels before a later invalid entry is found.
-pub(crate) fn backup_configs<R: std::io::Read + std::io::Seek>(
-    mut reader: R,
-) -> Result<Vec<(String, String)>, String> {
-    use std::io::Read;
-    const MAX_CONFIG_BYTES: u64 = safe_file::MIB;
-    const MAX_TOTAL_BYTES: u64 = 16 * MAX_CONFIG_BYTES;
-    let length = reader
-        .seek(std::io::SeekFrom::End(0))
-        .map_err(|e| e.to_string())?;
-    if length > MAX_BACKUP_BYTES {
-        return Err("Backup exceeds 64 MiB.".into());
-    }
-    preflight_zip_directory(&mut reader, length)?;
-    reader
-        .seek(std::io::SeekFrom::Start(0))
-        .map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-    if zip.has_duplicate_names() {
-        return Err("Backup contains duplicate archive filenames.".into());
-    }
-    if zip.len() > 4096 {
-        return Err("Backup contains too many archive entries.".into());
-    }
-    let mut configs = Vec::new();
-    let mut names = std::collections::HashSet::new();
-    let mut total = 0;
-    for i in 0..zip.len() {
-        let entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        if !entry.is_file() {
-            continue;
-        }
-        let raw = entry.name().map_err(|e| e.to_string())?.into_owned();
-        let Some(name) = raw.strip_suffix(".conf") else {
-            continue;
-        };
-        super::validate_tunnel_name(name)?;
-        if name.trim() != name || !names.insert(name.to_string()) {
-            return Err(format!("Invalid or duplicate tunnel name in backup: {raw}"));
-        }
-        if entry.size() > MAX_CONFIG_BYTES || configs.len() >= 1024 {
-            return Err("Backup exceeds the tunnel config size limit.".into());
-        }
-        let mut content = String::new();
-        entry
-            .take(MAX_CONFIG_BYTES + 1)
-            .read_to_string(&mut content)
-            .map_err(|e| e.to_string())?;
-        total += content.len() as u64;
-        if content.len() as u64 > MAX_CONFIG_BYTES || total > MAX_TOTAL_BYTES {
-            return Err("Backup exceeds the tunnel config size limit.".into());
-        }
-        crate::config::validate_basic_wireguard_config(&content)?;
-        if super::config_runs_scripts(&content) {
-            return Err(format!(
-                "Script hooks are not allowed in backup tunnel {name}."
-            ));
-        }
-        configs.push((name.to_string(), content));
-    }
-    if configs.is_empty() {
-        return Err("The backup contained no tunnel configs.".into());
-    }
-    Ok(configs)
 }
 
 /// Delete a backup archive (only within the backup directory).

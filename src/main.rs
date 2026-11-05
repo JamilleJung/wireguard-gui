@@ -9,10 +9,12 @@ mod create;
 mod doctor;
 mod draft;
 mod events;
+mod import_parse;
 mod layout;
 mod live;
 mod logging;
 mod ops;
+mod qr_isolate;
 mod safe_file;
 mod secrets;
 mod state;
@@ -133,6 +135,10 @@ fn prefer_xwayland_on_nvidia() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The isolated QR decoder child (see qr_isolate) never opens a window.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(qr_isolate::CHILD_ARG)) {
+        qr_isolate::child_main();
+    }
     // NVIDIA + native Wayland stutters; fall back to XWayland before any
     // windowing/Slint init (and before any threads spawn).
     prefer_xwayland_on_nvidia();

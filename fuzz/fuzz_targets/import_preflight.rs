@@ -1,11 +1,10 @@
 //! The checks every imported config passes through before it is offered for
-//! saving (file import, backup restore preflight and QR selection in
-//! `src/backend.rs` all call these): validation, root-hook detection, name
-//! sanitizing and redaction of any error text.
+//! saving (file import, backup restore preflight and QR selection all call
+//! these): validation, root-hook detection, name sanitizing and redaction of
+//! any error text.
 //!
-//! The ZIP/QR container parsing itself lives in private functions of
-//! `src/backend.rs` and is not reachable without a library crate; see
-//! CONTRIBUTING.md ("Fuzzing").
+//! The ZIP and QR container parsing (`src/import_parse.rs`) has its own
+//! targets, `backup_zip` and `qr_select`.
 #![no_main]
 
 #[allow(dead_code)]

@@ -1,61 +1,20 @@
-//! Reading a tunnel config from a QR-code image.
+//! Reading a tunnel config from a QR-code image. The bounded image decode and
+//! grid selection live in [`crate::import_parse`].
 
-use crate::{config, safe_file};
+#[cfg(test)]
+use crate::import_parse::select_qr_config;
+use crate::safe_file;
 
 const MAX_QR_FILE: u64 = 32 * safe_file::MIB;
 
 /// Decode a QR-code image file into its text (a WireGuard `.conf`). The file
 /// is opened through [`safe_file`], so a FIFO, socket, device or symlink is
 /// refused without blocking, and only a bounded regular file is decoded.
+/// Decoding runs in a child process ([`crate::qr_isolate`]) so a decoder crash
+/// cannot abort the app.
 pub fn decode_qr(path: &std::path::Path) -> Result<String, String> {
     let bytes = safe_file::read_file(path, "QR image", MAX_QR_FILE)?;
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    let mut limits = image::Limits::default();
-    // Bounds cover a full-size screenshot while limiting both decoder buffers
-    // and rqrr's additional per-pixel working memory.
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let img = reader
-        .decode()
-        .map_err(|e| format!("Couldn't decode bounded QR image: {e}"))?
-        .to_luma8();
-    let mut prepared = rqrr::PreparedImage::prepare(img);
-    let grids = prepared.detect_grids();
-    if grids.is_empty() {
-        return Err("No QR code found in the image.".into());
-    }
-    select_qr_config(grids.iter().map(|grid| {
-        grid.decode()
-            .map(|(_, content)| content)
-            .map_err(|e| e.to_string())
-    }))
-}
-
-pub(crate) fn select_qr_config(
-    results: impl IntoIterator<Item = Result<String, String>>,
-) -> Result<String, String> {
-    let mut configs = Vec::new();
-    for result in results {
-        let Ok(content) = result else {
-            continue;
-        };
-        if config::validate_basic_wireguard_config(&content).is_ok()
-            && !super::config_runs_scripts(&content)
-            && !configs.contains(&content)
-        {
-            configs.push(content);
-            if configs.len() > 1 {
-                return Err("Image contains multiple different WireGuard configs; use an image with one tunnel.".into());
-            }
-        }
-    }
-    configs
-        .pop()
-        .ok_or("No valid WireGuard config QR code found in the image.".into())
+    crate::qr_isolate::decode(&bytes)
 }
 
 #[cfg(test)]
