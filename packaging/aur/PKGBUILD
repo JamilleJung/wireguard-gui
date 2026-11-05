@@ -6,15 +6,28 @@ pkgdesc="A native Linux GUI for managing plain WireGuard tunnels with wg and wg-
 arch=('x86_64' 'aarch64')
 url="https://github.com/JamilleJung/wireguard-gui"
 license=('MIT')
-depends=('wireguard-tools' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'wayland' 'dbus' 'polkit')
-makedepends=('cargo' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'wayland' 'dbus')
+# fontconfig is linked; xkbcommon, Wayland, EGL/GL (libglvnd), X11 and libdbus
+# are loaded at run time, so they are listed explicitly. The privileged helper
+# runs wg/wg-quick (which need ip from iproute2); the kill switch uses nftables,
+# falling back to iptables (pulled in by iproute2). Passwordless polkit access
+# also needs administrator-managed membership in the wireguard group.
+depends=('glibc' 'libgcc' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'wayland'
+         'libglvnd' 'libx11' 'libxcursor' 'libxi' 'libxrender' 'libxcb' 'dbus'
+         'wireguard-tools' 'iproute2' 'polkit')
+makedepends=('cargo')
+optdepends=('nftables: kill switch (preferred over the iptables fallback)'
+            'openresolv: resolvconf for configs with a DNS line'
+            'sudo: sudoers-based helper authorization instead of polkit'
+            'xdg-desktop-portal: native file dialogs for import and backup'
+            'minisign: verify release signatures')
+install=wireguard-gui.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # Fill in `makepkg -g` output before publishing to the AUR.
+sha256sums=('49cedd9ac35d7b5cf65519943f8a0ea8ed18eec92583a1675f955600bb9bf82e')
 
 prepare() {
     cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
-    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+    cargo fetch --locked --target "$(rustc --print host-tuple)"
 }
 
 build() {
@@ -23,17 +36,23 @@ build() {
     cargo build --frozen --release
 }
 
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo test --frozen
+}
+
 package() {
     cd "$pkgname-$pkgver"
     install -Dm755 target/release/wireguard-gui "$pkgdir/usr/bin/wireguard-gui"
-    install -Dm755 target/release/wg-helper "$pkgdir/usr/lib/wireguard-gui/wg-helper"
+    install -Dm755 target/release/wg-helper "$pkgdir/usr/lib/$pkgname/wg-helper"
     install -Dm644 packaging/wireguard-gui.desktop "$pkgdir/usr/share/applications/wireguard-gui.desktop"
     install -Dm644 packaging/wireguard-gui.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/wireguard-gui.svg"
     install -Dm644 packaging/49-wireguard-gui.rules "$pkgdir/usr/share/polkit-1/rules.d/49-wireguard-gui.rules"
+    # Tells the in-app updater that pacman owns this copy.
+    printf 'format=1\napp=%s\nmethod=package\nmanager=pacman\n' "$pkgname" \
+        > "$pkgdir/usr/lib/$pkgname/install-manifest"
+    chmod 644 "$pkgdir/usr/lib/$pkgname/install-manifest"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
-
-# Privilege: the rule requires an active local session AND membership in the
-# administrator-managed wireguard group. This recipe does not create that group
-# or enroll users. The rule allows the /usr/lib and /usr/local/lib helper paths.

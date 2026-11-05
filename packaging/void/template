@@ -4,20 +4,29 @@ version=1.9.3
 revision=1
 build_style=cargo
 hostmakedepends="pkg-config"
-makedepends="fontconfig-devel libxkbcommon-devel libxkbcommon-x11-devel MesaLib-devel wayland-devel dbus-devel"
-depends="wireguard-tools polkit fontconfig libxkbcommon libxkbcommon-x11 libglvnd wayland dbus"
-short_desc="Native Linux GUI for plain WireGuard tunnels"
-maintainer="downstream packager <packager@example.invalid>"
+makedepends="fontconfig-devel libxkbcommon-devel MesaLib-devel wayland-devel dbus-devel"
+# fontconfig is a detected shared library; the rest are loaded at run time.
+depends="wireguard-tools iproute2 nftables polkit libxkbcommon libxkbcommon-x11
+ wayland libglvnd libX11 libXcursor libXi libXrender libxcb dbus-libs"
+short_desc="Native Linux GUI for managing plain WireGuard tunnels"
+maintainer="jamillejung <izeystudio@gmail.com>"
 license="MIT"
 homepage="https://github.com/JamilleJung/wireguard-gui"
+changelog="https://raw.githubusercontent.com/JamilleJung/wireguard-gui/main/CHANGELOG.md"
 distfiles="https://github.com/JamilleJung/wireguard-gui/archive/refs/tags/v${version}.tar.gz"
-checksum=@CHECKSUM@
+checksum=49cedd9ac35d7b5cf65519943f8a0ea8ed18eec92583a1675f955600bb9bf82e
 
+# The cargo build style's do_install would put wg-helper in /usr/bin.
 do_install() {
-	vbin target/release/wireguard-gui
-	vinstall target/release/wg-helper 755 usr/lib/wireguard-gui wg-helper
+	vbin target/${RUST_TARGET}/release/wireguard-gui
+	vinstall target/${RUST_TARGET}/release/wg-helper 755 usr/lib/wireguard-gui
 	vinstall packaging/49-wireguard-gui.rules 644 usr/share/polkit-1/rules.d
 	vinstall packaging/wireguard-gui.desktop 644 usr/share/applications
 	vinstall packaging/wireguard-gui.svg 644 usr/share/icons/hicolor/scalable/apps
+	# Tells the in-app updater that xbps owns this copy.
+	printf 'format=1\napp=%s\nmethod=package\nmanager=xbps\n' "${pkgname}" \
+		> "${DESTDIR}/usr/lib/wireguard-gui/install-manifest"
+	chmod 644 "${DESTDIR}/usr/lib/wireguard-gui/install-manifest"
+	vdoc README.md
 	vlicense LICENSE
 }

@@ -14,6 +14,13 @@ an AUR, COPR, Alpine or Void publication is current or officially distributed.
 | Release `.deb` | `/usr/bin/wireguard-gui`, `/usr/lib/wireguard-gui/wg-helper` | `/etc/polkit-1/rules.d/49-wireguard-gui.rules` |
 | AUR/RPM/APK/Void recipes | `/usr/bin/wireguard-gui`, `/usr/lib/wireguard-gui/wg-helper` | `/usr/share/polkit-1/rules.d/49-wireguard-gui.rules` |
 
+`install.sh` records its installation in
+`/usr/local/lib/wireguard-gui/install-manifest` (`method=installer`); the
+recipes install `/usr/lib/wireguard-gui/install-manifest` (`method=package`),
+and a `.deb` copy is detected with `dpkg-query -S`. The in-app updater only
+updates `install.sh` copies, keeping their prefix and authorization mode, and
+refuses package-managed copies with the package-manager command to use.
+
 Native packages also install the desktop entry/icon; scripts and recipes use
 `755` for executables and `644` for desktop/icon/rule assets. `install.sh` alone
 creates the `wg-gui` symlink and defaults to a per-user sudoers grant. Its
@@ -69,35 +76,70 @@ usual integration; test privileged actions separately from launching the UI.
 
 ## Arch recipe — `aur/PKGBUILD`
 
-The recipe fetches the versioned GitHub **source** archive, fetches locked
-Cargo dependencies, builds frozen release binaries, and installs the files above.
-Build as an ordinary packaging user in a suitable Arch environment:
+[`aur/PKGBUILD`](aur/PKGBUILD) is ready for AUR submission together with the
+generated [`aur/.SRCINFO`](aur/.SRCINFO) and
+[`aur/wireguard-gui.install`](aur/wireguard-gui.install). The binary links only
+fontconfig; xkbcommon(-x11), Wayland, libglvnd (EGL/GL), libX11/Xcursor/Xi/
+Xrender/xcb and libdbus are loaded at run time, so they are listed as explicit
+dependencies along with wireguard-tools, iproute2 and polkit. nftables,
+openresolv, sudo, xdg-desktop-portal and minisign are optional dependencies.
+Build as an ordinary packaging user:
 
 ```sh
 cd packaging/aur
 makepkg -si
 ```
 
-Before publishing, replace `sha256sums=('SKIP')` with verified source checksums,
-generate `.SRCINFO` with `makepkg --printsrcinfo`, and test the package. Merely
-bumping `pkgver` is not a checksum or publication step.
-
 ## RPM / COPR recipe — `rpm/wireguard-gui.spec`
 
-The spec uses the versioned GitHub source archive, builds both native binaries,
-and runs release tests. Its BuildRequires cover Rust/C, pkg-config, fontconfig,
-xkbcommon/X11, OpenGL/EGL, Wayland and D-Bus development libraries. It installs
-the helper under `/usr/lib/wireguard-gui` and the rule under `/usr/share/polkit-1`.
-Use a normal RPM build environment and the matching source tarball in SOURCES;
-COPR deployment is a separate maintainer operation, not a GitHub release job.
+The spec builds from the tagged `Source0` and the vendored crates in `Source1`
+(`packaging/update-checksums.sh --vendor`), so mock/COPR builds need no
+network; `%check` runs the tests. BuildRequires cover Rust/C, pkg-config and
+the fontconfig, xkbcommon/X11, OpenGL/EGL, Wayland and D-Bus development
+packages. Because most GUI libraries are loaded at run time, the runtime
+`Requires` name them explicitly (libxkbcommon(-x11), libwayland-client/-egl,
+mesa-libEGL/-libGL, libX11(-xcb), libXcursor, libXi, libXrender, libxcb,
+dbus-libs) plus wireguard-tools, iproute, polkit and nftables or iptables.
+The helper lives under `/usr/lib/wireguard-gui`, labelled by the distro's
+SELinux policy; see [DISTROS.md](../docs/DISTROS.md#selinux).
 
 ## Alpine and Void templates
 
-`apk/APKBUILD` builds source binaries and runs tests; replace `sha512sums="SKIP"`
-with the verified source archive checksum before submission.
-`void/template` uses Void's Cargo build style; replace `checksum=@CHECKSUM@`.
-Both recipes install the helper, desktop assets and group-restricted polkit rule.
-Validate dependencies/toolchain support on the target distro before publishing.
+[`apk/APKBUILD`](apk/APKBUILD) follows aports conventions (Contributor and
+Maintainer lines, `cargo fetch` in `prepare()`, `cargo auditable build --frozen`,
+`check()`, a `-doc` subpackage, post-install/post-upgrade messages).
+[`void/template`](void/template) uses Void's cargo build style but installs from
+`target/$RUST_TARGET/release` with its own `do_install`, so the helper goes to
+`/usr/lib/wireguard-gui/` rather than `/usr/bin`. Both list the run-time loaded
+GUI libraries explicitly. Release tarballs are glibc builds and do not run on
+Alpine; the installer's helper check reports that clearly — build from source
+or use the APKBUILD there.
+
+### Recipe maintenance
+
+Run `packaging/update-checksums.sh` after tagging a release. It reads the
+version from `Cargo.toml`, syncs `pkgver`/`version`/`Version` in all four
+recipes (resetting the package release numbers and adding an RPM changelog
+entry on a version change), downloads the tagged source archive (or takes
+`--tarball=FILE`), writes its SHA-256 (AUR, Void) and SHA-512 (Alpine)
+checksums, and regenerates `aur/.SRCINFO`. `--vendor` also writes the RPM's
+offline crate archive (`Source1`) to `target/packaging/`.
+`packaging/update-checksums.sh --check` is the offline CI check that versions
+and `.SRCINFO` match (`--strict` also rejects placeholder checksums).
+`tests/install-packaging-lint.sh` runs `makepkg --printsrcinfo`, `namcap` and
+`makepkg --verifysource` (Arch), `rpmspec -P` and `rpmlint` (Fedora),
+`apkbuild-lint` and `abuild verify` (Alpine) and `xlint` (Void) in containers;
+`--build` also builds the packages.
+
+Every recipe fetches crates only in its prepare step (`cargo fetch --locked`),
+then builds and tests offline with `--frozen`; the RPM builds from the vendored
+`Source1` archive with no network at all. Each package installs the license,
+README, helper under `/usr/lib/wireguard-gui/`, polkit rule, desktop entry and icon,
+plus `/usr/lib/wireguard-gui/install-manifest` with `method=package` so the in-app
+updater refuses to replace package-owned files and names the package-manager
+command instead. AUR (`wireguard-gui.install`), RPM (`%post`), Alpine (`.post-install`)
+and Void (`INSTALL`) warn when an `install.sh` copy under `/usr/local` shadows
+the package and print the `wireguard` group setup the polkit rule needs.
 
 ## Flatpak — archived experiment
 

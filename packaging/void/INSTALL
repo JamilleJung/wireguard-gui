@@ -1,0 +1,9 @@
+# A copy installed by install.sh under /usr/local shadows this package on PATH.
+case "${ACTION}" in
+post)
+	if [ -e usr/local/bin/wireguard-gui ] || [ -e usr/local/lib/wireguard-gui/wg-helper ]; then
+		echo "WARNING: another wireguard-gui is installed under /usr/local and shadows"
+		echo "         this package. Remove it with: PREFIX=/usr/local ./install.sh uninstall"
+	fi
+	;;
+esac

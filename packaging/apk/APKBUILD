@@ -1,35 +1,76 @@
-# Maintainer: downstream packager <packager@example.invalid>
+# Contributor: jamillejung <izeystudio@gmail.com>
+# Maintainer: jamillejung <izeystudio@gmail.com>
 pkgname=wireguard-gui
 pkgver=1.9.3
 pkgrel=0
-pkgdesc="Native Linux GUI for plain WireGuard tunnels"
+pkgdesc="Native Linux GUI for managing plain WireGuard tunnels"
 url="https://github.com/JamilleJung/wireguard-gui"
 arch="x86_64 aarch64"
 license="MIT"
-depends="wireguard-tools polkit fontconfig libxkbcommon mesa-gl mesa-egl dbus-libs"
-makedepends="cargo rust build-base pkgconf fontconfig-dev libxkbcommon-dev mesa-dev wayland-dev dbus-dev"
+# fontconfig is linked (detected automatically); the other GUI libraries are
+# loaded at run time. wg-quick needs iproute2; the kill switch uses nftables.
+depends="
+	wireguard-tools
+	iproute2
+	nftables
+	polkit
+	libxkbcommon
+	libxkbcommon-x11
+	wayland-libs-client
+	wayland-libs-egl
+	mesa-egl
+	mesa-gl
+	libx11
+	libxcursor
+	libxi
+	libxrender
+	libxcb
+	dbus-libs
+	"
+makedepends="
+	cargo
+	cargo-auditable
+	fontconfig-dev
+	libxkbcommon-dev
+	mesa-dev
+	wayland-dev
+	dbus-dev
+	"
+install="$pkgname.post-install $pkgname.post-upgrade"
+subpackages="$pkgname-doc"
 source="$pkgname-$pkgver.tar.gz::https://github.com/JamilleJung/wireguard-gui/archive/refs/tags/v$pkgver.tar.gz"
-builddir="$srcdir/$pkgname-$pkgver"
+# net: cargo fetch in prepare(); build() and check() run offline (--frozen).
 options="net"
 
+prepare() {
+	default_prepare
+	cargo fetch --target="$CTARGET" --locked
+}
+
 build() {
-	cargo build --release --locked
+	cargo auditable build --release --frozen
 }
 
 check() {
-	cargo test --locked
+	cargo test --frozen
 }
 
 package() {
-	install -Dm755 target/release/wireguard-gui "$pkgdir/usr/bin/wireguard-gui"
-	install -Dm755 target/release/wg-helper "$pkgdir/usr/lib/wireguard-gui/wg-helper"
+	install -Dm755 target/release/wireguard-gui "$pkgdir"/usr/bin/wireguard-gui
+	install -Dm755 target/release/wg-helper "$pkgdir"/usr/lib/$pkgname/wg-helper
 	install -Dm644 packaging/49-wireguard-gui.rules \
-		"$pkgdir/usr/share/polkit-1/rules.d/49-wireguard-gui.rules"
+		"$pkgdir"/usr/share/polkit-1/rules.d/49-wireguard-gui.rules
 	install -Dm644 packaging/wireguard-gui.desktop \
-		"$pkgdir/usr/share/applications/wireguard-gui.desktop"
+		"$pkgdir"/usr/share/applications/wireguard-gui.desktop
 	install -Dm644 packaging/wireguard-gui.svg \
-		"$pkgdir/usr/share/icons/hicolor/scalable/apps/wireguard-gui.svg"
-	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/wireguard-gui/LICENSE"
+		"$pkgdir"/usr/share/icons/hicolor/scalable/apps/wireguard-gui.svg
+	# Tells the in-app updater that apk owns this copy.
+	printf 'format=1\napp=%s\nmethod=package\nmanager=apk\n' "$pkgname" \
+		> "$pkgdir"/usr/lib/$pkgname/install-manifest
+	install -Dm644 README.md "$pkgdir"/usr/share/doc/$pkgname/README.md
+	install -Dm644 LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
 }
 
-sha512sums="SKIP"
+sha512sums="
+a4ddc7f5b55ab8848fd1e0c55c1018a83510127bbe37c90fd03e8504bf0f96bea1ad6581b14ba0a5a752991d756ad50933370b2863469aedea60d63300ee4f48  wireguard-gui-1.9.3.tar.gz
+"

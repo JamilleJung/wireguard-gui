@@ -1,0 +1,18 @@
+# A copy installed by install.sh under /usr/local shadows this package on PATH
+# and keeps its own helper and authorization.
+_warn_local_copy() {
+    if [ -e /usr/local/bin/wireguard-gui ] || [ -e /usr/local/lib/wireguard-gui/wg-helper ]; then
+        echo "==> warning: another wireguard-gui is installed under /usr/local and shadows"
+        echo "==>          this package. Remove it with: PREFIX=/usr/local ./install.sh uninstall"
+    fi
+    echo "==> Passwordless helper access needs membership in the 'wireguard' group:"
+    echo "==>   groupadd -f wireguard && usermod -aG wireguard <user>  (then log in again)"
+}
+
+post_install() {
+    _warn_local_copy
+}
+
+post_upgrade() {
+    _warn_local_copy
+}

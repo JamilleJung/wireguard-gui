@@ -73,8 +73,10 @@ Source/bundle helpers live under `/usr/local/lib/wireguard-gui`; native-package
 helpers under `/usr/lib/wireguard-gui`. The `.deb` installs the rule under
 `/etc/polkit-1/rules.d`, while AUR/RPM/APK/Void recipes use
 `/usr/share/polkit-1/rules.d`. See [packaging](../packaging/PACKAGING.md).
-Local policy such as SELinux/AppArmor can impose additional restrictions; use
-your distro's security logs when the correct path/grant still fails.
+The installer labels and checks the helper on SELinux systems (see
+[SELinux](#selinux)); AppArmor or other local policy can impose additional
+restrictions, so use your distro's security logs when the correct path/grant
+still fails.
 
 ## 4. DNS compatibility
 
@@ -174,6 +176,93 @@ Avoid configuring the same interface through NetworkManager and this app at the
 same time. Keep declarative distro/service management and direct file edits
 consistent rather than assuming the GUI overrides other system policy.
 
+## 8. Install records, updates and rollback
+
+`install.sh` records how it installed the app in a root-owned, world-readable
+file next to the helper, `PREFIX/lib/wireguard-gui/install-manifest` (by default
+`/usr/local/lib/wireguard-gui/install-manifest`). It holds the installation method,
+prefix, authorization mode (`sudoers`, `polkit` or `none`), the account the
+grant belongs to, the version, and the group/SELinux/directory
+changes the installer made so `uninstall` can undo exactly those.
+
+- **Re-running the installer keeps your choices.** Without `--sudoers` or
+  `--polkit` a later run (or an update) keeps the recorded authorization mode
+  instead of falling back to sudoers. Installs made by earlier releases have no
+  record; the installer then detects the grant already on disk.
+- **The in-app updater keeps the installation method.** It updates only a copy
+  installed by `install.sh`, and passes the recorded prefix and authorization
+  mode to the verified release installer. It refuses, before downloading
+  anything, when the running copy belongs to a distro package (detected with
+  `dpkg-query -S`, `rpm -qf`, `pacman -Qo`, `apk info --who-owns` or
+  `xbps-query -o`, or the package's own manifest) and names the package-manager
+  command to use instead; AUR packages are pointed at a rebuild after
+  `pacman -Syu`. A `cargo install` copy is told to re-run `cargo install`, and a
+  copy whose origin is unknown (for example a binary run from a build tree) is
+  not touched.
+- **No duplicate installs.** If a distro package already provides
+  `/usr/bin/wireguard-gui` or `/usr/lib/wireguard-gui/wg-helper`, `install.sh` refuses to add
+  a second copy under `/usr/local` (both would be on `PATH` with separate
+  helpers and grants) and names the package to remove. `--force` installs anyway
+  and is remembered for later updates. Installing with `PREFIX=/usr` refuses to
+  overwrite package-owned files, and warns when a `/usr/local` copy shadows it.
+  The AUR, RPM, Alpine and Void packages warn after installation when a
+  `/usr/local` copy exists.
+- **Failed installs roll back.** Before it changes anything, the installer
+  backs up the app, alias, helper, desktop entry, icon, manifest, sudoers
+  drop-in and polkit rule. If any later step fails (or the run is interrupted),
+  it restores them, removes a `wireguard` group or membership it created,
+  removes directories it created and drops a SELinux rule it added; the
+  previous installation keeps working. Packages installed as dependencies are
+  kept.
+- **Local binaries.** `./install.sh --binaries=DIR` installs `wireguard-gui` and
+  `wg-helper` from `DIR` (for example your own build) instead of building or
+  using a release bundle.
+- **Uninstall.** `./install.sh uninstall` removes the files, grants, the SELinux
+  rule and empty directories the installer created, and the `wireguard` group
+  or membership it added unless the sibling app still uses the group. Tunnel
+  configurations in `/etc/wireguard` are kept.
+
+### Package managers and partial upgrades
+
+The installer installs only packages that are missing, so a repeat run or an
+update normally makes no package-manager call. On Arch-family systems it uses
+`pacman -S --needed` and never refreshes the databases on its own: refreshing
+without upgrading (`pacman -Sy <pkg>`) can leave a rolling system partially
+upgraded. If pacman reports missing or stale databases, run `sudo pacman -Syu`
+and re-run the installer. On Void it uses `xbps-install -S`; if that fails, run
+`sudo xbps-install -Su` first. The in-app updater follows the same rules when it
+installs `minisign`.
+
+### SELinux
+
+On SELinux systems (Fedora, RHEL-family, some openSUSE setups) a file written
+to `/usr/local/lib` is labelled `lib_t`, and a file moved from `/tmp` keeps a
+temporary-file label; sudo or pkexec may then be denied execution of the
+helper. After installing, the installer:
+
+1. adds a persistent rule giving the helper an executable label when `semanage`
+   is available (`semanage fcontext -a -t bin_t PREFIX/lib/wireguard-gui/wg-helper`),
+2. runs `restorecon -F` on every file it installed, and
+3. falls back to `chcon -t bin_t` (lost on a full relabel) when `semanage` is
+   missing — install `policycoreutils-python-utils` and re-run to make it
+   persistent.
+
+It then runs the helper as root once. If execution is denied it stops with a
+clear error, restores the previous installation, and points at the audit log:
+
+```sh
+sudo ausearch -m avc -ts recent
+ls -Z /usr/local/lib/wireguard-gui/wg-helper
+sudo semanage fcontext -a -t bin_t /usr/local/lib/wireguard-gui/wg-helper
+sudo restorecon -v /usr/local/lib/wireguard-gui/wg-helper
+```
+
+The same check reports a helper that cannot run at all, for example a glibc
+build on a musl system (Alpine) or a `PREFIX` on a `noexec` mount. Distro
+packages install the helper under `/usr/lib/wireguard-gui/`, which the distro policy
+labels; uninstall removes the rule the installer added. Do not disable SELinux
+to work around a denial.
+
 ## 1.9.3 integration requirements
 
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
@@ -222,25 +311,49 @@ an already-active interface; it can assign an unused runtime WireGuard fwmark
 without changing the saved config. It does not activate a stopped tunnel as a
 side effect of enabling a switch.
 
-The helper prefers nftables and requires a real hooked filter OUTPUT base chain.
-It applies its complete rule set as one nft batch. The fallback requires
+The helper prefers nftables. It keeps the kill switch in its **own table**,
+`inet wg_helper_killswitch`, with its own OUTPUT base chain, and replaces that
+table in one nft transaction. It never edits another table, so firewalld, a
+distro ruleset or your own rules stay untouched. The fallback uses a dedicated
+`WGH-KILLSWITCH` chain reached by one jump at the top of `OUTPUT`. It requires
 `iptables` and `iptables-restore`; when the kernel exposes IPv6 support it also
-requires `ip6tables` and `ip6tables-restore`, even before a non-loopback IPv6
-address is assigned. Both families are preflighted; commits are atomic **per
-family**, not one transaction across IPv4 and IPv6. Failures are reported.
+requires `ip6tables` and `ip6tables-restore`. Both families are preflighted;
+commits are atomic **per family**, not one transaction across IPv4 and IPv6.
 
-The rules allow loopback, the selected tunnel, its marked transport traffic,
-and detected established SSH return traffic when `SSH_CONNECTION` reaches the
-helper, then reject other host output ahead of existing allows. Exact comments
-isolate tunnel names; status requires the complete expected rule set. This is
-host-output control, not server forwarding/NAT or a general no-leak guarantee.
-It may disrupt remote access or interact with another firewall manager.
+The rules allow loopback, packets routed into the selected tunnel, its
+transport traffic (identified by the tunnel's runtime fwmark), IPv6
+router/neighbor solicitation and neighbor advertisement (hop limit 255) and
+MLDv2 reports, DHCP client traffic, and established SSH return traffic when
+`SSH_CONNECTION` reaches the helper; everything else leaving the host is
+rejected. Without the Neighbor Discovery exception an IPv6 endpoint becomes
+unreachable once its neighbor cache entry expires. The exceptions **never
+override your deny rules**: nftables `accept` only ends the kill switch's own
+chain, and the iptables chain `RETURN`s allowed traffic to `OUTPUT` instead of
+accepting it, so later rules still apply. This is host-output control, not
+server forwarding/NAT or a general no-leak guarantee. It may disrupt remote
+access.
+
+Status is one of `enabled`, `disabled`, `missing` or `mismatch`. **Enabled**
+requires complete rules whose mark equals the interface's current fwmark.
+**Missing** means the switch was turned on but its rules are gone or
+incomplete, for example after a firewall reload (`nft flush ruleset`,
+`firewall-cmd --reload`). **Mismatch** means rules exist but are stale: the
+mark changed, the interface is down, an older release built them, or the
+iptables jump is no longer first in `OUTPUT`. On an active tunnel the app
+repairs both automatically (`wg-helper killswitch-repair`), once per loss and
+with backoff, and reports the result.
+
+Editing a connected tunnel keeps the kill switch working. `wg syncconf` would
+reset the fwmark that wg-quick set at runtime; the helper carries the running
+fwmark and listen port into the synced config, refuses a config that changes
+`FwMark` on a running tunnel (reconnect to apply it), verifies the mark
+afterwards and repairs the kill switch if needed.
 
 Down/delete/rename retain protection if the interface is still active or its
-state is unknown, and report stop/cleanup failures. A failed operation can
-leave a tunnel stopped or partially changed; inspect the error and current
-state before retrying. App exit does not clear rules. External service changes
-may leave stale rules, and firewall reloads may remove them. No persistence
-daemon is installed. After upgrading, reapply an existing switch (off/on) to
-install current rules, planning for that brief unprotected interval and keeping
-another administrative access path available.
+state is unknown, and report stop/cleanup failures. If the interface
+disappears without a disconnect, the rules stay and keep blocking traffic
+(status `mismatch`) until you disconnect. App exit does not clear rules. The
+switch is not persistent: the rules and the record that it was requested live
+in the kernel and under `/run`, so both are gone after a reboot. A switch built
+by an earlier release (1.9.3 or older) is reported as `mismatch` and rebuilt in the
+current layout on the next refresh.

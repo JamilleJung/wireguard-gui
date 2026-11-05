@@ -1,0 +1,15 @@
+#!/bin/sh
+# Debian maintainer script for cargo-deb (maintainer-scripts = "packaging/debian/").
+set -e
+
+if [ "$1" = configure ]; then
+    # A copy installed by install.sh under /usr/local shadows this package on PATH.
+    if [ -e /usr/local/bin/wireguard-gui ] || [ -e /usr/local/lib/wireguard-gui/wg-helper ]; then
+        echo "warning: another wireguard-gui is installed under /usr/local and shadows this package;" >&2
+        echo "         remove it with: PREFIX=/usr/local ./install.sh uninstall" >&2
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0
