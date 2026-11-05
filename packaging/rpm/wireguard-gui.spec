@@ -1,5 +1,5 @@
 Name:           wireguard-gui
-Version:        1.9.3
+Version:        1.10.0
 Release:        1%{?dist}
 Summary:        A native Linux GUI for managing WireGuard tunnels
 
@@ -11,10 +11,18 @@ Source0:        %{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.
 # Locked crate sources for an offline build: packaging/update-checksums.sh --vendor
 Source1:        %{name}-%{version}-vendor.tar.xz
 ExclusiveArch:  x86_64 aarch64
+# Fedora's default Rust flags ask for full debug info, which for the compiled
+# Slint UI needs more memory than common builders have (see Cargo.toml's
+# [profile.test]); line tables keep the debuginfo package useful.
+%global rustflags_debuginfo 1
 
 BuildRequires:  cargo >= 1.92
 BuildRequires:  rust >= 1.92
 BuildRequires:  gcc
+# The test suite: the helper's process tests spawn python3; the UI tests
+# render text and need a font.
+BuildRequires:  python3
+BuildRequires:  dejavu-sans-fonts
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  fontconfig-devel
 BuildRequires:  libxkbcommon-devel
@@ -70,7 +78,8 @@ CARGO_CONFIG
 cargo build --frozen --release
 
 %check
-cargo test --frozen --release
+# The test profile: release builds omit the Slint debug info the UI tests need.
+cargo test --frozen
 
 %install
 install -Dm0755 target/release/wireguard-gui %{buildroot}%{_bindir}/wireguard-gui
@@ -101,6 +110,9 @@ fi
 %{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
 
 %changelog
+* Thu Nov 05 2026 jamillejung <izeystudio@gmail.com> - 1.10.0-1
+- Update to 1.10.0.
+
 * Mon Nov 02 2026 jamillejung <izeystudio@gmail.com> - 1.9.3-1
 - Reuse existing polkit group/membership on Alpine/BusyBox reinstalls.
 

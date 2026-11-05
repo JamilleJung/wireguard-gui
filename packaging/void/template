@@ -1,6 +1,6 @@
 # Template file for 'wireguard-gui'
 pkgname=wireguard-gui
-version=1.9.3
+version=1.10.0
 revision=1
 build_style=cargo
 hostmakedepends="pkg-config"
@@ -8,13 +8,25 @@ makedepends="fontconfig-devel libxkbcommon-devel MesaLib-devel wayland-devel dbu
 # fontconfig is a detected shared library; the rest are loaded at run time.
 depends="wireguard-tools iproute2 nftables polkit libxkbcommon libxkbcommon-x11
  wayland libglvnd libX11 libXcursor libXi libXrender libxcb dbus-libs"
+# The helper's process tests spawn python3; the UI tests render text and need
+# a font.
+checkdepends="python3 dejavu-fonts-ttf"
 short_desc="Native Linux GUI for managing plain WireGuard tunnels"
 maintainer="jamillejung <izeystudio@gmail.com>"
 license="MIT"
 homepage="https://github.com/JamilleJung/wireguard-gui"
 changelog="https://raw.githubusercontent.com/JamilleJung/wireguard-gui/main/CHANGELOG.md"
 distfiles="https://github.com/JamilleJung/wireguard-gui/archive/refs/tags/v${version}.tar.gz"
-checksum=49cedd9ac35d7b5cf65519943f8a0ea8ed18eec92583a1675f955600bb9bf82e
+checksum=@CHECKSUM@
+
+# The cargo build style tests the release profile, whose Slint code lacks the
+# debug info the UI tests need; test the test profile like the other recipes.
+# xbps-src builds in a masterdir owned by the build user, so /bin/sh is not
+# root-owned there; one test asserts that a root-owned /bin/sh is trusted.
+do_check() {
+	cargo test --locked --target ${RUST_TARGET} \
+		-- --skip helper_discovery_requires_a_trusted_executable
+}
 
 # The cargo build style's do_install would put wg-helper in /usr/bin.
 do_install() {

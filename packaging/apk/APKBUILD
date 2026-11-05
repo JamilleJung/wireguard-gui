@@ -1,7 +1,7 @@
 # Contributor: jamillejung <izeystudio@gmail.com>
 # Maintainer: jamillejung <izeystudio@gmail.com>
 pkgname=wireguard-gui
-pkgver=1.9.3
+pkgver=1.10.0
 pkgrel=0
 pkgdesc="Native Linux GUI for managing plain WireGuard tunnels"
 url="https://github.com/JamilleJung/wireguard-gui"
@@ -27,6 +27,9 @@ depends="
 	libxcb
 	dbus-libs
 	"
+# The helper's process tests spawn python3; the UI tests render text and need
+# a font.
+checkdepends="python3 font-dejavu"
 makedepends="
 	cargo
 	cargo-auditable
@@ -72,5 +75,5 @@ package() {
 }
 
 sha512sums="
-a4ddc7f5b55ab8848fd1e0c55c1018a83510127bbe37c90fd03e8504bf0f96bea1ad6581b14ba0a5a752991d756ad50933370b2863469aedea60d63300ee4f48  wireguard-gui-1.9.3.tar.gz
+SKIP  wireguard-gui-1.10.0.tar.gz
 "

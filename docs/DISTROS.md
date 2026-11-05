@@ -8,8 +8,8 @@ for kernel/tool support on your specific distribution.
 
 ## 1. Choose source, native package or binary bundle
 
-- The GitHub release supplies an x86_64 `.deb`, x86_64/ARM64 Linux tarballs and an
-  optional x86_64 AppImage. See [downloads and verification](../README.md#install).
+- The GitHub release supplies an x86_64 `.deb`, x86_64, i686, aarch64 and armv7
+  Linux tarballs (glibc 2.35 or newer) and an optional x86_64 AppImage. See [downloads and verification](../README.md#install).
 - `install.sh` in a source checkout installs C/Rust/graphics build prerequisites,
   builds the app/helper and installs under `/usr/local` by default.
 - `install.sh` in an extracted binary bundle with adjacent binaries and no
@@ -263,6 +263,30 @@ packages install the helper under `/usr/lib/wireguard-gui/`, which the distro po
 labels; uninstall removes the rule the installer added. Do not disable SELinux
 to work around a denial.
 
+A helper on a `noexec` mount is also denied with "Permission denied"; the
+installer checks the mount options first and names the `noexec` mount point
+instead of blaming SELinux.
+
+`tests/selinux-vm.sh --binaries=DIR` checks this on a real system. It boots a
+Fedora Cloud Base VM (pinned image URL and SHA-256; KVM when `/dev/kvm` is
+usable, TCG otherwise, x86_64 or aarch64) with SELinux enforcing, injects the
+checkout and the binaries in `DIR` on an extra disk, and runs `./install.sh
+--binaries=DIR` as a normal user, first with the sudoers drop-in and then with
+`--polkit`. After each install it asserts that `ls -Z` shows the helper as
+`bin_t`, `semanage fcontext -l` has the rule, `restorecon -n -v` has nothing to
+change and `ausearch -m avc` has no denials for the helper. It also asserts that
+the user can run `sudo -n PREFIX/lib/wireguard-gui/wg-helper list` through the drop-in
+alone, or `pkexec` from an active local session in polkit mode. It then checks
+that a re-run keeps the label and that `./install.sh uninstall` removes the files
+and the fcontext rule. Two failure paths are covered: an install into a `noexec`
+mount, and an install onto a fixed-label (`context=`) mount from which SELinux
+denies execution. For each it asserts the error message, an AVC record for the
+SELinux case, and a complete rollback, including a byte-identical previous
+sudoers grant. The `SELinux VM` workflow runs it under KVM on changes to the
+installer, packaging or helper, and on release tags. Without KVM the test
+falls back to TCG. For example, an aarch64 or x86_64 guest in Docker on an
+Apple silicon Mac takes 10 to 15 minutes.
+
 ## 1.9.3 integration requirements
 
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
@@ -337,9 +361,10 @@ Status is one of `enabled`, `disabled`, `missing` or `mismatch`. **Enabled**
 requires complete rules whose mark equals the interface's current fwmark.
 **Missing** means the switch was turned on but its rules are gone or
 incomplete, for example after a firewall reload (`nft flush ruleset`,
-`firewall-cmd --reload`). **Mismatch** means rules exist but are stale: the
-mark changed, the interface is down, an older release built them, or the
-iptables jump is no longer first in `OUTPUT`. On an active tunnel the app
+`firewall-cmd --reload`), or when another rule has been put in front of the
+iptables jump. **Mismatch** means rules exist but are stale: the mark
+changed, the interface is down, or an older release built them. On an active
+tunnel the app
 repairs both automatically (`wg-helper killswitch-repair`), once per loss and
 with backoff, and reports the result.
 

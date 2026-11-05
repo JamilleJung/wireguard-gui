@@ -5,7 +5,7 @@
 #   packaging/update-checksums.sh                 sync versions, download the tagged
 #                                                 source archive, write its checksums
 #                                                 and regenerate aur/.SRCINFO
-#   packaging/update-checksums.sh --tarball FILE  use a local source archive instead
+#   packaging/update-checksums.sh --tarball=FILE  use a local source archive instead
 #   packaging/update-checksums.sh --vendor        also build the RPM's offline crate
 #                                                 archive (Source1) in target/packaging/
 #   packaging/update-checksums.sh --check         offline: verify versions and .SRCINFO

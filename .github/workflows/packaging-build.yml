@@ -1,0 +1,52 @@
+name: Package builds
+
+# Builds the real distro packages from the checkout with each distribution's
+# own tool (makepkg, rpmbuild, abuild, xbps-src), runs the packages' tests,
+# installs each result in a clean container and smoke-tests it
+# (tests/package-build.sh).
+on:
+  pull_request:
+    paths:
+      - packaging/**
+      - install.sh
+      - Cargo.toml
+      - Cargo.lock
+      - tests/package-build.sh
+      - tests/helper-validation.sh
+      - .github/workflows/packaging-build.yml
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# Read-only token: nothing here publishes or writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Package build (${{ matrix.format }})
+    runs-on: ubuntu-latest
+    # The GUI release build (LTO, one codegen unit) runs twice: build and check.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [arch, rpm, apk, void]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build, test, install and smoke-test the package
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: bash tests/package-build.sh "$FORMAT" --out="dist/$FORMAT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-${{ matrix.format }}
+          path: dist/${{ matrix.format }}/
+          if-no-files-found: error
+          retention-days: 14
