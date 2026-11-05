@@ -18,7 +18,8 @@
 #   5. checks a distro-package copy blocks a second install unless --force,
 #   6. uninstalls and checks nothing is left behind,
 #   7. optionally upgrades an install made by the previous release's installer
-#      (taken from the git tag in PREVIOUS_TAG, default: the latest v* tag).
+#      (taken from the git tag in PREVIOUS_TAG, default: the newest v* tag
+#      whose installer predates the install manifest).
 set -euo pipefail
 
 if [ "${1:-}" != --inner ]; then
@@ -29,7 +30,17 @@ if [ "${1:-}" != --inner ]; then
     root="$(cd "$(dirname "$0")/.." && pwd)"
     legacy="$(mktemp -d)"
     trap 'rm -rf "$legacy"' EXIT
-    tag="${PREVIOUS_TAG:-$(git -C "$root" tag --list 'v*' --sort=-v:refname 2>/dev/null | head -n 1 || true)}"
+    # Default: the newest release whose installer predates the install
+    # manifest; that is the upgrade path step 7 exists to cover.
+    tag="${PREVIOUS_TAG:-}"
+    if [ -z "$tag" ]; then
+        for candidate in $(git -C "$root" tag --list 'v*' --sort=-v:refname 2>/dev/null); do
+            if ! git -C "$root" show "$candidate:install.sh" 2>/dev/null | grep -q install-manifest; then
+                tag="$candidate"
+                break
+            fi
+        done
+    fi
     if [ -n "$tag" ] && git -C "$root" show "$tag:install.sh" > "$legacy/install.sh" 2>/dev/null; then
         printf 'Previous installer: %s\n' "$tag"
     else
