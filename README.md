@@ -43,6 +43,27 @@ Live in a terminal? ⌨️ The sibling
 **[wireguard-tui](https://github.com/JamilleJung/wireguard-tui)** is the same
 idea as a keyboard-driven terminal UI.
 
+## 🎉 What's new in 1.10
+
+The "fewer surprises" release. Grab it from the
+**[v1.10.0 release page](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.10.0)**.
+
+| | What changed | Why you'll like it |
+|---|---|---|
+| 🛡️ | **Kill switch, rebuilt** — its own nftables table / iptables chain, IPv6 Neighbor Discovery allowed | Never fights firewalld or your rules, your deny rules always win, and IPv6 endpoints stay reachable |
+| 🔁 | **Self-repairing kill switch** — a red banner, automatic repair and a **Repair now** button | A firewall reload no longer silently switches your protection off |
+| ✏️ | **Live edits keep the fwmark** — `wg syncconf` can't reset it any more | Editing a connected tunnel no longer breaks routing or the kill switch |
+| 🩺 | **Health per peer** — Healthy, Connecting, Idle, No traffic, Handshake stale, Connection failed | A quiet tunnel reads as *Idle*, not broken |
+| 📝 | **Drafts never vanish** — Retry / Re-edit / Discard, and restore rolls back on failure | A failed save or half-finished restore can't eat your work |
+| 🧪 | **QR images decoded in a sandbox child process** | A hostile image can't crash the app (found by fuzzing!) |
+| ⌨️ | **Keyboard & accessibility** — every control focusable, screen-reader labels, high-contrast and ASCII themes, works down to 720×480 | Comfortable for everyone, on any screen |
+| 💻 | **More machines** — glibc 2.35 builds for x86_64, i686, aarch64 and armv7 | Runs on Debian 12, Ubuntu 22.04 and newer, including 32-bit and Raspberry Pi |
+| 📦 | **Installer remembers** your method and auth mode, rolls back on failure, speaks SELinux, no more `pacman -Sy` | Updates keep your setup; a failed install leaves nothing half-done |
+
+Upgrading from 1.9.x? A kill switch built by the old version shows up as
+`mismatch` once and is rebuilt automatically. Everything else just works.
+The full list lives in the [changelog](CHANGELOG.md#1100---2026-11-05).
+
 ## 💡 Why does this exist?
 
 Linux already has excellent WireGuard primitives. What it was missing was a
@@ -121,12 +142,12 @@ Grab the **[latest release](https://github.com/JamilleJung/wireguard-gui/release
 
 | Download | For | `uname -m` |
 |---|---|---|
-| `wireguard-gui_<version>-1_amd64.deb` | Debian / Ubuntu / Mint — GUI, helper, launcher, icon, polkit rule | `x86_64` |
-| `wireguard-gui-<version>-x86_64-linux.tar.gz` | 64-bit Intel/AMD | `x86_64`, `amd64` |
-| `wireguard-gui-<version>-i686-linux.tar.gz` | 32-bit Intel/AMD | `i386`…`i686` |
-| `wireguard-gui-<version>-aarch64-linux.tar.gz` | 64-bit ARM (Raspberry Pi 4/5, ARM laptops) | `aarch64`, `arm64` |
-| `wireguard-gui-<version>-armv7-linux.tar.gz` | 32-bit ARMv7 hard-float | `armv7l`, 32-bit `armv8l` |
-| `wireguard-gui-<version>-x86_64.AppImage` | Any x86_64 distro (attached when its optional build succeeds) | `x86_64` |
+| `wireguard-gui_1.10.0-1_amd64.deb` | Debian / Ubuntu / Mint — GUI, helper, launcher, icon, polkit rule | `x86_64` |
+| `wireguard-gui-1.10.0-x86_64-linux.tar.gz` | 64-bit Intel/AMD | `x86_64`, `amd64` |
+| `wireguard-gui-1.10.0-i686-linux.tar.gz` | 32-bit Intel/AMD | `i386`…`i686` |
+| `wireguard-gui-1.10.0-aarch64-linux.tar.gz` | 64-bit ARM (Raspberry Pi 4/5, ARM laptops) | `aarch64`, `arm64` |
+| `wireguard-gui-1.10.0-armv7-linux.tar.gz` | 32-bit ARMv7 hard-float | `armv7l`, 32-bit `armv8l` |
+| `wireguard-gui-1.10.0-x86_64.AppImage` | Any x86_64 distro (attached when its optional build succeeds) | `x86_64` |
 | `SHA256SUMS`, `SHA256SUMS.minisig`, `minisign.pub` | checksums, signature, key | — |
 
 > [!NOTE]
@@ -140,7 +161,7 @@ Grab the **[latest release](https://github.com/JamilleJung/wireguard-gui/release
 ### ✅ Verify first (it takes ten seconds)
 
 ```sh
-asset=wireguard-gui-<version>-x86_64-linux.tar.gz
+asset=wireguard-gui-1.10.0-x86_64-linux.tar.gz
 minisign -Vm SHA256SUMS -P RWSrokrj4nWGDhUf409+6yXuqPfF7WQuGtSk/PdsnTWKwfOpb3Hv4DxG
 awk -v file="$asset" '$2 == file { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > selected.sha256 &&
 sha256sum --check --strict selected.sha256
@@ -154,7 +175,7 @@ sha256sum --check --strict selected.sha256
 ### 🐧 Debian-family package
 
 ```sh
-sudo apt install ./wireguard-gui_<version>-1_amd64.deb
+sudo apt install ./wireguard-gui_1.10.0-1_amd64.deb
 wireguard-gui
 ```
 
@@ -174,8 +195,8 @@ or be refused by local policy.
 ### 📦 Prebuilt tarball
 
 ```sh
-tar -xzf wireguard-gui-<version>-x86_64-linux.tar.gz
-cd wireguard-gui-<version>-x86_64-linux
+tar -xzf wireguard-gui-1.10.0-x86_64-linux.tar.gz
+cd wireguard-gui-1.10.0-x86_64-linux
 ./install.sh          # as your normal user
 ```
 
