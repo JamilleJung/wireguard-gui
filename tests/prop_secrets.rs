@@ -30,7 +30,7 @@ fn secret_line(rng: &mut Rng, secret: &str) -> String {
 }
 
 fn rng_pick_name(rng: &mut Rng) -> &'static str {
-    *rng.pick(&["PrivateKey", "PresharedKey"])
+    rng.pick::<&str>(&["PrivateKey", "PresharedKey"])
 }
 
 fn public_line(rng: &mut Rng, key: &str) -> String {

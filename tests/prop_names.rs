@@ -20,7 +20,7 @@ fn name_like(rng: &mut Rng) -> String {
     let len = rng.below(20);
     let mut s: String = (0..len).map(|_| *rng.pick(NAME_CHARS)).collect();
     if rng.chance(1, 5) {
-        s.push_str(*rng.pick(&[".conf", ".CONF", "..", ".conf.", "/x"]));
+        s.push_str(rng.pick::<&str>(&[".conf", ".CONF", "..", ".conf.", "/x"]));
     }
     s
 }

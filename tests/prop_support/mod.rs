@@ -76,7 +76,7 @@ impl Rng {
     }
 
     pub fn spaces(&mut self) -> &'static str {
-        *self.pick(&["", " ", "  ", "\t", " \t "])
+        self.pick::<&str>(&["", " ", "  ", "\t", " \t "])
     }
 }
 
