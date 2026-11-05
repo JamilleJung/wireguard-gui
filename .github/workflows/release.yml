@@ -467,10 +467,12 @@ jobs:
             cat /tmp/gui-launch.log; exit 1
           fi
           SMOKE
-          # Host networking: the default bridge's DNS fails in the linux/386
-          # userland on the runner, and these throwaway containers need only
-          # the package mirrors.
-          docker run --rm --platform "$PLATFORM" --network host \
+          # The runner's Docker seccomp profile rejects the 64-bit time
+          # syscalls a 32-bit Debian 12 userland uses, which breaks its DNS
+          # resolver; this throwaway smoke container runs unconfined.
+          extra=()
+          if [ "$PLATFORM" = linux/386 ]; then extra=(--security-opt seccomp=unconfined); fi
+          docker run --rm --platform "$PLATFORM" --network host "${extra[@]}" \
             -v "$PWD:/w:ro" -v "$RUNNER_TEMP/smoke.sh:/smoke.sh:ro" -w /w \
             -e V="$V" -e D="dist/wireguard-gui-${V}-${ARCH}-linux" -e LAUNCH="$LAUNCH" \
             "$IMAGE" bash /smoke.sh
