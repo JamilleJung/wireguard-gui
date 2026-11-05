@@ -391,7 +391,7 @@ fn helper_auth(helper: &Option<String>) -> (Status, String, Option<String>, bool
         return (
             Status::Missing,
             "install the helper first".to_string(),
-            Some("./install.sh   (or install the .deb / AUR / COPR package)".to_string()),
+            Some("./install.sh   (or install the .deb or your distribution's package)".to_string()),
             true,
         );
     };
@@ -581,7 +581,7 @@ pub fn system_check() -> Report {
         fix: if helper.is_some() {
             None
         } else {
-            Some("./install.sh   (or install the .deb / AUR / COPR package)".to_string())
+            Some("./install.sh   (or install the .deb or your distribution's package)".to_string())
         },
         critical: true,
     });

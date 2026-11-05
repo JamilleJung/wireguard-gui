@@ -16,6 +16,8 @@ Release 1.9.3 uses the following artifact names; AppImage is optional:
 | `wireguard-gui_1.9.3-1_amd64.deb` | Debian-family x86_64 application/helper, desktop assets and polkit rule |
 | `wireguard-gui-1.9.3-x86_64-linux.tar.gz` | Native Linux x86_64 application/helper and installer assets |
 | `wireguard-gui-1.9.3-aarch64-linux.tar.gz` | Native Linux ARM64 application/helper and installer assets |
+| `wireguard-gui-<version>-i686-linux.tar.gz` | Linux 32-bit x86 (i686) application/helper and installer assets (releases after 1.9.3) |
+| `wireguard-gui-<version>-armv7-linux.tar.gz` | Linux 32-bit ARMv7 hard-float (armhf) application/helper and installer assets (releases after 1.9.3) |
 | `wireguard-gui-1.9.3-x86_64.AppImage` | x86_64 AppImage; optional in the workflow, attached only when its optional build succeeds |
 | `SHA256SUMS` | SHA-256 digests of binary/package artifacts |
 | `SHA256SUMS.minisig` | minisign signature of the digest manifest |
@@ -27,7 +29,13 @@ Tarballs retain adjacent executable binaries, `install.sh`, README/LICENSE and
 without Cargo.toml and skips Rust/compiler/development-header setup, while still
 installing runtime dependencies and helper authorization.
 
-Tarballs are native Linux builds and may require a different runtime/libc than
+Tarballs are glibc builds. Releases after 1.9.3 build every binary in
+`ubuntu:22.04` and require at most **glibc 2.35** on all four architectures
+(measured: `wireguard-gui` needs GLIBC_2.35, `wg-helper` GLIBC_2.34), so they
+run on Debian 12, Ubuntu 22.04 and newer (not on RHEL 9 and its rebuilds, which
+ship glibc 2.34); `scripts/verify-release.sh` fails a release whose binaries
+need a newer glibc. 1.9.3 and earlier were built against glibc 2.39.
+They may still require a different runtime/libc than
 your host. Use source or a native package when incompatible. The `.deb` installs
 under `/usr`; the source/bundle installer defaults to `/usr/local`. Packages
 ship a group-restricted polkit rule but do not enroll your user. See
@@ -66,7 +74,7 @@ is optional, so another release may contain six assets rather than seven.
 ## Upgrading
 
 Prefer the existing package manager for a package-managed installation. The
-in-app updater downloads and verifies the matching x86_64/ARM64 tarball, then
+in-app updater downloads and verifies the tarball matching the CPU (x86_64, i686, aarch64 or armv7), then
 runs its normal installer; it is not a `.deb`/AppImage package updater and can
 create a `/usr/local` installation alongside a `/usr` package. It needs external
 verification/escalation tools and a restart. See the [update tutorial](TUTORIAL.md#updates).
@@ -103,8 +111,10 @@ weekly, and re-test the newest compatible dependencies weekly.
 The [release workflow](../.github/workflows/release.yml) runs on a pushed
 `vMAJOR.MINOR.PATCH` tag. Its publish job **depends on every gate below and
 fails closed**: a failed, skipped or cancelled gate prevents publication, and
-the publish job re-checks that all eleven gates reported success. Only the
-AppImage is optional.
+the publish job re-checks that all ten gates reported success. Only the
+AppImage is optional. A manual run (`workflow_dispatch` with a `version`)
+is a dry run: every gate runs, the checksums are signed with a throwaway key,
+and nothing is published.
 
 | Gate | What it checks |
 |---|---|
@@ -113,12 +123,11 @@ AppImage is optional.
 | Tests | fixtures, unit/property/fixture tests (20 000 property cases), installer sanity |
 | Audit release dependencies | `cargo audit --deny warnings` with the documented exceptions |
 | Firewall namespace test | `tests/firewall-namespace.sh` |
-| Build aarch64 tarball | native ARM64 build with `cargo-auditable 0.7.7`, CLI contract, UPX, reproducible tarball (`scripts/stage-tarball.sh`), installer check of the tarball |
-| Build x86_64 tarball, .deb & AppImage | native build, CLI contract before and after UPX, headless GUI launch, tarball, `.deb` (`cargo-deb 3.8.0`), optional AppImage from pristine copies |
-| Smoke (QEMU) per architecture | each packed binary runs in a clean Ubuntu 24.04 userland (aarch64 under QEMU user-mode emulation): `--version` equals the tag, `--help`, `tests/helper-validation.sh`, `tests/release-regression.sh` |
+| Build (x86_64, i686, aarch64, armv7) | inside a digest-pinned `ubuntu:22.04` container (glibc 2.35 baseline; i686 and armv7 cross-compiled with multiarch) with `cargo-auditable 0.7.7`; fails if any binary needs a newer glibc; CLI contract before and after UPX 5.2.1 (armv7 in smoke); reproducible tarball (`scripts/stage-tarball.sh`) and installer check; x86_64 also builds the `.deb` (`cargo-deb 3.8.0`, with libc6/fontconfig dependencies computed from the unpacked binaries) and the optional AppImage |
+| Smoke per architecture | x86_64 and aarch64 on Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Fedora; i686 on Debian 12; armv7 on Debian 12 and Ubuntu 22.04 under QEMU; every image digest-pinned: `--version` equals the tag, `--help`, `tests/helper-validation.sh`, `tests/release-regression.sh`, and a headless GUI launch (except armv7) |
 | Kill switch e2e | `tests/killswitch-e2e.sh` with the shipped x86_64 helper |
 | Checksums & signature | SHA256SUMS signed with `MINISIGN_KEY` in the `release` environment, verified against the committed key |
-| Verify release artifacts | `scripts/verify-release.sh --strict --run`: signature, checksums, exact archive contents/modes/ownership, architecture, glibc loader and no RPATH, helper links only libc, embedded package version == tag, `.deb` fields and files, native CLI contract |
+| Verify release artifacts | `scripts/verify-release.sh --strict --run`: signature, checksums, exact archive contents/modes/ownership, architecture, glibc loader, glibc ≤ 2.35 and no RPATH, helper links only libc, embedded package version == tag, `.deb` fields and files, native CLI contract |
 
 Publication uploads exactly the verified files after re-checking SHA256SUMS.
 Third-party Actions are commit-pinned. The linuxdeploy binary used for
@@ -195,7 +204,7 @@ normal completion. Before privilege escalation, the whole required bundle is
 checked: regular single-link application/helper/installer/assets, no symlink
 components, and a fresh exclusive staging tree. Missing/unsafe assets fail before
 installation starts. HTTPS-only redirects are enforced. GUI automatic updates
-support its published x86_64/ARM64 builds; unsupported CPUs fail explicitly.
+support its published x86_64, i686, aarch64 and armv7 builds; unsupported CPUs fail explicitly.
 
 Download refuses a version that is no longer newer and reports the actual
 verified version on success. Install the app/helper together, reapply existing

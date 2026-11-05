@@ -185,6 +185,41 @@ signing.
   out or runs PR code, and holds `contents`/`pull-requests: write` only in
   that one job.
 - `.github/dependabot.yml` groups updates by risk; see the comments there.
+- The workflow fails closed: before enabling auto-merge it asks the API for
+  the base branch's rules and stops (leaving the PR for a human) unless a
+  `required_status_checks` rule is enforced. Without that rule
+  `gh pr merge --auto` merges immediately instead of waiting.
+- Pull requests that touch `.github/` (every GitHub Actions update) also need
+  a code-owner review under `main: security review`, so auto-merge waits for
+  a maintainer's approval as well as the checks.
+
+### Incident 2026-11-05: Dependabot PR #27 merged before CI finished
+
+**What happened.** The auto-merge workflow and the branch rulesets were added
+in the same change, but the rulesets were applied about an hour after the
+push. In that window Dependabot opened PR #27 (GitHub Actions group:
+`taiki-e/install-action` v2.87.29 → v2.88.0). The workflow ran
+`gh pr merge --auto --squash`; with no required checks on `main`, GitHub
+merged the PR at once, while `MSRV`, `Kill switch e2e` and
+`Latest compatible dependencies` were failing on that commit.
+
+**Impact.** None on users. The PR changed only the pinned action SHA in
+`ci.yml` and `mutants.yml`; `86f7a0ffb25f40114606501a311ebcfaf882ea32` was
+checked against the upstream `v2.88.0` tag. The failing checks were caused by
+problems already on `main` (property tests that did not compile on the MSRV,
+and an e2e key file the runner's confined `wg` could not read), not by the
+update. They were fixed on `main` and every check has passed since.
+
+**Fixes.** (1) Rulesets with required, up-to-date status checks are now
+enforced on `main` (`scripts/apply-repo-settings.sh`). (2) The workflow
+refuses to enable auto-merge unless required status checks are enforced.
+(3) Code-owner review is required for `.github/`. (4) The MSRV and e2e
+failures were fixed and `Latest compatible dependencies` was re-run on
+`main`.
+
+**Rule for the future.** Apply repository settings before (or in the same
+step as) pushing any workflow that can merge or publish, and run
+`scripts/apply-repo-settings.sh --dry-run` to confirm nothing is pending.
 
 ## Minimum supported Rust version
 
