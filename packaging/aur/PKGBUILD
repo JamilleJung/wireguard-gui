@@ -29,7 +29,7 @@ install=wireguard-gui.install
 # hold only dangling build-id links.
 options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('d003ba94fae937e3d6e8a6af560e3e8e73131bdd9b2fc0462dd28fa78f14e12e')
 
 prepare() {
     cd "$pkgname-$pkgver"

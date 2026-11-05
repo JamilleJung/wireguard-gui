@@ -75,5 +75,5 @@ package() {
 }
 
 sha512sums="
-SKIP  wireguard-gui-1.10.0.tar.gz
+b2341eb883d1e9012e953e73e04a783f6677ed2bc00931fff56be29b34f2ac5a5967b2ec76da2eabbe569366707a0be20f5ae88d7f5ff137a1d12dc5ea109b59  wireguard-gui-1.10.0.tar.gz
 "

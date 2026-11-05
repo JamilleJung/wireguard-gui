@@ -34,6 +34,6 @@ pkgbase = wireguard-gui
 	optdepends = minisign: verify release signatures
 	options = !debug
 	source = wireguard-gui-1.10.0.tar.gz::https://github.com/JamilleJung/wireguard-gui/archive/refs/tags/v1.10.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = d003ba94fae937e3d6e8a6af560e3e8e73131bdd9b2fc0462dd28fa78f14e12e
 
 pkgname = wireguard-gui
