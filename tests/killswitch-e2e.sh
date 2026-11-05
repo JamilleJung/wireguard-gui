@@ -86,9 +86,10 @@ if [ "$MODE" = host ]; then
             srv_key="$(wg genkey)"; cli_key="$(wg genkey)"
             srv_pub="$(printf '%s' "$srv_key" | wg pubkey)"
             cli_pub="$(printf '%s' "$cli_key" | wg pubkey)"
-            printf '%s' "$srv_key" > "$work/srv.key"
             srv ip link add wg0 type wireguard
-            srv wg set wg0 private-key "$work/srv.key" listen-port 51820 \
+            # Pass the key through a pipe like wg-quick does: confined `wg`
+            # builds (AppArmor) may not open arbitrary files under /tmp.
+            srv wg set wg0 private-key <(printf '%s' "$srv_key") listen-port 51820 \
                 peer "$cli_pub" allowed-ips 10.10.0.2/32,fd00:10::2/128
             srv ip addr add 10.10.0.1/24 dev wg0
             srv ip addr add fd00:10::1/64 dev wg0 nodad
