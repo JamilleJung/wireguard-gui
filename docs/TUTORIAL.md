@@ -231,28 +231,52 @@ an already-active interface; it can assign an unused runtime WireGuard fwmark
 without changing the saved config. It does not activate a stopped tunnel as a
 side effect of enabling a switch.
 
-The helper prefers nftables and requires a real hooked filter OUTPUT base chain.
-It applies its complete rule set as one nft batch. The fallback requires
+The helper prefers nftables. It keeps the kill switch in its **own table**,
+`inet wg_helper_killswitch`, with its own OUTPUT base chain, and replaces that
+table in one nft transaction. It never edits another table, so firewalld, a
+distro ruleset or your own rules stay untouched. The fallback uses a dedicated
+`WGH-KILLSWITCH` chain reached by one jump at the top of `OUTPUT`. It requires
 `iptables` and `iptables-restore`; when the kernel exposes IPv6 support it also
-requires `ip6tables` and `ip6tables-restore`, even before a non-loopback IPv6
-address is assigned. Both families are preflighted; commits are atomic **per
-family**, not one transaction across IPv4 and IPv6. Failures are reported.
+requires `ip6tables` and `ip6tables-restore`. Both families are preflighted;
+commits are atomic **per family**, not one transaction across IPv4 and IPv6.
 
-The rules allow loopback, the selected tunnel, its marked transport traffic,
-and detected established SSH return traffic when `SSH_CONNECTION` reaches the
-helper, then reject other host output ahead of existing allows. Exact comments
-isolate tunnel names; status requires the complete expected rule set. This is
-host-output control, not server forwarding/NAT or a general no-leak guarantee.
-It may disrupt remote access or interact with another firewall manager.
+The rules allow loopback, packets routed into the selected tunnel, its
+transport traffic (identified by the tunnel's runtime fwmark), IPv6
+router/neighbor solicitation and neighbor advertisement (hop limit 255) and
+MLDv2 reports, DHCP client traffic, and established SSH return traffic when
+`SSH_CONNECTION` reaches the helper; everything else leaving the host is
+rejected. Without the Neighbor Discovery exception an IPv6 endpoint becomes
+unreachable once its neighbor cache entry expires. The exceptions **never
+override your deny rules**: nftables `accept` only ends the kill switch's own
+chain, and the iptables chain `RETURN`s allowed traffic to `OUTPUT` instead of
+accepting it, so later rules still apply. This is host-output control, not
+server forwarding/NAT or a general no-leak guarantee. It may disrupt remote
+access.
+
+Status is one of `enabled`, `disabled`, `missing` or `mismatch`. **Enabled**
+requires complete rules whose mark equals the interface's current fwmark.
+**Missing** means the switch was turned on but its rules are gone or
+incomplete, for example after a firewall reload (`nft flush ruleset`,
+`firewall-cmd --reload`). **Mismatch** means rules exist but are stale: the
+mark changed, the interface is down, an older release built them, or the
+iptables jump is no longer first in `OUTPUT`. On an active tunnel the app
+repairs both automatically (`wg-helper killswitch-repair`), once per loss and
+with backoff, and reports the result.
+
+Editing a connected tunnel keeps the kill switch working. `wg syncconf` would
+reset the fwmark that wg-quick set at runtime; the helper carries the running
+fwmark and listen port into the synced config, refuses a config that changes
+`FwMark` on a running tunnel (reconnect to apply it), verifies the mark
+afterwards and repairs the kill switch if needed.
 
 Down/delete/rename retain protection if the interface is still active or its
-state is unknown, and report stop/cleanup failures. A failed operation can
-leave a tunnel stopped or partially changed; inspect the error and current
-state before retrying. App exit does not clear rules. External service changes
-may leave stale rules, and firewall reloads may remove them. No persistence
-daemon is installed. After upgrading, reapply an existing switch (off/on) to
-install current rules, planning for that brief unprotected interval and keeping
-another administrative access path available.
+state is unknown, and report stop/cleanup failures. If the interface
+disappears without a disconnect, the rules stay and keep blocking traffic
+(status `mismatch`) until you disconnect. App exit does not clear rules. The
+switch is not persistent: the rules and the record that it was requested live
+in the kernel and under `/run`, so both are gone after a reboot. A switch built
+by an earlier release (1.9.3 or older) is reported as `mismatch` and rebuilt in the
+current layout on the next refresh.
 
 With a working StatusNotifier/AppIndicator host, closing the window hides it;
 the tray offers Show WireGuard, per-tunnel toggles, Deactivate all and Quit.
@@ -293,10 +317,13 @@ save. Limits are **64 MiB per ZIP**, **4,096 archive entries**, **1,024 configs*
 skipped. Backup reads require an owned regular file with one hard link and
 refuse symlinks/FIFOs; copy a hardlinked archive to an ordinary file first.
 
-After complete preflight, restore still saves sequentially. It overwrites
-matching saved names, leaves other tunnels in place, and does not sync running
-interfaces. A later operational failure can leave a partial restore; it is not
-a multi-file transaction. Helper per-file backups remain a separate recovery
+After complete preflight, restore copies every saved config it is about to
+overwrite, then saves sequentially. It overwrites matching saved names, leaves
+other tunnels in place, and does not sync running interfaces. If a later save
+fails (or times out), restore **rolls back**: overwritten tunnels get their
+previous contents back and tunnels the restore created are removed again. The
+report names every tunnel restored, removed or, if a rollback step itself
+failed, left changed. Helper per-file backups remain a separate recovery
 source under `/etc/wireguard/.backup/`. All these archives contain unencrypted
 private keys.
 
