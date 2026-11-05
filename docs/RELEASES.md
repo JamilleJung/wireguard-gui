@@ -41,6 +41,24 @@ Use the commands in [README verification](../README.md#verify-a-download).
 Do not treat a key downloaded beside the artifact as an independent trust anchor.
 Signature/checksum failure means do not install that artifact.
 
+From a checkout of this repository, `scripts/verify-release.sh` runs the same
+verification the release workflow runs before publishing, against the
+committed key (never the copy shipped beside the artifacts):
+
+```sh
+scripts/verify-release.sh --tag v1.9.3 --download             # fetch with gh, then verify
+scripts/verify-release.sh --tag v1.9.3 ~/Downloads/wg-gui     # an existing download
+```
+
+It checks the signature and trusted comment, every checksum, that each
+tarball holds exactly the expected files and modes, and (with `upx`
+installed) that each binary is built for its architecture, uses the expected
+glibc loader without RPATH/RUNPATH, that the privileged helper links only the
+C runtime, and that the embedded package version equals the tag; with
+`dpkg-deb` it also checks the `.deb` metadata. Releases published
+before this check existed (1.9.3 and earlier) report
+non-root tar ownership as a warning; `--strict` turns warnings into failures.
+
 The workflow fails closed if signing is unavailable or signature verification
 fails; it does not intentionally publish unsigned releases. AppImage creation
 is optional, so another release may contain six assets rather than seven.
@@ -69,31 +87,51 @@ promise of feature-identical behavior.
 
 ## How releases are built
 
-The current [CI workflow](../.github/workflows/ci.yml) runs for `main` pushes
-and pull requests targeting `main`. It checks formatting, locked clippy with
-warnings denied, locked tests, a release build, CLI startup, headless GUI launch,
-ShellCheck, helper negative validation and sandboxed installer checks. A separate
-job runs `cargo audit --deny warnings`.
+Every pull request to `main` must pass the [CI workflow](../.github/workflows/ci.yml)
+and the Dependabot-only compatibility job; the exact required checks and the
+branch rules are in [REPO_SETTINGS.md](REPO_SETTINGS.md). CI runs rustfmt,
+clippy, unit/property/fixture tests, a release build with CLI smoke checks,
+the CLI contract test (`tests/release-regression.sh`) and a headless GUI
+launch, ShellCheck of every script, installer sanity, the firewall
+network-namespace test, the WireGuard + kill switch end-to-end test,
+`cargo audit` with the shared [.cargo/audit.toml](../.cargo/audit.toml)
+policy, version consistency (`scripts/check-version.sh`), the MSRV build and a
+fuzz-crate build. Coverage (`cargo llvm-cov`, lcov artifact and job summary)
+is informational. Scheduled workflows fuzz nightly, run mutation testing
+weekly, and re-test the newest compatible dependencies weekly.
 
-The [release workflow](../.github/workflows/release.yml) runs on a pushed `v*`
-tag. Before tagging, wait for the intended commit's CI to pass. The tag must be
-`vMAJOR.MINOR.PATCH` and match Cargo.toml's package version. Release jobs:
+The [release workflow](../.github/workflows/release.yml) runs on a pushed
+`vMAJOR.MINOR.PATCH` tag. Its publish job **depends on every gate below and
+fails closed**: a failed, skipped or cancelled gate prevents publication, and
+the publish job re-checks that all eleven gates reported success. Only the
+AppImage is optional.
 
-1. Audit the lockfile with the shared [.cargo/audit.toml](../.cargo/audit.toml)
-   policy. Five unmaintained notices without fixed upstream versions are
-   documented exceptions; vulnerabilities, unsoundness and new notices fail.
-2. Build/test native ARM64 binaries with `cargo-auditable 0.7.7`, smoke them,
-   compress with UPX, recheck CLI startup and validate/package the ARM64 tarball.
-3. Build/test x86_64 binaries, run helper/shell and headless GUI checks, compress
-   binaries and package the x86_64 tarball and `.deb` with `cargo-deb 3.8.0`.
-   Build the optional AppImage from pristine uncompressed copies.
-4. Collect artifacts, generate SHA-256 checksums, sign with the required
-   `MINISIGN_KEY` secret, verify against the committed public key and publish.
+| Gate | What it checks |
+|---|---|
+| Version consistency | tag == Cargo.toml == Cargo.lock == top CHANGELOG release == PKGBUILD/RPM/APKBUILD/Void versions |
+| rustfmt & clippy | formatting, `clippy -D warnings`, ShellCheck |
+| Tests | fixtures, unit/property/fixture tests (20 000 property cases), installer sanity |
+| Audit release dependencies | `cargo audit --deny warnings` with the documented exceptions |
+| Firewall namespace test | `tests/firewall-namespace.sh` |
+| Build aarch64 tarball | native ARM64 build with `cargo-auditable 0.7.7`, CLI contract, UPX, reproducible tarball (`scripts/stage-tarball.sh`), installer check of the tarball |
+| Build x86_64 tarball, .deb & AppImage | native build, CLI contract before and after UPX, headless GUI launch, tarball, `.deb` (`cargo-deb 3.8.0`), optional AppImage from pristine copies |
+| Smoke (QEMU) per architecture | each packed binary runs in a clean Ubuntu 24.04 userland (aarch64 under QEMU user-mode emulation): `--version` equals the tag, `--help`, `tests/helper-validation.sh`, `tests/release-regression.sh` |
+| Kill switch e2e | `tests/killswitch-e2e.sh` with the shipped x86_64 helper |
+| Checksums & signature | SHA256SUMS signed with `MINISIGN_KEY` in the `release` environment, verified against the committed key |
+| Verify release artifacts | `scripts/verify-release.sh --strict --run`: signature, checksums, exact archive contents/modes/ownership, architecture, glibc loader and no RPATH, helper links only libc, embedded package version == tag, `.deb` fields and files, native CLI contract |
 
-Third-party Actions are commit-pinned. The linuxdeploy binary used for AppImage
-packaging is pinned and checksum-verified. Workflow tokens are read-only except
-for the publishing job's content permission. A missing mandatory artifact or
-signing failure prevents publication; optional AppImage failure does not.
+Publication uploads exactly the verified files after re-checking SHA256SUMS.
+Third-party Actions are commit-pinned. The linuxdeploy binary used for
+AppImage packaging is pinned and checksum-verified. Workflow tokens are
+read-only except for the publishing job's content permission. Release tags
+are protected against deletion and moves.
+
+Before tagging, run the same release checks locally where possible:
+
+```sh
+scripts/check-version.sh --tag vX.Y.Z
+bash tests/release-regression.sh --version X.Y.Z target/release/wireguard-gui target/release/wg-helper
+```
 
 Release binaries are built with embedded auditable dependency data. Tarball and
 `.deb` executables are then UPX-packed; direct `cargo audit bin` cannot read the

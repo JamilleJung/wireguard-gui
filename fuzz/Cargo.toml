@@ -1,0 +1,52 @@
+# Standalone cargo-fuzz crate. It has its own workspace and lockfile so the
+# fuzzing dependencies never enter the shipped binaries' dependency graph.
+#
+#   cargo +nightly fuzz list
+#   cargo +nightly fuzz run config_validate -- -max_total_time=60
+#
+# See CONTRIBUTING.md ("Fuzzing") for details.
+[package]
+name = "wireguard-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "config_validate"
+path = "fuzz_targets/config_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redact"
+path = "fuzz_targets/redact.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tunnel_names"
+path = "fuzz_targets/tunnel_names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "import_preflight"
+path = "fuzz_targets/import_preflight.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

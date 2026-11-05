@@ -1,0 +1,5 @@
+# The repository ignores *.conf as a safety net against committing real
+# WireGuard configs. These fixtures are fake and produced deterministically by
+# scripts/gen-fixtures.sh; `scripts/gen-fixtures.sh --check` (run in CI) fails if
+# any file here differs from that script's output.
+!*.conf

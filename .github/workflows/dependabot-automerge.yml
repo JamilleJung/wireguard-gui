@@ -1,0 +1,64 @@
+name: Dependabot auto-merge
+
+# Turns on GitHub auto-merge for low-risk Dependabot updates only:
+#   * semver patch or minor (never major), and
+#   * every updated dependency is CI tooling (GitHub Actions), a Cargo
+#     development dependency, or part of the standalone fuzz crate.
+# Runtime Cargo dependencies always need a human merge.
+#
+# Auto-merge only merges once every required status check on `main` has
+# passed (and any required review is given), so a failing CI run can never be
+# merged by this workflow. It runs on `pull_request` (not
+# `pull_request_target`) and never checks out or executes pull request code.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    name: Enable auto-merge for low-risk updates
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository_owner == 'JamilleJung'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide
+        id: decide
+        env:
+          DEPS: ${{ steps.meta.outputs.updated-dependencies-json }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          DIRECTORY: ${{ steps.meta.outputs.directory }}
+        run: |
+          printf '%s\n' "$DEPS" | jq .
+          # Every dependency must be a patch/minor update AND be CI or dev
+          # tooling; an empty or unparsable list never qualifies.
+          eligible="$(printf '%s\n' "$DEPS" | jq -r \
+            --arg eco "$ECOSYSTEM" --arg dir "$DIRECTORY" '
+              (type == "array" and length > 0) and all(.[];
+                (.updateType == "version-update:semver-patch"
+                  or .updateType == "version-update:semver-minor")
+                and ($eco == "github_actions"
+                  or .dependencyType == "direct:development"
+                  or ($eco == "cargo" and ($dir == "/fuzz" or (.directory // "") == "/fuzz"))))
+            ' 2>/dev/null || echo false)"
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+          echo "Auto-merge eligible: $eligible (ecosystem=$ECOSYSTEM directory=$DIRECTORY)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enable auto-merge (waits for required checks)
+        if: steps.decide.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

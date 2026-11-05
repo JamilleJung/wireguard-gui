@@ -1,25 +1,50 @@
 name: CI
 
+# Every job name below is a required status check on `main` (see
+# docs/REPO_SETTINGS.md); renaming a job means updating the ruleset too.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 # CI never needs to write; keep the token read-only regardless of repo default.
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Fallback when Cargo.toml has no `rust-version`; the lowest toolchain the
+  # current lockfile builds with (slint 1.18 needs 1.92).
+  MSRV_FALLBACK: "1.92"
 
 jobs:
-  build:
-    name: Build, fmt & clippy
+  fmt:
+    name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
 
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -27,38 +52,57 @@ jobs:
             build-essential pkg-config \
             libfontconfig-dev libxkbcommon-dev \
             libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
-      - name: rustfmt
-        run: cargo fmt --all -- --check
-
-      - name: clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: cargo test
-        run: cargo test --locked
-
-      - name: Firewall integration in isolated network namespace
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nftables iptables
-          bash tests/firewall-namespace.sh
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - name: Fixtures match scripts/gen-fixtures.sh (fake, deterministic)
+        run: bash scripts/gen-fixtures.sh --check
+      - name: cargo test (unit, property and fixture tests)
+        run: cargo test --locked
+      - name: Property tests with more cases
+        env:
+          PROP_CASES: "20000"
+        run: cargo test --locked --release --test 'prop_*'
 
+  build:
+    name: Release build, CLI & GUI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
       - name: Build (release)
         run: cargo build --release --locked
-
       - name: Smoke test (binary starts & parses args)
         run: |
           ./target/release/wireguard-gui --version | grep -q '^wireguard-gui '
           ./target/release/wireguard-gui --help >/dev/null
-
+      - name: Helper argument validation
+        run: bash tests/helper-validation.sh target/release/wg-helper
+      - name: CLI contract (release regression)
+        run: bash tests/release-regression.sh target/release/wireguard-gui target/release/wg-helper
       # Launch the real GUI headless so a crash during window/tray/a11y init is
       # caught here instead of by users. (Regression guard: the zbus "no reactor
       # running, must be a Tokio runtime" panic shipped undetected because the
@@ -88,22 +132,80 @@ jobs:
             cat /tmp/gui-launch.log; exit 1
           fi
 
-      - name: Shell lint the helper & installer
+  shell:
+    name: Shell lint & installer sanity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install shellcheck
         run: |
-          sudo apt-get install -y shellcheck
-          bash -n install.sh
-          bash -n tests/helper-validation.sh
-          bash -n tests/installer-sanity.sh
-          bash -n tests/firewall-namespace.sh
-          shellcheck -S warning install.sh tests/helper-validation.sh tests/installer-sanity.sh tests/firewall-namespace.sh
-          bash tests/helper-validation.sh target/release/wg-helper
-          bash tests/installer-sanity.sh
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Shell syntax and lint (installer, tests, scripts)
+        run: |
+          shopt -s nullglob
+          scripts=(install.sh tests/*.sh scripts/*.sh packaging/*.sh packaging/debian/postinst)
+          for f in "${scripts[@]}"; do bash -n "$f"; done
+          shellcheck -S warning "${scripts[@]}"
+      - name: Installer sanity
+        run: bash tests/installer-sanity.sh
+
+  namespace:
+    name: Firewall namespace test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - name: Install firewall tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables iptables
+      - name: Firewall integration in isolated network namespace
+        run: bash tests/firewall-namespace.sh
+
+  e2e:
+    name: Kill switch e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - name: Build the helper
+        run: cargo build --release --locked --bin wg-helper
+      - name: Install WireGuard and firewall tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wireguard-tools nftables iptables iproute2 iputils-ping
+          sudo modprobe wireguard
+      - name: WireGuard + kill switch + live config update (network namespaces)
+        run: |
+          test -f tests/killswitch-e2e.sh \
+            || { echo "::error::tests/killswitch-e2e.sh is missing"; exit 1; }
+          sudo bash tests/killswitch-e2e.sh target/release/wg-helper
 
   audit:
     name: cargo audit (RUSTSEC advisories)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -114,3 +216,101 @@ jobs:
         # The same narrow, documented exceptions apply to tag releases.
         # See .cargo/audit.toml; real vulnerabilities and new notices fail.
         run: cargo audit --deny warnings
+
+  version:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cargo.toml, Cargo.lock, CHANGELOG and packaging agree
+        run: bash scripts/check-version.sh
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Determine the minimum supported Rust version
+        id: msrv
+        run: |
+          v="$(awk '/^\[/{p=($0=="[package]");next} p&&$1=="rust-version"{gsub(/"/,"",$3);print $3;exit}' Cargo.toml)"
+          echo "version=${v:-$MSRV_FALLBACK}" >> "$GITHUB_OUTPUT"
+          echo "MSRV: ${v:-$MSRV_FALLBACK} (${v:+Cargo.toml rust-version}${v:-workflow fallback})" >> "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - name: Build and test with the MSRV toolchain
+        run: |
+          cargo check --locked --all-targets
+          cargo test --locked
+
+  fuzz-check:
+    name: Fuzz crate check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+      # The targets pull src/ modules in by path; this keeps them compiling on
+      # every change. Running them needs nightly (see .github/workflows/fuzz.yml).
+      - name: Check fuzz targets (stable)
+        working-directory: fuzz
+        run: cargo clippy --locked --bins -- -D warnings
+
+  coverage:
+    # Informational: not a required check.
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: coverage
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-llvm-cov
+      - name: Measure test coverage
+        run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
+      - name: Coverage summary
+        run: |
+          {
+            echo "## Test coverage"
+            echo
+            echo '```text'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,53 @@
+name: Contributor onboarding
+
+# A fresh clone must build, test and lint with exactly the commands that
+# CONTRIBUTING.md documents (tests/dev-onboarding.sh reads them from the
+# "Required checks" block). Runs when the instructions or the build setup
+# change, weekly, and on demand.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - CONTRIBUTING.md
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - rust-toolchain*
+      - .cargo/**
+      - scripts/**
+      - tests/dev-*.sh
+      - tests/fixtures/**
+      - .github/workflows/onboarding.yml
+  schedule:
+    - cron: "11 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onboarding-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  onboarding:
+    name: Contributor onboarding
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt, clippy
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config shellcheck \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - name: Fresh clone runs every documented command
+        run: bash tests/dev-onboarding.sh

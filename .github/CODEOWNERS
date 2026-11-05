@@ -1,0 +1,34 @@
+# Security- and networking-critical paths. A pull request that touches any of
+# them requests review from the code owner, and the "main: security review"
+# ruleset (scripts/apply-repo-settings.sh) requires that review before merge.
+# Paths without an owner here need no code-owner review.
+#
+# Keep this list in sync with docs/REPO_SETTINGS.md ("Security/Networking
+# review policy").
+
+# Privileged helper: fixed verbs, root writes, firewall / kill switch rules
+/src/bin/                       @JamilleJung
+# Helper client, kill switch state and health reporting in the frontend
+/src/backend.rs                 @JamilleJung
+/src/backend/                   @JamilleJung
+# Config validation, name rules, secret redaction, safe file writes
+/src/config.rs                  @JamilleJung
+/src/validation.rs              @JamilleJung
+/src/secrets.rs                 @JamilleJung
+/src/safe_file.rs               @JamilleJung
+# Signed self-update (download, signature and checksum verification)
+/src/update.rs                  @JamilleJung
+# Installer and privilege grants
+/install.sh                     @JamilleJung
+/packaging/*.rules              @JamilleJung
+/packaging/**/*.rules           @JamilleJung
+# Release signing key, CI/CD, repository policy
+/minisign.pub                   @JamilleJung
+/.github/                       @JamilleJung
+/scripts/                       @JamilleJung
+/docs/REPO_SETTINGS.md          @JamilleJung
+# Security-relevant tests (must not be weakened silently)
+/tests/firewall-namespace.sh    @JamilleJung
+/tests/killswitch-e2e.sh        @JamilleJung
+/tests/helper-validation.sh     @JamilleJung
+/tests/release-regression.sh    @JamilleJung

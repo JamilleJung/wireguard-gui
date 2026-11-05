@@ -1,18 +1,96 @@
+# Dependency updates grouped by risk. Every Dependabot pull request must pass
+# the required CI checks (and the "Latest compatible dependencies" job) before
+# it can merge; see docs/REPO_SETTINGS.md and .github/workflows/dependabot-automerge.yml.
+#
+#   github-actions        all action bumps in one weekly PR (SHA pins + comments)
+#   slint                 slint and i-slint-* crates together (lockstep versions)
+#   cargo-patch           every semver-patch update together
+#   cargo-minor           semver-minor updates of low-risk crates together
+#   (ungrouped)           each MAJOR update, and every minor update of the
+#                         desktop UI, archive/compression, image/QR and
+#                         system-interface crates, gets its own PR so a
+#                         breaking change can be reviewed and reverted alone
+#   fuzz                  the standalone fuzz crate, monthly
 version: 2
 updates:
-  # Surface vulnerable / outdated Rust dependencies (Cargo.lock).
-  - package-ecosystem: cargo
-    directory: "/"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: deps
-  # Keep the SHA-pinned GitHub Actions current (security patches).
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: ci
+    labels: [dependencies, ci]
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    # Let fresh releases settle (yanks, follow-up fixes) before proposing them.
+    # Security updates are not delayed by the cooldown.
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps
+    labels: [dependencies]
+    groups:
+      # Slint crates (including the =pinned i-slint-backend-testing
+      # dev-dependency) must move in lockstep, so they always share one PR.
+      slint:
+        applies-to: version-updates
+        patterns: ["slint*", "i-slint-*"]
+      cargo-patch:
+        applies-to: version-updates
+        update-types: [patch]
+        patterns: ["*"]
+      cargo-minor:
+        applies-to: version-updates
+        update-types: [minor]
+        patterns: ["*"]
+        exclude-patterns:
+          # Desktop UI toolkit, file dialogs, tray and clipboard
+          - "slint*"
+          - "i-slint-*"
+          - "rfd"
+          - "ksni"
+          - "arboard"
+          - "zbus*"
+          # Archive / compression (backup import/export)
+          - "zip"
+          - "flate2"
+          - "miniz_oxide"
+          # Image decoding and QR (untrusted input)
+          - "image"
+          - "png"
+          - "zune-*"
+          - "jpeg-decoder"
+          - "qrcode"
+          - "rqrr"
+          # System interface and argument splitting
+          - "libc"
+          - "shell-words"
+
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: fuzz
+    labels: [dependencies]
+    groups:
+      fuzz:
+        patterns: ["*"]

@@ -1,0 +1,110 @@
+name: Dependency compatibility
+
+# Forward-compatibility of the dependency graph:
+#   * build + test with every dependency at its newest semver-compatible
+#     version (what `cargo update` would pick today)
+#   * build with the MSRV toolchain against that newest graph, so a
+#     dependency that silently raised its MSRV is caught before it is locked
+#   * report duplicate crate versions (`cargo tree -d`)
+# Runs on Dependabot pull requests (as a required check that is skipped for
+# other pull requests), weekly, and on demand.
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deps-compat-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MSRV_FALLBACK: "1.92"
+
+jobs:
+  latest:
+    name: Latest compatible dependencies
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Determine MSRV
+        id: msrv
+        run: |
+          v="$(awk '/^\[/{p=($0=="[package]");next} p&&$1=="rust-version"{gsub(/"/,"",$3);print $3;exit}' Cargo.toml)"
+          echo "version=${v:-$MSRV_FALLBACK}" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libfontconfig-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+      - name: Update to the newest semver-compatible versions
+        run: |
+          cargo update --verbose 2>&1 | tee update.log
+          {
+            echo "## cargo update (newest compatible versions)"
+            echo
+            echo '```text'
+            grep -E '^\s*(Updating|Adding|Removing|Downgrading)' update.log || echo "Already up to date."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Build, lint and test against the updated graph
+        run: |
+          cargo build --all-targets
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+      - name: MSRV against the updated graph
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+        run: |
+          if cargo "+$MSRV" check --all-targets 2>msrv.log; then
+            echo "MSRV $MSRV still builds the newest compatible graph." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat msrv.log
+            {
+              echo "### MSRV $MSRV no longer builds the newest compatible graph"
+              echo
+              echo '```text'
+              grep -E 'requires rustc|rust-version|error' msrv.log | head -n 30
+              echo '```'
+              echo "Raise \`rust-version\` (and MSRV_FALLBACK) or pin the offending crate."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Duplicate dependency report
+        if: always()
+        run: |
+          {
+            echo "## Duplicate crate versions (cargo tree -d, linux targets)"
+            echo
+            echo '```text'
+            cargo tree -d -e normal,build --target x86_64-unknown-linux-gnu || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: updated-lockfile
+          path: |
+            Cargo.lock
+            update.log
+          if-no-files-found: ignore
+          retention-days: 14
