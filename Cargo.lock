@@ -5547,6 +5547,7 @@ name = "wireguard-gui"
 version = "1.9.3"
 dependencies = [
  "arboard",
+ "i-slint-backend-testing",
  "image",
  "ksni",
  "libc",

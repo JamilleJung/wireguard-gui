@@ -31,4 +31,4 @@ PY
 )"
 test -x "$helper_test"
 sudo unshare --net -- "$helper_test" --ignored --exact \
-    tests::firewall_batches_in_isolated_network_namespace --nocapture
+    firewall::tests::firewall_batches_in_isolated_network_namespace --nocapture
