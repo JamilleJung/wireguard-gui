@@ -1,6 +1,6 @@
 # Maintainer: jamillejung <izeystudio@gmail.com>
 pkgname=wireguard-gui
-pkgver=1.9.3
+pkgver=1.10.0
 pkgrel=1
 pkgdesc="A native Linux GUI for managing plain WireGuard tunnels with wg and wg-quick"
 arch=('x86_64' 'aarch64')
@@ -13,16 +13,23 @@ license=('MIT')
 # also needs administrator-managed membership in the wireguard group.
 depends=('glibc' 'libgcc' 'fontconfig' 'libxkbcommon' 'libxkbcommon-x11' 'wayland'
          'libglvnd' 'libx11' 'libxcursor' 'libxi' 'libxrender' 'libxcb' 'dbus'
-         'wireguard-tools' 'iproute2' 'polkit')
+         'wireguard-tools' 'iproute2' 'polkit'
+         'hicolor-icon-theme')
 makedepends=('cargo')
+# The helper's process tests spawn python3; the UI tests render text and need
+# a font.
+checkdepends=('python' 'ttf-dejavu')
 optdepends=('nftables: kill switch (preferred over the iptables fallback)'
             'openresolv: resolvconf for configs with a DNS line'
             'sudo: sudoers-based helper authorization instead of polkit'
             'xdg-desktop-portal: native file dialogs for import and backup'
             'minisign: verify release signatures')
 install=wireguard-gui.install
+# Cargo's release profile already strips the binaries; a debug package would
+# hold only dangling build-id links.
+options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('49cedd9ac35d7b5cf65519943f8a0ea8ed18eec92583a1675f955600bb9bf82e')
+sha256sums=('SKIP')
 
 prepare() {
     cd "$pkgname-$pkgver"

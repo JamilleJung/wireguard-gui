@@ -193,17 +193,31 @@ pub fn check() -> Result<Option<UpdateInfo>, String> {
     }
 }
 
-/// Best CPU architecture token for the tarball name, matching the release
-/// workflow's asset suffixes.
+/// CPU token of the release tarball for the running build.
+///
+/// The compiled architecture decides, not the kernel's `uname -m`: a 32-bit
+/// build on a 64-bit kernel (i686 on x86_64, armhf on aarch64) runs in a
+/// 32-bit userland and must keep receiving the 32-bit tarball.
 fn arch_token() -> Result<&'static str, String> {
-    architecture_token(std::env::consts::ARCH)
+    let arch = std::env::consts::ARCH;
+    // The only 32-bit ARM release is ARMv7 hard-float (armhf).
+    if arch == "arm" && !cfg!(target_abi = "eabihf") {
+        return Err("no release build for soft-float 32-bit ARM".into());
+    }
+    release_arch(arch).ok_or_else(|| format!("no release build for this architecture ({arch})"))
 }
 
-fn architecture_token(arch: &str) -> Result<&'static str, String> {
-    match arch {
-        "x86_64" => Ok("x86_64"),
-        "aarch64" => Ok("aarch64"),
-        _ => Err(format!("no release build for this architecture ({arch})")),
+/// Release asset token (`wireguard-gui-<version>-<token>-linux.tar.gz`) for a
+/// `uname -m` machine name or a Rust `std::env::consts::ARCH` value. Keep in
+/// sync with `release_arch` in install.sh.
+fn release_arch(machine: &str) -> Option<&'static str> {
+    match machine {
+        "x86_64" | "amd64" => Some("x86_64"),
+        "x86" | "i386" | "i486" | "i586" | "i686" => Some("i686"),
+        "aarch64" | "arm64" => Some("aarch64"),
+        // armv8l: a 32-bit userland on an ARMv8 CPU.
+        "arm" | "armv7l" | "armv8l" => Some("armv7"),
+        _ => None,
     }
 }
 
@@ -939,12 +953,46 @@ mod tests {
     }
 
     #[test]
+    fn machine_names_map_to_release_assets() {
+        for (machine, token) in [
+            ("x86_64", "x86_64"),
+            ("amd64", "x86_64"),
+            ("i386", "i686"),
+            ("i486", "i686"),
+            ("i586", "i686"),
+            ("i686", "i686"),
+            ("aarch64", "aarch64"),
+            ("arm64", "aarch64"),
+            ("armv7l", "armv7"),
+            ("armv8l", "armv7"),
+            // std::env::consts::ARCH spellings of the 32-bit builds.
+            ("x86", "i686"),
+            ("arm", "armv7"),
+        ] {
+            assert_eq!(super::release_arch(machine), Some(token), "{machine}");
+        }
+    }
+
+    #[test]
     fn unsupported_gui_cpu_has_no_mismatched_update() {
-        assert_eq!(super::architecture_token("x86_64").unwrap(), "x86_64");
-        assert_eq!(super::architecture_token("aarch64").unwrap(), "aarch64");
-        assert!(super::architecture_token("arm").is_err());
-        assert!(super::architecture_token("x86").is_err());
-        assert!(super::architecture_token("riscv64").is_err());
+        for machine in [
+            "armv6l", "armv5tel", "riscv64", "ppc64le", "s390x", "", "X86_64",
+        ] {
+            assert_eq!(super::release_arch(machine), None, "{machine:?}");
+        }
+    }
+
+    #[test]
+    fn running_build_selects_its_own_release_asset() {
+        let token = super::arch_token().unwrap();
+        let expected = match std::env::consts::ARCH {
+            "x86_64" => "x86_64",
+            "x86" => "i686",
+            "aarch64" => "aarch64",
+            "arm" => "armv7",
+            other => panic!("no release build for {other}"),
+        };
+        assert_eq!(token, expected);
     }
 
     #[test]

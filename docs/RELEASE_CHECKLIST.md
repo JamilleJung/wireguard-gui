@@ -49,6 +49,9 @@ iptables fallback (or the container recipe in CONTRIBUTING.md):
 
 ## 3. Tag and publish
 
+- [ ] Dry run first: `gh workflow run release.yml --ref <branch> -f version=X.Y.Z`
+      and wait until every job is green. Release tags cannot be moved or
+      re-pushed, so a failure after tagging costs a version number.
 - [ ] `git tag -s vX.Y.Z -m "vX.Y.Z"` on the verified commit, then
       `git push origin vX.Y.Z`.
 - [ ] The Release workflow passes every gate: version, lint, tests, audit,

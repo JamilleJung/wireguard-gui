@@ -421,6 +421,67 @@ prepare_prebuilt() {
     WG_USE_PREBUILT=1
 }
 
+# Release tarball CPU token (wireguard-gui-<version>-<token>-linux.tar.gz) for
+# a `uname -m` machine name. Keep in sync with release_arch() in src/update.rs.
+release_arch() {
+    case "$1" in
+        x86_64|amd64) echo x86_64 ;;
+        i386|i486|i586|i686) echo i686 ;;
+        aarch64|arm64) echo aarch64 ;;
+        armv7l|armv8l) echo armv7 ;; # armv8l: 32-bit userland on an ARMv8 CPU
+        *) return 1 ;;
+    esac
+}
+
+# Token for this system. A 32-bit userland on a 64-bit kernel (uname -m still
+# says x86_64/aarch64) needs the 32-bit tarball.
+host_release_arch() {
+    local arch
+    arch="$(release_arch "$(uname -m)")" || return 1
+    if [ "$(getconf LONG_BIT 2>/dev/null)" = 32 ]; then
+        case "$arch" in x86_64) arch=i686 ;; aarch64) arch=armv7 ;; esac
+    fi
+    echo "$arch"
+}
+
+# Token of an ELF binary from its header: EI_CLASS (byte 4) and the
+# little-endian e_machine (bytes 18-19). UPX-packed binaries keep both.
+elf_release_arch() {
+    local hdr
+    hdr="$(od -An -v -t x1 -N 20 "$1" 2>/dev/null | tr -d ' \n')" || return 1
+    case "${hdr:0:10}:${hdr:36:4}" in
+        7f454c4602:3e00) echo x86_64 ;;
+        7f454c4601:0300) echo i686 ;;
+        7f454c4602:b700) echo aarch64 ;;
+        7f454c4601:2800) echo armv7 ;;
+        7f454c46*) echo "unsupported" ;;
+        *) return 1 ;; # not ELF (e.g. a script); the helper run check covers it
+    esac
+}
+
+# Refuse a prebuilt bundle for another CPU before anything is installed, and
+# name the tarball that matches this system.
+check_prebuilt_arch() {
+    prebuilt_ready || return 0
+    command -v od >/dev/null 2>&1 || return 0
+    local dir="${WG_PREBUILT_DIR:-$HERE/target/release}" host bin bundle warned=""
+    host="$(host_release_arch)" || host=""
+    for bin in wireguard-gui wg-helper; do
+        bundle="$(elf_release_arch "$dir/$bin")" || continue
+        [ "$bundle" != "$host" ] || continue
+        [ "$bundle" != unsupported ] \
+            || die "$bin in this bundle is not a Linux x86_64, i686, aarch64 or armv7 binary."
+        case "$host:$bundle" in
+            x86_64:i686|aarch64:armv7)
+                [ -n "$warned" ] || warn "This bundle is a 32-bit $bundle build on a 64-bit $host system: it needs the 32-bit ($bundle) system libraries. The $host tarball is usually the right one."
+                warned=1
+                continue ;;
+        esac
+        [ -n "$host" ] || die "No release build exists for this CPU ($(uname -m)); build from source instead."
+        die "$bin in this bundle is built for $bundle, but this system needs the $host build: use wireguard-gui-<version>-$host-linux.tar.gz."
+    done
+}
+
 # Ensure a Rust toolchain and build the release binary AS THE INVOKING USER (via
 # as_user - never as root, so build scripts/proc-macros don't run with privilege
 # and the toolchain + artifacts land in that user's home, not /root).
@@ -812,7 +873,16 @@ txn_rollback() {
         as_root semanage fcontext -d "${HELPER//./\\.}" >/dev/null 2>&1 || true
     fi
     for dir in $CREATED_DIRS; do dirs="$dir $dirs"; done
-    for dir in $dirs; do as_root rmdir "$dir" 2>/dev/null; done
+    for dir in $dirs; do
+        # update-desktop-database leaves a cache in an applications directory
+        # this run created; it would keep the directory (and parents) behind.
+        case "$dir" in
+            */share/applications)
+                [ "$(as_root ls -A "$dir" 2>/dev/null)" != mimeinfo.cache ] \
+                    || as_root rm -f "$dir/mimeinfo.cache" ;;
+        esac
+        as_root rmdir "$dir" 2>/dev/null
+    done
     if selinux_enabled && command -v restorecon >/dev/null 2>&1; then
         for path in "${TXN_PATH[@]}"; do
             as_root test -e "$path" && as_root restorecon -F "$path" >/dev/null 2>&1
@@ -900,7 +970,9 @@ apply_selinux_labels() {
                 warn "Labelled $HELPER bin_t with chcon. A full relabel resets this; install"
                 warn "semanage (policycoreutils-python-utils) and re-run to make it persistent."
             else
+                # Not "restored": the exec check below decides whether it runs.
                 warn "The helper's SELinux context is '$ctx' (expected bin_t)."
+                return 0
             fi ;;
     esac
     ok "SELinux contexts restored."
@@ -911,11 +983,21 @@ apply_selinux_labels() {
 # never ran; the shell's own message tells a denial (SELinux, a noexec mount)
 # from a missing loader (wrong CPU or C library), since shells differ in codes.
 verify_helper_executes() {
-    local rc=0 out
+    local rc=0 out mnt
     out="$(as_root sh -c '"$1" </dev/null 2>&1 >/dev/null' wg-helper-probe "$HELPER")" || rc=$?
     [ "$rc" -ge 126 ] || { ok "Helper runs as root."; return 0; }
     case "$out" in
         *"ermission denied"*)
+            # A noexec mount also denies with EACCES; name it before blaming
+            # SELinux. The innermost mount holding the helper wins.
+            mnt="$(awk -v path="$HELPER" '
+                path == $2 || index(path, ($2 == "/" ? "/" : $2 "/")) == 1 {
+                    if (length($2) >= best) { best = length($2); top = $2; opts = "," $4 "," }
+                }
+                END { if (opts ~ /,noexec,/) print top }' /proc/mounts 2>/dev/null)" || mnt=""
+            if [ -n "$mnt" ]; then
+                die "Executing $HELPER was denied: $mnt is mounted noexec. Install into a PREFIX on a filesystem that allows execution (or remount $mnt with exec), then re-run. The previous installation is restored."
+            fi
             if selinux_enabled; then
                 die "Executing $HELPER was denied (SELinux). Check 'sudo ausearch -m avc -ts recent' and 'ls -Z $HELPER'; fix the label with 'sudo semanage fcontext -a -t bin_t ${HELPER//./\\.} && sudo restorecon -v $HELPER', then re-run. The previous installation is restored."
             fi
@@ -1137,6 +1219,7 @@ apply_previous_choices
 check_duplicate_install
 validate_install_destinations
 prepare_prebuilt
+check_prebuilt_arch
 install_pkgs
 ensure_sudo
 verify_build_deps

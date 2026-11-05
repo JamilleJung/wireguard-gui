@@ -17,8 +17,17 @@ cargo-fuzz = true
 [workspace]
 members = ["."]
 
+[features]
+# Also fuzz rqrr grid detection (known upstream assertion; see qr_select.rs).
+detect = []
+
 [dependencies]
 libfuzzer-sys = "0.4"
+# The ZIP/QR import parsers (src/import_parse.rs) need the same crates and
+# features as the app; fuzz/Cargo.lock pins the versions in ../Cargo.lock.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rqrr = "0.11"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [[bin]]
 name = "config_validate"
@@ -44,6 +53,20 @@ bench = false
 [[bin]]
 name = "import_preflight"
 path = "fuzz_targets/import_preflight.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "backup_zip"
+path = "fuzz_targets/backup_zip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qr_select"
+path = "fuzz_targets/qr_select.rs"
 test = false
 doc = false
 bench = false

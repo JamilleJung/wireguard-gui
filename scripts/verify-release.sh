@@ -27,8 +27,10 @@
 #     no links, no path tricks, and (strict) root ownership
 #   * each binary is UPX-packed, has the right CPU architecture, is static (TUI:
 #     no ELF interpreter, no needed libraries) or uses the expected glibc
-#     loader without RPATH/RUNPATH (GUI), and its embedded cargo-auditable
-#     dependency data names this package at the tag's version
+#     loader without RPATH/RUNPATH and needs no glibc symbol version newer
+#     than the documented baseline (GUI: GLIBC_BASELINE below), and its
+#     embedded cargo-auditable dependency data names this package at the
+#     tag's version
 #   * the .deb has the expected name/version/architecture and files
 #
 # Exit status: 0 verified, 1 a check failed, 2 usage or missing tools.
@@ -44,7 +46,7 @@ strict=0
 run_bins=0
 dir=""
 
-usage() { sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -113,8 +115,12 @@ HERE = os.environ["VR_HERE"]
 APP = {"wireguard-tui": "wg-tui", "wireguard-gui": "wireguard-gui"}[PROJECT]
 TARBALL_ARCHES = {
     "wireguard-tui": ["x86_64", "i686", "aarch64", "armv7"],
-    "wireguard-gui": ["x86_64", "aarch64"],
+    "wireguard-gui": ["x86_64", "i686", "aarch64", "armv7"],
 }[PROJECT]
+# Oldest glibc the dynamically linked GUI builds support: the release builds
+# run in ubuntu:22.04 (glibc 2.35). A binary that needs a newer GLIBC_x.y
+# symbol version (the maximum `objdump -T` reports) fails verification.
+GLIBC_BASELINE = (2, 35)
 STATIC = PROJECT == "wireguard-tui"
 DEB = f"{PROJECT}_{VERSION}-1_amd64.deb"
 APPIMAGE = f"{PROJECT}-{VERSION}-x86_64.AppImage"
@@ -128,9 +134,11 @@ ARCH = {
     "armv7": (1, 40, "/lib/ld-linux-armhf.so.3"),
 }
 LIBC_FAMILY = {"libc.so.6", "libm.so.6", "libgcc_s.so.1", "libpthread.so.0", "libdl.so.2",
-               "librt.so.1", "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"}
+               "librt.so.1", "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
+               "ld-linux.so.2", "ld-linux-armhf.so.3"}
 HOST_ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64",
-             "i686": "i686", "armv7l": "armv7"}.get(os.uname().machine)
+             "i386": "i686", "i486": "i686", "i586": "i686", "i686": "i686",
+             "armv7l": "armv7", "armv8l": "armv7"}.get(os.uname().machine)
 
 failures = []
 warnings = []
@@ -295,6 +303,22 @@ def elf_info(data):
 
     needed = [dynstr(v) for t, v in dyn if t == 1]
     rpath = [dynstr(v) for t, v in dyn if t in (15, 29)]
+    # Symbol versions this binary requires (DT_VERNEED / DT_VERNEEDNUM): the
+    # same GLIBC_x.y set `objdump -T` prints for undefined symbols.
+    verneed = []
+    vn_addr = next((v for t, v in dyn if t == 0x6ffffffe), None)
+    vn_num = next((v for t, v in dyn if t == 0x6fffffff), 0)
+    vn = vaddr_to_off(vn_addr) if vn_addr is not None else None
+    for _ in range(vn_num if vn is not None else 0):
+        _ver, cnt, _file, aux, nxt = struct.unpack_from(e + "HHIII", data, vn)
+        a = vn + aux
+        for _ in range(cnt):
+            _hash, _flags, _other, name, anext = struct.unpack_from(e + "IHHII", data, a)
+            verneed.append(dynstr(name))
+            a += anext
+        if not nxt:
+            break
+        vn += nxt
     sections = {}
     if shoff and shnum and shstrndx < shnum:
         hdr = []
@@ -310,7 +334,14 @@ def elf_info(data):
             end = data.index(b"\0", str_off + name)
             sections[data[str_off + name:end].decode(errors="replace")] = data[off:off + size]
     return {"class": cls, "machine": machine, "interp": interp, "needed": needed,
-            "rpath": rpath, "sections": sections}
+            "rpath": rpath, "verneed": verneed, "sections": sections}
+
+
+def glibc_required(verneed):
+    """Highest GLIBC_x.y[.z] symbol version required, as a tuple, or None."""
+    versions = [tuple(int(n) for n in m.groups() if n is not None)
+                for m in (re.fullmatch(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?", v) for v in verneed) if m]
+    return max(versions) if versions else None
 
 
 def check_binary(label, raw, arch):
@@ -357,6 +388,14 @@ def check_binary(label, raw, arch):
                 fail(f"{label}: interpreter {info['interp']!r}, expected {loader}")
             if info["rpath"]:
                 fail(f"{label}: has RPATH/RUNPATH {info['rpath']}")
+            need = glibc_required(info["verneed"])
+            base = ".".join(map(str, GLIBC_BASELINE))
+            if need is None:
+                fail(f"{label}: no GLIBC symbol versions found; cannot check the glibc {base} baseline")
+            elif need[:2] > GLIBC_BASELINE:
+                fail(f"{label}: needs glibc {'.'.join(map(str, need))}, newer than the {base} baseline")
+            else:
+                ok(f"{label}: needs glibc >= {'.'.join(map(str, need))} (baseline {base})")
             if label.endswith("wg-helper"):
                 # The privileged helper may only depend on the C runtime.
                 extra = [lib for lib in info["needed"] if lib not in LIBC_FAMILY]
@@ -507,6 +546,20 @@ def check_deb():
         ok(f"{DEB}: control fields {want}")
     else:
         fail(f"{DEB}: control fields {got} != {want}")
+    if not STATIC:
+        # The packed binaries hide their libraries from dpkg-shlibdeps, so the
+        # workflow adds the glibc dependency explicitly; it must be present
+        # and no newer than the baseline.
+        depends = subprocess.run(["dpkg-deb", "-f", path(DEB), "Depends"],
+                                 capture_output=True, text=True).stdout
+        libc = re.search(r"(?:^|,\s*)libc6 \(>= (\d+)\.(\d+)", depends)
+        base = ".".join(map(str, GLIBC_BASELINE))
+        if libc is None:
+            fail(f"{DEB}: Depends has no versioned libc6 dependency")
+        elif (int(libc.group(1)), int(libc.group(2))) > GLIBC_BASELINE:
+            fail(f"{DEB}: depends on libc6 >= {libc.group(1)}.{libc.group(2)}, newer than the {base} baseline")
+        else:
+            ok(f"{DEB}: depends on libc6 >= {libc.group(1)}.{libc.group(2)} (baseline {base})")
     listing = subprocess.run(["dpkg-deb", "-c", path(DEB)], capture_output=True, text=True).stdout
     entries = {}
     for line in listing.splitlines():

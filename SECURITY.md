@@ -1,14 +1,41 @@
-# Security policy
+# 🔐 Security policy
 
-## Reporting a vulnerability
+`wireguard-gui` manages tunnels under `/etc/wireguard`, which needs root. The
+design goal is simple to say and fussy to do: keep the part that runs as root as
+small and auditable as possible, and keep everything else unprivileged. This
+page says exactly what that buys you, and what it doesn't.
 
-Report exploitable issues privately through
+## ⚡ TL;DR
+
+| Question | Short answer |
+|---|---|
+| Found a vulnerability? | Report it **privately**: [GitHub private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new) or **izeystudio@gmail.com**. Not a public issue. |
+| Which versions get fixes? | Only the latest release (**1.9.3**) and `main`. |
+| Does the GUI run as root? | No. It runs as you; only the small `wg-helper` runs as root, one fixed verb per run. |
+| What can the helper be asked to do? | A fixed set of verbs on validated tunnel names: no paths, no options, no shell. |
+| Who can use it without a password? | Whoever the sudoers grant or the polkit rule (`wireguard` group + active local session) allows. They can read **every** tunnel key and manage **every** tunnel; this is not isolation between users. |
+| Can a config smuggle in root commands? | Not through the app: saves, imports, renames and restores refuse `PreUp`/`PostUp`/`PreDown`/`PostDown`. A hook-bearing file an administrator put in `/etc/wireguard` by hand still runs its hooks when activated; that stays the administrator's responsibility. |
+| Where are secrets exposed? | `/etc/wireguard`, user backups and exports (unencrypted, `0600`), Show QR, Running cfg, config copies and the editor. Clipboard history and screenshots can keep them. |
+| Is the kill switch a leak guarantee? | No. It is temporary host-output policy for one tunnel, gone after a reboot, and not server forwarding/NAT. |
+| Are updates verified? | Yes: minisign signature against the compiled-in key, then one exact checksum, then the verified installer. Nothing installs if a check fails. |
+| What can't it protect against? | Root, another process running as you, a compromised kernel or WireGuard toolchain, your editor, display, terminal, screen capture or clipboard history. |
+
+## 📧 Reporting a vulnerability
+
+Please report exploitable issues **privately**, through
 [GitHub private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new)
-or **izeystudio@gmail.com**. Include the version/commit, distro, reproduction
-steps and impact; omit real private keys and production configs. Only the
-latest release (**1.9.3**) and `main` receive fixes.
+(Security → Report a vulnerability) or by email to **izeystudio@gmail.com**.
 
-## Trust and scope
+Include the version or commit, your distro, reproduction steps and the impact.
+Leave out real private keys and production configs; the
+[fake fixtures](tests/fixtures/configs/) are there for exactly this.
+Coordinated disclosure is appreciated, and you'll be kept in the loop on the
+fix.
+
+Only the latest release (**1.9.3**) and `main` receive fixes. Running something
+older? Please upgrade before reporting.
+
+## 🎯 Trust and scope
 
 The normal frontend runs unprivileged; a Rust helper manages files and network
 state with root privilege. This is a constrained operations boundary, not
@@ -23,7 +50,10 @@ capture or clipboard history. Existing root-managed files and system tools must
 remain trustworthy. Validation and audits reduce specific risks; they do not
 prove every dependency, config or firewall environment safe.
 
-## Authorization and helper selection
+The architecture behind this boundary, with diagrams, is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#privilege-boundary).
+
+## 🔑 Authorization and helper selection
 
 The app uses direct execution when already root, otherwise probes scoped
 `sudo -n`, then uses pkexec. The startup sudo probe is bounded. Background
@@ -65,6 +95,9 @@ Installer/setup/update paths can also run approved package-manager or installer
 commands with administrator privilege; the runtime helper is not the only
 privileged process involved in installing or repairing the system.
 
+<details>
+<summary><b>🧾 Installer prefixes, grants and root installs</b></summary>
+
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
 path containing only letters, digits, `/`, `_`, `.` and `-`, with no empty,
 `.` or `..` components or trailing slash. Existing directory ancestors must be
@@ -95,7 +128,9 @@ A direct root install without an invoking normal user requires `--allow-root`
 (or `WG_ALLOW_ROOT=1`). That override can permit source build scripts as root;
 prefer a normal-user build or a verified complete prebuilt bundle.
 
-## Root-managed file and command protections
+</details>
+
+## 🧱 Root-managed file and command protections
 
 The helper accepts fixed verbs for listing/status, config read/save/rename/delete,
 activation, boot settings, sync/save-live, log and kill-switch operations.
@@ -110,6 +145,9 @@ can still be read. Managed writes use `0600`, exclusive temporary files, file
 sync, atomic publication and directory sync. Helper backups use exclusive
 single-link names with timestamp/PID uniqueness and never clobber an earlier
 backup. Failed staging is cleaned up.
+
+<details>
+<summary><b>🔒 Locking, rename rollback and process limits</b></summary>
 
 Mutation verbs share `/etc/wireguard/.helper.lock`: a trusted `0600` single-link
 lock in the private directory, with a 2-second busy deadline. Read-only calls
@@ -126,7 +164,9 @@ commands run, including blocked-input/escaped-descendant cases. The leader
 stays unreaped until pipe work ends if group cleanup may signal it, avoiding
 PID reuse. Timeouts do not guarantee reversal of an operation already performed.
 
-## Config validation and root hooks
+</details>
+
+## 📄 Config validation and root hooks
 
 Config validation is shared by the frontend and privileged helper. It checks
 every directive occurrence, known sections/field placement, canonical 32-byte
@@ -138,21 +178,33 @@ sections stay visible in raw text but cannot be saved until corrected. If a
 PresharedKey directive is present it must contain a valid key; omit it to use
 no PSK. The helper independently rejects all four root script-hook directives.
 
-Hook rejection applies to managed save/import/rename/restore. An administrator
-can maintain a hook-bearing file directly as root; up/down/save-live still use
-wg-quick normally. Such existing hooks remain trusted root code, not a sandboxed
-script interface. Redaction covers config-like secret lines, prefixed/equals
-cases and malformed-key errors, but new arbitrary logging paths still require
-review rather than an assumption that every possible secret string is detected.
+> [!WARNING]
+> Hook rejection applies to managed save/import/rename/restore. An administrator
+> can maintain a hook-bearing file directly as root; up/down/save-live still use
+> wg-quick normally. Such existing hooks remain trusted root code, not a
+> sandboxed script interface.
 
-## User backups, exports and editor data
+Redaction covers config-like secret lines, prefixed/equals cases and
+malformed-key errors, but new arbitrary logging paths still require review
+rather than an assumption that every possible secret string is detected.
+
+## 💾 User backups, exports and editor data
 
 User backups live under `$XDG_DATA_HOME/wireguard/backups` (an absolute XDG
 path), or `~/.local/share/wireguard/backups`, shared by both applications.
 Existing managed backup directories must belong to the current user and are
 checked/tightened to `0700`; symlink directories are refused. ZIPs and exported
 copies use `0600`. New backup names are unique even within one second and are
-published without overwriting another archive.
+published without overwriting another archive. **All these archives contain
+unencrypted private keys.**
+
+The GUI editor holds drafts in application memory. Config text, Show QR,
+Running cfg, config copies and views of newly created keys can expose private keys.
+Clipboard history and screenshots can retain them. Keep the user's session and
+exported files protected as well as `/etc/wireguard`.
+
+<details>
+<summary><b>📏 Export, restore and QR import limits</b></summary>
 
 Export reads every listed tunnel successfully or reports an error. It no longer
 reports a successful incomplete archive after a helper/read failure. Exports
@@ -174,25 +226,27 @@ fails (or times out), restore **rolls back**: overwritten tunnels get their
 previous contents back and tunnels the restore created are removed again. The
 report names every tunnel restored, removed or, if a rollback step itself
 failed, left changed. Helper per-file backups remain a separate recovery
-source under `/etc/wireguard/.backup/`. All these archives contain unencrypted
-private keys.
+source under `/etc/wireguard/.backup/`.
 
 Saved-name/export queries do not require a successful live `wg active` query,
 so backing up valid files can still work when the VPN/kernel status query is
 broken. File/list/read failures do not become a misleading successful subset.
 
-The GUI editor holds drafts in application memory. Config text, Show QR,
-Running cfg, config copies and generated-key views can expose private keys.
-Clipboard history and screenshots can retain them. Keep the user's session and
-exported files protected as well as `/etc/wireguard`.
+Imported config files are limited to 1 MiB and must be regular files; they are
+opened without following symlinks and without blocking, so FIFOs, sockets,
+devices and directories are refused immediately.
 
 QR image import caps source files at 32 MiB, dimensions at 4096 × 4096 and
 configures a 128 MiB decoder-allocation budget. The decoder limit is a resource
-budget, not a guarantee about total process overhead. All detected grids are
-considered; one valid distinct tunnel config is required, with ambiguous images
-refused. These bounds do not make arbitrary image decoders risk-free.
+budget, not a guarantee about total process overhead. Images are decoded in a
+short-lived child process with a memory limit and a deadline, so a decoder
+crash or hang fails only that import. All detected grids are considered; one
+valid distinct tunnel config is required, with ambiguous images refused. These
+bounds do not make arbitrary image decoders risk-free.
 
-## Kill-switch scope and lifetime
+</details>
+
+## 🛑 Kill-switch scope and lifetime
 
 Only **one helper-managed kill switch** can be active at a time across managed
 tunnels. Turn the existing one off before enabling another. The helper requires
@@ -200,14 +254,11 @@ an already-active interface; it can assign an unused runtime WireGuard fwmark
 without changing the saved config. It does not activate a stopped tunnel as a
 side effect of enabling a switch.
 
-The helper prefers nftables. It keeps the kill switch in its **own table**,
-`inet wg_helper_killswitch`, with its own OUTPUT base chain, and replaces that
-table in one nft transaction. It never edits another table, so firewalld, a
-distro ruleset or your own rules stay untouched. The fallback uses a dedicated
-`WGH-KILLSWITCH` chain reached by one jump at the top of `OUTPUT`. It requires
-`iptables` and `iptables-restore`; when the kernel exposes IPv6 support it also
-requires `ip6tables` and `ip6tables-restore`. Both families are preflighted;
-commits are atomic **per family**, not one transaction across IPv4 and IPv6.
+> [!IMPORTANT]
+> This is host-output control, not server forwarding/NAT or a general no-leak
+> guarantee. It may disrupt remote access. It is not persistent: the rules and
+> the record that it was requested live in the kernel and under `/run`, so both
+> are gone after a reboot. App exit does not clear rules.
 
 The rules allow loopback, packets routed into the selected tunnel, its
 transport traffic (identified by the tunnel's runtime fwmark), IPv6
@@ -218,19 +269,31 @@ rejected. Without the Neighbor Discovery exception an IPv6 endpoint becomes
 unreachable once its neighbor cache entry expires. The exceptions **never
 override your deny rules**: nftables `accept` only ends the kill switch's own
 chain, and the iptables chain `RETURN`s allowed traffic to `OUTPUT` instead of
-accepting it, so later rules still apply. This is host-output control, not
-server forwarding/NAT or a general no-leak guarantee. It may disrupt remote
-access.
+accepting it, so later rules still apply.
+
+<details>
+<summary><b>🔬 Backends, status, live edits and failure handling</b></summary>
+
+The helper prefers nftables. It keeps the kill switch in its **own table**,
+`inet wg_helper_killswitch`, with its own OUTPUT base chain, and replaces that
+table in one nft transaction. It never edits another table, so firewalld, a
+distro ruleset or your own rules stay untouched. The fallback uses a dedicated
+`WGH-KILLSWITCH` chain reached by one jump at the top of `OUTPUT`. It requires
+`iptables` and `iptables-restore`; when the kernel exposes IPv6 support it also
+requires `ip6tables` and `ip6tables-restore`. Both families are preflighted;
+commits are atomic **per family**, not one transaction across IPv4 and IPv6.
 
 Status is one of `enabled`, `disabled`, `missing` or `mismatch`. **Enabled**
 requires complete rules whose mark equals the interface's current fwmark.
 **Missing** means the switch was turned on but its rules are gone or
 incomplete, for example after a firewall reload (`nft flush ruleset`,
-`firewall-cmd --reload`). **Mismatch** means rules exist but are stale: the
-mark changed, the interface is down, an older release built them, or the
-iptables jump is no longer first in `OUTPUT`. On an active tunnel the app
-repairs both automatically (`wg-helper killswitch-repair`), once per loss and
-with backoff, and reports the result.
+`firewall-cmd --reload`) or when another rule is placed ahead of the iptables
+jump in `OUTPUT`, which no longer counts as complete. **Mismatch** means rules
+exist but are stale: the mark changed, the interface is down, an older release
+built them, or rules of the other backend are left over. On an active tunnel
+the app repairs both automatically (`wg-helper killswitch-repair`), once per
+loss and with backoff, and reports the result. A status that cannot be read is
+shown as unknown, never as off.
 
 Editing a connected tunnel keeps the kill switch working. `wg syncconf` would
 reset the fwmark that wg-quick set at runtime; the helper carries the running
@@ -241,13 +304,13 @@ afterwards and repairs the kill switch if needed.
 Down/delete/rename retain protection if the interface is still active or its
 state is unknown, and report stop/cleanup failures. If the interface
 disappears without a disconnect, the rules stay and keep blocking traffic
-(status `mismatch`) until you disconnect. App exit does not clear rules. The
-switch is not persistent: the rules and the record that it was requested live
-in the kernel and under `/run`, so both are gone after a reboot. A switch built
-by an earlier release (1.9.3 or older) is reported as `mismatch` and rebuilt in the
-current layout on the next refresh.
+(status `mismatch`) until you disconnect. A switch built by an earlier release
+(1.9.3 or older) is reported as `mismatch` and rebuilt in the current layout on
+the next refresh.
 
-## Signed releases and updates
+</details>
+
+## ✍️ Signed releases and updates
 
 The workflow refuses publication when minisign signing/verification fails or
 `MINISIGN_KEY` is absent. Verify a manifest against an independently trusted
@@ -261,18 +324,28 @@ then reports the version actually verified. It never accepts a downloaded
 public key as its trust anchor. Missing verification tools or invalid data
 refuse the update; minisign installation is only best-effort.
 
+<details>
+<summary><b>🧐 Update staging, installation method and network use</b></summary>
+
 Verified updates retain ownership of their private download directory through
 installation and clean it up on download, staging or installation failure and
 normal completion. Before privilege escalation, the whole required bundle is
 checked: regular single-link application/helper/installer/assets, no symlink
 components, and a fresh exclusive staging tree. Missing/unsafe assets fail before
 installation starts. HTTPS-only redirects are enforced. GUI automatic updates
-support its published x86_64/ARM64 builds; unsupported CPUs fail explicitly.
+support the published x86_64, i686, aarch64 and armv7 builds; unsupported CPUs
+fail explicitly.
 
 The verified bundle object is required by apply, so an arbitrary filesystem
-path is not the public installation API. The installer still uses its normal
-prefix/auth mode rather than updating a distro package database. Restart the
-app after success and check current state after interrupted operations.
+path is not the public installation API. Only copies that `install.sh` recorded
+in its root-owned `install-manifest` (or an older installer's root-owned helper
+next to the app) are updated in place, by re-running the verified installer
+with the recorded prefix and authorization mode; the updater never touches a
+distro package database. Copies owned by a package manager or `cargo install`,
+or installed in an unknown way, are refused with the command that updates them
+instead, and so is an update that would keep a second copy under `/usr`
+(unless both copies were forced at install time). Restart the app
+after success and check current state after interrupted operations.
 
 Startup/manual checks contact GitHub over HTTPS and include the app version in
 the User-Agent; they do not upload tunnel configs. Diagnostics can ping/resolve
@@ -281,6 +354,10 @@ startup checking with `WG_NO_UPDATE_CHECK=1` or a `no-update` file under this
 project's XDG config directory. Manual GUI update checks remain available.
 Actions/release tools are pinned as described in the release guide; locked
 builds improve traceability, not a bit-for-bit reproducibility guarantee.
+
+</details>
+
+## 🧪 Dependency auditing
 
 `cargo audit --deny warnings` runs in CI and release workflows. The shared
 [.cargo/audit.toml](.cargo/audit.toml) accepts five unmaintained notices without
@@ -300,4 +377,5 @@ cargo audit bin wireguard-gui.audit
 
 Direct auditing of the packed executable does not expose its auditable ELF
 section. The AppImage is assembled from uncompressed copies; extract it before
-inspecting its embedded binaries. A source `cargo auditable build --release --locked` also produces uncompressed auditable binaries.
+inspecting its embedded binaries. A source `cargo auditable build --release --locked`
+also produces uncompressed auditable binaries.

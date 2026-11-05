@@ -1,7 +1,7 @@
 # 📦 Packaging wireguard-gui
 
-The current application version is **1.9.3**. The release workflow produces an
-x86_64 `.deb`, x86_64/ARM64 Linux tarballs, and an optional x86_64 AppImage
+The release workflow produces an x86_64 `.deb`, x86_64, i686, aarch64 and
+armv7 Linux tarballs (glibc 2.35 baseline), and an optional x86_64 AppImage
 (attached if its optional build succeeds), with signed checksums. See [releases](../docs/RELEASES.md).
 The other files here are source-package recipes; their presence does not mean
 an AUR, COPR, Alpine or Void publication is current or officially distributed.
@@ -46,10 +46,10 @@ authorization grant is written.
 
 `[package.metadata.deb]` in [Cargo.toml](../Cargo.toml) supplies assets and runtime
 dependencies. The release workflow uses `cargo-deb 3.8.0` after the SBOM-enabled
-build, tests and compression; output is `wireguard-gui_1.9.3-1_amd64.deb`.
+build, tests and compression; output is `wireguard-gui_1.10.0-1_amd64.deb`.
 
 ```sh
-sudo apt install ./wireguard-gui_1.9.3-1_amd64.deb
+sudo apt install ./wireguard-gui_1.10.0-1_amd64.deb
 ```
 
 Inspect the final package's control metadata, helper location and rule path
@@ -130,6 +130,39 @@ and `.SRCINFO` match (`--strict` also rejects placeholder checksums).
 `makepkg --verifysource` (Arch), `rpmspec -P` and `rpmlint` (Fedora),
 `apkbuild-lint` and `abuild verify` (Alpine) and `xlint` (Void) in containers;
 `--build` also builds the packages.
+
+`tests/package-build.sh arch|rpm|apk|void` builds the real package from the
+current checkout, not from a release. It creates `wireguard-gui-VERSION.tar.gz` with the
+release archive's name and layout: `git archive` of `HEAD` for a clean tree,
+otherwise the tracked and untracked, non-ignored files. It then points temporary
+copies of the recipe at that archive, with checksums from `update-checksums.sh
+--tarball`; the committed recipes keep their release URLs. The script runs the
+distribution's own tool in a container, and each tool also runs the package's
+tests:
+
+- `makepkg -s --noconfirm` + `namcap` (`archlinux:latest`, amd64)
+- `rpmbuild -ba` with the `Source1` from `update-checksums.sh --vendor` (`fedora:latest`)
+- `abuild -r` with a throwaway `abuild-keygen -a -n` key (`alpine:latest`)
+- `xbps-src -Q pkg` as an unprivileged user, after `binary-bootstrap`, in a
+  void-packages checkout (`void-glibc`, run `--privileged` for `xbps-uchroot`,
+  as in void-packages CI)
+
+It then installs the package with the package manager in a clean container and
+runs `wireguard-gui --version` and `tests/helper-validation.sh` against the installed
+helper. Packages are written to `target/package-build/FORMAT/`, or to the
+directory given with `--out=DIR`. If a build runs out of memory, set
+`CARGO_BUILD_JOBS=2`. On a non-x86_64 host the Arch build runs under amd64
+emulation. The emulator does not report a failed exec from a spawned child, so
+the script skips the tests that depend on that, and logs the skips. The
+`Package builds` workflow runs all four formats and
+uploads the packages. The helper's process tests spawn `python3` and the UI tests
+render text, so every recipe declares `python3` and a DejaVu font as check
+dependencies. The UI tests need the Slint debug info that release builds
+omit, so `%check` and the Void `do_check` run them in the test profile, like the
+AUR and Alpine `check()`. The Void `do_check` also skips the one test that needs
+a root-owned `/bin/sh`, because xbps-src builds in a masterdir that the build
+user owns. The PKGBUILD depends on `hicolor-icon-theme` for the icon
+directory and sets `!debug`, because Cargo already strips the binaries.
 
 Every recipe fetches crates only in its prepare step (`cargo fetch --locked`),
 then builds and tests offline with `--frozen`; the RPM builds from the vendored

@@ -124,8 +124,23 @@ fn env_u64(name: &str) -> Option<u64> {
 /// PRNG derived from `PROP_SEED`, the property name and the case index, and a
 /// failing case reports exactly how to replay it.
 pub fn check(name: &str, property: impl Fn(&mut Rng)) {
+    run_cases(name, 1, property);
+}
+
+/// [`check`] for expensive properties: runs `PROP_CASES / divisor` cases
+/// (at least one), so a larger `PROP_CASES` still scales them up.
+pub fn check_scaled(name: &str, divisor: u64, property: impl Fn(&mut Rng)) {
+    run_cases(name, divisor.max(1), property);
+}
+
+fn run_cases(name: &str, divisor: u64, property: impl Fn(&mut Rng)) {
     let seed = env_u64("PROP_SEED").unwrap_or(DEFAULT_SEED);
     let cases = env_u64("PROP_CASES").unwrap_or(DEFAULT_CASES);
+    let cases = if divisor > 1 {
+        (cases / divisor).max(1)
+    } else {
+        cases
+    };
     let name_hash = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
     });
@@ -140,7 +155,7 @@ pub fn check(name: &str, property: impl Fn(&mut Rng)) {
             panic!(
                 "property `{name}` failed at case {case} (replay: PROP_SEED={seed:#x}, \
                  case {case} of PROP_CASES>={}): {msg}",
-                case + 1
+                (case + 1) * divisor
             );
         }
     }

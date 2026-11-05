@@ -2,17 +2,26 @@ name: Release
 
 # Tag a version to cut a release:
 #   git tag vX.Y.Z && git push origin vX.Y.Z
+# Dry run of the whole pipeline from a branch (no publish; signed with a
+# throwaway key): Actions -> Release -> Run workflow, version X.Y.Z.
 #
-# Release gate (fail closed): `publish` runs only if EVERY job below
-# succeeded — version consistency, fmt/clippy, tests, audit, the firewall
-# namespace test, the kill switch end-to-end test, both native builds and the
-# .deb, smoke tests of each architecture's packed binaries (aarch64 under
-# QEMU), signing, and independent verification of the signed artifacts. A
-# skipped or cancelled job blocks it. Only the AppImage is optional.
+# Release gate (fail closed): `publish` runs only for a pushed v* tag and only
+# if EVERY job below succeeded — version consistency, fmt/clippy, tests, audit,
+# the firewall namespace test, the kill switch end-to-end test, the four
+# glibc-baseline builds (x86_64 with the .deb, i686, aarch64, armv7), smoke
+# tests of each architecture's packed binaries on the supported distributions
+# (i686 and armv7 under QEMU / 32-bit userlands), signing, and independent
+# verification of the signed artifacts. A skipped or cancelled job blocks it.
+# Only the AppImage is optional.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build as a dry run (no publish), e.g. 1.10.0"
+        required: true
+        type: string
 
 # Least privilege: the token is read-only everywhere except the publish job.
 permissions:
@@ -24,8 +33,24 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Ubuntu 24.04 (glibc 2.39, the release build environment), pinned by digest.
-  SMOKE_IMAGE: ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+  # The release tag: the pushed tag, or v<version> for a dry run.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  # Toolchain for the release builds inside the glibc-baseline container,
+  # installed with a checksum-pinned rustup-init. Keep it at the current
+  # stable that dtolnay/rust-toolchain installs for the other jobs.
+  RUST_TOOLCHAIN: "1.99.1"
+  RUSTUP_VERSION: "1.29.3"
+  RUSTUP_INIT_SHA256_X86_64: b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+  RUSTUP_INIT_SHA256_AARCH64: 9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
+  # Oldest glibc the GUI binaries may require: the ubuntu:22.04 build image.
+  # scripts/verify-release.sh enforces the same value (GLIBC_BASELINE).
+  GLIBC_BASELINE: "2.35"
+  # UPX release used to pack (and, in `verify`, to test and unpack) the
+  # binaries. Ubuntu 22.04's upx-ucl 3.96 cannot pack the armhf build
+  # ("bad DT_GNU_HASH"). Checksums are the release assets' published digests.
+  UPX_VERSION: "5.2.1"
+  UPX_SHA256_AMD64: 402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657
+  UPX_SHA256_ARM64: a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36
 
 jobs:
   # ---------------------------------------------------------------- checks
@@ -36,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Tag, Cargo.toml, Cargo.lock, CHANGELOG and packaging agree
-        run: bash scripts/check-version.sh --tag "$GITHUB_REF_NAME"
+        run: bash scripts/check-version.sh --tag "$RELEASE_TAG"
 
   lint:
     name: rustfmt & clippy
@@ -115,138 +140,185 @@ jobs:
       - run: bash tests/firewall-namespace.sh
 
   # ---------------------------------------------------------------- builds
-  arm64-tarball:
-    name: Build aarch64 tarball
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+  # Every GUI release binary is built in ubuntu:22.04 (glibc 2.35), so it runs
+  # on Debian 12, Ubuntu 22.04 and newer glibc distributions. i686 and armv7
+  # are cross-compiled there with Ubuntu multiarch: the binaries link only
+  # libfontconfig and the C runtime (X11, Wayland, GL and xkbcommon are
+  # dlopen()ed), so libfontconfig-dev:<arch> is the only foreign -dev package.
+  build:
+    name: Build ${{ matrix.arch }} (ubuntu:22.04, glibc 2.35)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    container:
+      image: ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # runs: the build container can execute the target's binaries.
+          - { arch: x86_64, target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, runs: true }
+          - { arch: i686, target: i686-unknown-linux-gnu, runner: ubuntu-latest, runs: true,
+              dpkg-arch: i386, gnu: i686-linux-gnu, multiarch: i386-linux-gnu }
+          - { arch: aarch64, target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, runs: true }
+          # The arm64 runners have no AArch32 support; armv7 runs under QEMU in `smoke`.
+          - { arch: armv7, target: armv7-unknown-linux-gnueabihf, runner: ubuntu-24.04-arm, runs: false,
+              dpkg-arch: armhf, gnu: arm-linux-gnueabihf, multiarch: arm-linux-gnueabihf }
+    env:
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      DPKG_ARCH: ${{ matrix.dpkg-arch }}
+      GNU: ${{ matrix.gnu }}
+      MULTIARCH: ${{ matrix.multiarch }}
+      DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash # -eo pipefail; the container default would be plain `bash -e`
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate tag and package version
-        run: bash scripts/check-version.sh --tag "$GITHUB_REF_NAME"
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config binutils file \
+            desktop-file-utils xz-utils \
             libfontconfig-dev libxkbcommon-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev upx-ucl
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev
+          if [ -n "$DPKG_ARCH" ]; then
+            dpkg --add-architecture "$DPKG_ARCH"
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              "gcc-$GNU" "g++-$GNU" "libc6-dev-$DPKG_ARCH-cross" "libfontconfig-dev:$DPKG_ARCH"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Trust the checkout (container root vs. runner-owned workspace)
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Validate tag and package version
+        run: bash scripts/check-version.sh --tag "$RELEASE_TAG"
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }} (checksum-pinned rustup-init)
+        run: |
+          host="$(uname -m)-unknown-linux-gnu"
+          case "$host" in
+            x86_64-unknown-linux-gnu) sum="$RUSTUP_INIT_SHA256_X86_64" ;;
+            aarch64-unknown-linux-gnu) sum="$RUSTUP_INIT_SHA256_AARCH64" ;;
+            *) echo "::error::no pinned rustup-init for $host"; exit 1 ;;
+          esac
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init \
+            "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${host}/rustup-init"
+          echo "${sum}  /tmp/rustup-init" | sha256sum -c -
+          chmod 755 /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal \
+            --default-toolchain "$RUST_TOOLCHAIN" --target "$TARGET"
+          rm -f /tmp/rustup-init
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Install cargo-auditable
-        run: cargo install cargo-auditable --version =0.7.7 --locked
-      - name: Build release binary (with embedded SBOM)
-        run: cargo auditable build --release --locked
-      - name: CLI contract before packing
-        run: |
-          bash tests/helper-validation.sh target/release/wg-helper
-          bash tests/release-regression.sh --version "${GITHUB_REF_NAME#v}" target/release/wireguard-gui target/release/wg-helper
-      # Shrink the shipped binaries (~60-70% smaller on disk); the packed
-      # binaries are exercised again in the `smoke` job.
-      - name: Compress binaries with UPX
-        run: |
-          upx --best --lzma target/release/wireguard-gui target/release/wg-helper
-          upx -t target/release/wireguard-gui target/release/wg-helper
-      - name: Build aarch64 tarball
-        env:
-          REF: ${{ github.ref_name }}
-        run: |
-          bash scripts/stage-tarball.sh "${REF#v}" aarch64
-          bash tests/installer-sanity.sh install.sh "wireguard-gui-${REF#v}-aarch64-linux.tar.gz"
-      - name: Upload aarch64 tarball
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: tarball-aarch64
-          path: wireguard-gui-*-aarch64-linux.tar.gz
-          if-no-files-found: error
-
-  x86_64:
-    name: Build x86_64 tarball, .deb & AppImage
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate tag and package version
-        run: bash scripts/check-version.sh --tag "$GITHUB_REF_NAME"
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
-            libfontconfig-dev libxkbcommon-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev \
-            file desktop-file-utils upx-ucl
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+          key: ${{ matrix.target }}
       - name: Install cargo-auditable
         run: cargo install cargo-auditable --version =0.7.7 --locked
-      - name: Build release binary (with embedded SBOM)
-        run: cargo auditable build --release --locked
-      - name: CLI contract before packing
+      - name: Build release binaries (with embedded SBOM)
         run: |
-          bash tests/helper-validation.sh target/release/wg-helper
-          bash tests/release-regression.sh --version "${GITHUB_REF_NAME#v}" target/release/wireguard-gui target/release/wg-helper
-
-      # Launch the real GUI headless so a crash during window/tray/a11y init
-      # blocks the release instead of shipping (regression guard for the zbus
-      # "no reactor running" Tokio-runtime panic).
-      - name: GUI launch smoke (headless)
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            xvfb dbus libxkbcommon-x11-0 libgl1-mesa-dri libegl-mesa0
-          set +e
-          xvfb-run -a dbus-run-session -- env LIBGL_ALWAYS_SOFTWARE=1 \
-            timeout 8 ./target/release/wireguard-gui >/tmp/gui-launch.log 2>&1
-          rc=$?
-          set -e
-          if grep -qiE "no reactor running|Tokio 1\.x runtime" /tmp/gui-launch.log; then
-            echo "::error::zbus/Tokio-runtime panic on launch (ksni async-io fix regressed)"
-            cat /tmp/gui-launch.log; exit 1
-          fi
-          if [ "$rc" -eq 124 ]; then
-            echo "GUI launched and stayed alive 8s under Xvfb — OK"
+          if [ -n "$GNU" ]; then
+            # Per-target variables only, so host build scripts and proc-macros
+            # keep the native compiler and pkg-config search path.
+            t="${TARGET//-/_}"
+            T="$(printf '%s' "$t" | tr '[:lower:]' '[:upper:]')"
+            export "CARGO_TARGET_${T}_LINKER=${GNU}-gcc" \
+              "CC_${t}=${GNU}-gcc" "CXX_${t}=${GNU}-g++" "AR_${t}=${GNU}-ar" \
+              "PKG_CONFIG_ALLOW_CROSS_${t}=1" "PKG_CONFIG_SYSROOT_DIR_${t}=/" \
+              "PKG_CONFIG_LIBDIR_${t}=/usr/lib/${MULTIARCH}/pkgconfig:/usr/share/pkgconfig"
+            cargo auditable build --release --locked --target "$TARGET"
+            echo "BIN=target/$TARGET/release" >> "$GITHUB_ENV"
           else
-            echo "::error::wireguard-gui crashed on launch (rc=$rc)"
-            cat /tmp/gui-launch.log; exit 1
+            cargo auditable build --release --locked
+            echo "BIN=target/release" >> "$GITHUB_ENV"
           fi
-
-      # Keep pristine `.full` copies for the AppImage step (linuxdeploy
-      # patchelfs the ELF and cannot process a UPX-packed binary; the AppImage
-      # is squashfs-compressed anyway). The tarball and .deb use the packed ones.
+      - name: Linked libraries and required glibc (baseline ${{ env.GLIBC_BASELINE }})
+        run: |
+          for b in wireguard-gui wg-helper; do
+            "${GNU:+$GNU-}readelf" -d "$BIN/$b" | grep NEEDED
+            need="$("${GNU:+$GNU-}objdump" -T "$BIN/$b" | grep -o 'GLIBC_[0-9][0-9.]*' | sort -uV | tail -n 1)"
+            echo "${ARCH} ${b}: requires ${need:-no GLIBC version} (baseline GLIBC_${GLIBC_BASELINE})" | tee -a "$GITHUB_STEP_SUMMARY"
+            newest="$(printf '%s\n' "$need" "GLIBC_${GLIBC_BASELINE}" | sort -V | tail -n 1)"
+            if [ -z "$need" ] || [ "$newest" != "GLIBC_${GLIBC_BASELINE}" ]; then
+              echo "::error::${ARCH} ${b} requires ${need:-an unknown glibc}, above the ${GLIBC_BASELINE} baseline"
+              exit 1
+            fi
+          done
+      - name: CLI contract before packing
+        if: matrix.runs
+        run: |
+          bash tests/helper-validation.sh "$BIN/wg-helper"
+          bash tests/release-regression.sh --version "${RELEASE_TAG#v}" "$BIN/wireguard-gui" "$BIN/wg-helper"
+      - name: Install UPX ${{ env.UPX_VERSION }} (checksum-pinned)
+        run: |
+          case "$(uname -m)" in
+            x86_64) u=amd64; sum="$UPX_SHA256_AMD64" ;;
+            aarch64) u=arm64; sum="$UPX_SHA256_ARM64" ;;
+            *) echo "::error::no pinned UPX for $(uname -m)"; exit 1 ;;
+          esac
+          d="upx-${UPX_VERSION}-${u}_linux"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$d.tar.xz" \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/$d.tar.xz"
+          echo "${sum}  /tmp/$d.tar.xz" | sha256sum -c -
+          tar -xJf "/tmp/$d.tar.xz" -C /usr/local/bin --strip-components=1 "$d/upx"
+          rm -f "/tmp/$d.tar.xz"
+          upx --version | head -n 1
+      # Shrink the shipped binaries (~60-70% smaller on disk); the packed
+      # binaries are exercised again in the `smoke` job. Keep pristine `.full`
+      # copies for the AppImage step (linuxdeploy patchelfs the ELF and cannot
+      # process a UPX-packed binary; the AppImage is squashfs-compressed anyway).
       - name: Compress binaries with UPX
         run: |
-          cp target/release/wireguard-gui target/release/wireguard-gui.full
-          cp target/release/wg-helper target/release/wg-helper.full
-          upx --best --lzma target/release/wireguard-gui target/release/wg-helper
-          upx -t target/release/wireguard-gui target/release/wg-helper
-          bash tests/release-regression.sh --version "${GITHUB_REF_NAME#v}" target/release/wireguard-gui target/release/wg-helper
-
-      - name: Build binary tarball
-        env:
-          REF: ${{ github.ref_name }}
+          cp "$BIN/wireguard-gui" "$BIN/wireguard-gui.full"
+          cp "$BIN/wg-helper" "$BIN/wg-helper.full"
+          upx --best --lzma "$BIN/wireguard-gui" "$BIN/wg-helper"
+          upx -t "$BIN/wireguard-gui" "$BIN/wg-helper"
+      - name: CLI contract after packing
+        if: matrix.runs
+        run: bash tests/release-regression.sh --version "${RELEASE_TAG#v}" "$BIN/wireguard-gui" "$BIN/wg-helper"
+      - name: Build ${{ matrix.arch }} tarball
         run: |
-          bash scripts/stage-tarball.sh "${REF#v}" x86_64
-          bash tests/installer-sanity.sh install.sh "wireguard-gui-${REF#v}-x86_64-linux.tar.gz"
+          bash scripts/stage-tarball.sh "${RELEASE_TAG#v}" "$ARCH" "$BIN"
+          bash tests/installer-sanity.sh install.sh "wireguard-gui-${RELEASE_TAG#v}-${ARCH}-linux.tar.gz"
 
+      # The .deb is built in the same baseline, so its shared-library
+      # dependencies come from Ubuntu 22.04's library versions. dpkg-shlibdeps
+      # cannot read the UPX-packed binaries (cargo-deb's $auto comes out
+      # empty), so they are computed from the pristine `.full` copies and
+      # added to the package's Depends.
       - name: Build .deb
+        if: matrix.arch == 'x86_64'
         run: |
           cargo install cargo-deb --version =3.8.0 --locked
           cargo deb --no-build --no-strip || cargo deb
-          cp target/debian/*.deb .   # mandatory: fail the release if none exists
+          deb="$(ls target/debian/*.deb)"
+          shl="$(mktemp -d)"
+          mkdir "$shl/debian"
+          printf 'Source: wireguard-gui\n\nPackage: wireguard-gui\nArchitecture: amd64\n' > "$shl/debian/control"
+          auto="$(cd "$shl" && dpkg-shlibdeps -O "$GITHUB_WORKSPACE/$BIN/wireguard-gui.full" "$GITHUB_WORKSPACE/$BIN/wg-helper.full")"
+          auto="${auto#shlibs:Depends=}"
+          case "$auto" in *"libc6 (>= "*) ;; *) echo "::error::no libc6 dependency computed: $auto"; exit 1 ;; esac
+          dpkg-deb -R "$deb" "$shl/pkg"
+          sed -i "s/^Depends: /Depends: ${auto}, /" "$shl/pkg/DEBIAN/control"
+          grep '^Depends: ' "$shl/pkg/DEBIAN/control"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            dpkg-deb --root-owner-group -Zxz -b "$shl/pkg" "$deb"
+          rm -rf "$shl"
+          cp "$deb" .   # mandatory: fail the release if none exists
 
       # Optional: never blocks the release.
       - name: Build AppImage
+        if: matrix.arch == 'x86_64'
         continue-on-error: true
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-          REF: ${{ github.ref_name }}
         run: |
-          V="${REF#v}"
+          V="${RELEASE_TAG#v}"
           APPDIR=AppDir
           mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/wireguard-gui" \
                    "$APPDIR/usr/share/applications" \
                    "$APPDIR/usr/share/icons/hicolor/scalable/apps"
-          cp target/release/wireguard-gui.full "$APPDIR/usr/bin/wireguard-gui"
-          cp target/release/wg-helper.full "$APPDIR/usr/lib/wireguard-gui/wg-helper"
+          cp "$BIN/wireguard-gui.full" "$APPDIR/usr/bin/wireguard-gui"
+          cp "$BIN/wg-helper.full" "$APPDIR/usr/lib/wireguard-gui/wg-helper"
           cp packaging/wireguard-gui.desktop "$APPDIR/usr/share/applications/"
           cp packaging/wireguard-gui.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
           # Pinned linuxdeploy release + verified checksum (supply-chain hardening)
@@ -261,19 +333,21 @@ jobs:
           mv ./*.AppImage "wireguard-gui-${V}-x86_64.AppImage"
           test -s "wireguard-gui-${V}-x86_64.AppImage"
 
-      - name: Upload x86_64 tarball
+      - name: Upload ${{ matrix.arch }} tarball
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: tarball-x86_64
-          path: wireguard-gui-*-x86_64-linux.tar.gz
+          name: tarball-${{ matrix.arch }}
+          path: wireguard-gui-*-${{ matrix.arch }}-linux.tar.gz
           if-no-files-found: error
       - name: Upload .deb
+        if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deb-amd64
           path: "*.deb"
           if-no-files-found: error
       - name: Upload AppImage (optional)
+        if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: appimage-x86_64
@@ -281,54 +355,131 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------- binary tests
-  # Run the shipped (UPX-packed) binaries of each architecture in a clean
-  # Ubuntu 24.04 userland: x86_64 natively, aarch64 through QEMU user-mode
-  # emulation. The GUI binaries are dynamically linked against glibc, so they
-  # need a matching userland, not just an emulator.
+  # Run the shipped (UPX-packed) binaries of each architecture in clean
+  # userlands, each image pinned by digest: the oldest (Ubuntu 22.04 = the
+  # glibc baseline, Debian 12) and newest (Ubuntu 24.04, Fedora) supported
+  # distributions for x86_64 and aarch64 (native runners); i686 in a 32-bit
+  # Debian 12 userland; armv7 in Debian 12 / Ubuntu 22.04 armhf userlands
+  # under QEMU user-mode emulation. The GUI binaries are dynamically linked
+  # against glibc, so they need a matching userland, not just an emulator.
+  # Where the CPU runs natively, the real GUI is also launched headless so a
+  # crash during window/tray/a11y init blocks the release (regression guard
+  # for the zbus "no reactor running" Tokio-runtime panic).
   smoke:
-    name: Smoke ${{ matrix.arch }} (QEMU)
-    needs: [arm64-tarball, x86_64]
-    runs-on: ubuntu-latest
+    name: Smoke ${{ matrix.arch }} on ${{ matrix.distro }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, platform: linux/amd64 }
-          - { arch: aarch64, platform: linux/arm64 }
+          - { arch: x86_64, distro: debian-12, runner: ubuntu-latest, platform: linux/amd64, launch: "1", qemu: "",
+              image: "debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880" }
+          - { arch: x86_64, distro: ubuntu-22.04, runner: ubuntu-latest, platform: linux/amd64, launch: "1", qemu: "",
+              image: "ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11" }
+          - { arch: x86_64, distro: ubuntu-24.04, runner: ubuntu-latest, platform: linux/amd64, launch: "1", qemu: "",
+              image: "ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852" }
+          - { arch: x86_64, distro: fedora, runner: ubuntu-latest, platform: linux/amd64, launch: "1", qemu: "",
+              image: "fedora:latest@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c" }
+          - { arch: aarch64, distro: debian-12, runner: ubuntu-24.04-arm, platform: linux/arm64, launch: "1", qemu: "",
+              image: "debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880" }
+          - { arch: aarch64, distro: ubuntu-22.04, runner: ubuntu-24.04-arm, platform: linux/arm64, launch: "1", qemu: "",
+              image: "ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11" }
+          - { arch: aarch64, distro: ubuntu-24.04, runner: ubuntu-24.04-arm, platform: linux/arm64, launch: "1", qemu: "",
+              image: "ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852" }
+          - { arch: aarch64, distro: fedora, runner: ubuntu-24.04-arm, platform: linux/arm64, launch: "1", qemu: "",
+              image: "fedora:latest@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c" }
+          # 32-bit x86 runs natively on the x86_64 runner, inside a linux/386 userland.
+          - { arch: i686, distro: debian-12, runner: ubuntu-latest, platform: linux/386, launch: "1", qemu: "",
+              image: "debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880" }
+          # armv7 through QEMU: CLI checks only (an emulated software-GL launch is too slow to judge).
+          - { arch: armv7, distro: debian-12, runner: ubuntu-latest, platform: linux/arm/v7, launch: "0", qemu: arm,
+              image: "debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880" }
+          - { arch: armv7, distro: ubuntu-22.04, runner: ubuntu-latest, platform: linux/arm/v7, launch: "0", qemu: arm,
+              image: "ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up QEMU user-mode emulation
-        if: matrix.arch != 'x86_64'
+        if: matrix.qemu != ''
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
-          platforms: arm64
+          image: docker.io/tonistiigi/binfmt:latest@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: ${{ matrix.qemu }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tarball-${{ matrix.arch }}
           path: dist
-      - name: --version, --help, helper validation and CLI contract
+      - name: --version, --help, helper validation, CLI contract and headless launch
         env:
           ARCH: ${{ matrix.arch }}
           PLATFORM: ${{ matrix.platform }}
-          REF: ${{ github.ref_name }}
+          IMAGE: ${{ matrix.image }}
+          LAUNCH: ${{ matrix.launch }}
         run: |
-          V="${REF#v}"
+          V="${RELEASE_TAG#v}"
           tar -xzf "dist/wireguard-gui-${V}-${ARCH}-linux.tar.gz" -C dist
-          docker run --rm --platform "$PLATFORM" -v "$PWD:/w:ro" -w /w \
-            -e V="$V" -e D="dist/wireguard-gui-${V}-${ARCH}-linux" "$SMOKE_IMAGE" bash -euc '
-              apt-get update -qq
-              apt-get install -y -qq --no-install-recommends libfontconfig1 >/dev/null
-              echo "running on $(uname -m)"
-              test "$("$D/wireguard-gui" --version)" = "wireguard-gui $V"
-              "$D/wireguard-gui" --help | grep -q "^wireguard-gui "
-              bash tests/helper-validation.sh "$D/wg-helper"
-              bash tests/release-regression.sh --version "$V" "$D/wireguard-gui" "$D/wg-helper"
-            '
+          cat > "$RUNNER_TEMP/smoke.sh" <<'SMOKE'
+          set -euo pipefail
+          . /etc/os-release
+          echo "running on $(uname -m), $PRETTY_NAME, $(ldd --version | head -n 1)"
+          case "$ID" in
+            debian|ubuntu)
+              export DEBIAN_FRONTEND=noninteractive
+              pkgs="libfontconfig1"
+              [ "$LAUNCH" = 0 ] || pkgs="$pkgs xvfb xauth dbus libxkbcommon0 libxkbcommon-x11-0 \
+                libgl1 libegl1 libgl1-mesa-dri libegl-mesa0 libx11-6 libx11-xcb1 libxcursor1 \
+                libxi6 libxrandr2 libxrender1 libxcb1 libwayland-client0"
+              # The runner's container DNS occasionally fails once; retry.
+              for attempt in 1 2 3 4 5; do
+                apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update -qq && break
+                echo "apt-get update failed (attempt $attempt); retrying"; sleep 10
+              done
+              # shellcheck disable=SC2086 # package list is word-split on purpose
+              apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends $pkgs >/dev/null ;;
+            fedora)
+              pkgs="fontconfig"
+              [ "$LAUNCH" = 0 ] || pkgs="$pkgs xorg-x11-server-Xvfb xauth dbus-daemon \
+                libxkbcommon libxkbcommon-x11 mesa-libGL mesa-libEGL mesa-dri-drivers \
+                libX11 libX11-xcb libXcursor libXi libXrandr libXrender libxcb libwayland-client"
+              # shellcheck disable=SC2086 # package list is word-split on purpose
+              dnf install -y -q --setopt=install_weak_deps=False $pkgs >/dev/null ;;
+            *) echo "unsupported smoke image $ID" >&2; exit 1 ;;
+          esac
+          test "$("$D/wireguard-gui" --version)" = "wireguard-gui $V"
+          "$D/wireguard-gui" --help | grep -q "^wireguard-gui "
+          bash tests/helper-validation.sh "$D/wg-helper"
+          bash tests/release-regression.sh --version "$V" "$D/wireguard-gui" "$D/wg-helper"
+          [ "$LAUNCH" != 0 ] || exit 0
+          set +e
+          xvfb-run -a dbus-run-session -- env LIBGL_ALWAYS_SOFTWARE=1 \
+            timeout 8 "$D/wireguard-gui" >/tmp/gui-launch.log 2>&1
+          rc=$?
+          set -e
+          if grep -qiE "no reactor running|Tokio 1\.x runtime" /tmp/gui-launch.log; then
+            echo "::error::zbus/Tokio-runtime panic on launch (ksni async-io fix regressed)"
+            cat /tmp/gui-launch.log; exit 1
+          fi
+          if [ "$rc" -eq 124 ]; then
+            echo "GUI launched and stayed alive 8s under Xvfb on $PRETTY_NAME - OK"
+          else
+            echo "::error::wireguard-gui crashed on launch on $PRETTY_NAME (rc=$rc)"
+            cat /tmp/gui-launch.log; exit 1
+          fi
+          SMOKE
+          # The runner's Docker seccomp profile rejects the 64-bit time
+          # syscalls a 32-bit Debian 12 userland uses, which breaks its DNS
+          # resolver; this throwaway smoke container runs unconfined.
+          extra=()
+          if [ "$PLATFORM" = linux/386 ]; then extra=(--security-opt seccomp=unconfined); fi
+          docker run --rm --platform "$PLATFORM" --network host "${extra[@]}" \
+            -v "$PWD:/w:ro" -v "$RUNNER_TEMP/smoke.sh:/smoke.sh:ro" -w /w \
+            -e V="$V" -e D="dist/wireguard-gui-${V}-${ARCH}-linux" -e LAUNCH="$LAUNCH" \
+            "$IMAGE" bash /smoke.sh
 
   e2e:
     name: Kill switch e2e
-    needs: x86_64
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -344,20 +495,20 @@ jobs:
             wireguard-tools nftables iptables iproute2 iputils-ping
           sudo modprobe wireguard
       - name: End-to-end test with the release helper
-        env:
-          REF: ${{ github.ref_name }}
         run: |
-          tar -xzf "dist/wireguard-gui-${REF#v}-x86_64-linux.tar.gz" -C dist
+          tar -xzf "dist/wireguard-gui-${RELEASE_TAG#v}-x86_64-linux.tar.gz" -C dist
           test -f tests/killswitch-e2e.sh || { echo "::error::tests/killswitch-e2e.sh is missing"; exit 1; }
-          sudo bash tests/killswitch-e2e.sh "dist/wireguard-gui-${REF#v}-x86_64-linux/wg-helper"
+          sudo bash tests/killswitch-e2e.sh "dist/wireguard-gui-${RELEASE_TAG#v}-x86_64-linux/wg-helper"
 
   # ---------------------------------------------------------------- sign & verify
   sign:
     name: Checksums & signature
-    needs: [arm64-tarball, x86_64]
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: release
+    # The release environment (and its MINISIGN_KEY) only for tag pushes; a
+    # dry run signs with a throwaway key instead.
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download all build artifacts
@@ -369,7 +520,8 @@ jobs:
         run: |
           mkdir -p out
           find dist -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.AppImage' \) -exec cp -v {} out/ \;
-          cp minisign.pub out/
+          # A dry run is not signed by the project key, so it does not ship it.
+          if [ "$GITHUB_EVENT_NAME" = push ]; then cp minisign.pub out/; fi
           ls -l out
       - name: Generate checksums
         working-directory: out
@@ -382,10 +534,10 @@ jobs:
           sha256sum "${artifacts[@]}" | tee SHA256SUMS
           test -s SHA256SUMS
       - name: Sign SHA256SUMS with minisign (fail-closed)
+        if: github.event_name == 'push'
         working-directory: out
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
-          REF: ${{ github.ref_name }}
         run: |
           if [ -z "$MINISIGN_KEY" ]; then
             echo "::error::MINISIGN_KEY secret not set — refusing to publish an unsigned release"
@@ -395,10 +547,32 @@ jobs:
           umask 077
           trap 'rm -f minisign.key' EXIT
           printf '%s\n' "$MINISIGN_KEY" > minisign.key
-          minisign -S -s minisign.key -m SHA256SUMS -t "wireguard-gui ${REF#v}"
+          minisign -S -s minisign.key -m SHA256SUMS -t "wireguard-gui ${RELEASE_TAG#v}"
           rm -f minisign.key
           minisign -Vm SHA256SUMS -p minisign.pub
           test -s SHA256SUMS.minisig
+      - name: Sign SHA256SUMS with a throwaway key (dry run)
+        if: github.event_name != 'push'
+        working-directory: out
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+          umask 077
+          mkdir -p "$RUNNER_TEMP/dry-run-key"
+          key="$RUNNER_TEMP/dry-run.key" pub="$RUNNER_TEMP/dry-run-key/dry-run.pub"
+          trap 'rm -f "$key"' EXIT
+          minisign -G -W -p "$pub" -s "$key"
+          minisign -S -s "$key" -m SHA256SUMS -t "wireguard-gui ${RELEASE_TAG#v}"
+          rm -f "$key"
+          minisign -Vm SHA256SUMS -p "$pub"
+          test -s SHA256SUMS.minisig
+      - name: Upload the dry-run public key
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dry-run-key
+          path: ${{ runner.temp }}/dry-run-key/dry-run.pub
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload signed release set
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -418,21 +592,48 @@ jobs:
         with:
           name: release-signed
           path: out
+      - name: Download the dry-run public key
+        if: github.event_name != 'push'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dry-run-key
+          path: ${{ runner.temp }}/dry-run-key
       - name: Install verification tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends minisign upx-ucl dpkg file libfontconfig1
-      # Signature against the COMMITTED key, checksums, archive contents and
-      # modes, architecture, glibc loader / no RPATH, helper links only libc,
-      # embedded version == tag, .deb metadata, and the native CLI contract.
+          sudo apt-get install -y --no-install-recommends minisign dpkg file libfontconfig1
+      - name: Install UPX ${{ env.UPX_VERSION }} (checksum-pinned)
+        run: |
+          case "$(uname -m)" in
+            x86_64) u=amd64; sum="$UPX_SHA256_AMD64" ;;
+            aarch64) u=arm64; sum="$UPX_SHA256_ARM64" ;;
+            *) echo "::error::no pinned UPX for $(uname -m)"; exit 1 ;;
+          esac
+          d="upx-${UPX_VERSION}-${u}_linux"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$d.tar.xz" \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/$d.tar.xz"
+          echo "${sum}  /tmp/$d.tar.xz" | sha256sum -c -
+          sudo tar -xJf "/tmp/$d.tar.xz" -C /usr/local/bin --strip-components=1 "$d/upx"
+          rm -f "/tmp/$d.tar.xz"
+          upx --version | head -n 1
+      # Signature against the COMMITTED key (the throwaway key on a dry run),
+      # checksums, archive contents and modes, architecture, glibc loader / no
+      # RPATH / glibc baseline, helper links only libc, embedded version ==
+      # tag, .deb metadata, and the native CLI contract.
       - name: scripts/verify-release.sh --strict --run
-        run: bash scripts/verify-release.sh --strict --run --tag "$GITHUB_REF_NAME" out
+        run: |
+          key=()
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            key=(--pubkey "$RUNNER_TEMP/dry-run-key/dry-run.pub")
+          fi
+          bash scripts/verify-release.sh --strict --run --tag "$RELEASE_TAG" "${key[@]}" out
 
   # ---------------------------------------------------------------- publish
   publish:
     name: Publish release
-    needs: [version, lint, test, audit, namespace, arm64-tarball, x86_64, smoke, e2e, sign, verify]
-    if: ${{ success() }}
+    needs: [version, lint, test, audit, namespace, build, smoke, e2e, sign, verify]
+    # Only a pushed v* tag publishes; a dry run stops after `verify`.
+    if: ${{ success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -442,7 +643,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$NEEDS" | jq -e 'to_entries | length == 11 and all(.value.result == "success")' >/dev/null \
+          echo "$NEEDS" | jq -e 'to_entries | length == 10 and all(.value.result == "success")' >/dev/null \
             || { echo "::error::release gate not satisfied"; echo "$NEEDS" | jq .; exit 1; }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

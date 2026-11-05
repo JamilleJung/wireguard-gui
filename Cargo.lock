@@ -5544,7 +5544,7 @@ dependencies = [
 
 [[package]]
 name = "wireguard-gui"
-version = "1.9.3"
+version = "1.10.0"
 dependencies = [
  "arboard",
  "i-slint-backend-testing",
