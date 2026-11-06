@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Redaction keeps the directive name of a `Key = value` line and hides only
+  its value, so a redacted preview always shows a root `PostUp`/`PreDown`
+  hook, even when its command mentions a key (found by fuzzing; hooks were
+  still detected and refused, but the preview could hide the line).
+- Redaction keeps line endings, so redacting text twice gives the same result.
+
 ## [1.10.0] - 2026-11-05
 
 ### Security and networking
