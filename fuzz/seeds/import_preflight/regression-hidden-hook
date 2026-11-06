@@ -1,0 +1,6 @@
+# TESTµ/µµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµel.
+# Never use (this file for a re΅l tunnel. Regenerate: scripts/gen-fixtures.sh
+[Interface]
+PrivateKey = QUjbxkJ8xq3i/UrojwckMLjmNhHOtDCkUAPkLv2L9Tw=
+Address = 10.0.0.2/32
+PostUp = iptables -A FORWARD -i %ikJ8xq3i/UrojwckMγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγinvalid private keyγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγγLjmNhHOtDCkUAPkLv2L9Tw=
