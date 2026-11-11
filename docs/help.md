@@ -112,7 +112,7 @@ When the rules go missing or stale on an active tunnel, a red banner says that t
 
 Good to know:
 
-- The kill switch is temporary: its rules and the record that you asked for it live in the kernel and under /run, so both are gone after a reboot. Quitting the app does not remove them.
+- The kill switch is temporary, NOT persistent. Quitting the app keeps it. Deactivating, deleting or renaming the tunnel turns it off, and activating again does not turn it back on: tick Kill switch again. A reboot clears it, even for a tunnel that starts on boot. While the app is not running, nothing repairs it after a firewall reload. To block traffic from boot or whenever no tunnel is up, use your own persistent firewall.
 - Deactivating, deleting or renaming the tunnel keeps protection in place while the interface is still up or its state is unknown, and reports what went wrong.
 - If the interface disappears without a disconnect, the rules keep blocking traffic (status mismatch) until you disconnect.
 - Editing a connected tunnel keeps the kill switch working: the running firewall mark and listen port are kept, a FwMark change needs a reconnect, and the switch is checked and repaired afterwards.

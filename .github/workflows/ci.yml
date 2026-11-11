@@ -223,7 +223,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Cargo.toml, Cargo.lock, CHANGELOG and packaging agree
+      - name: Cargo.toml, Cargo.lock, CHANGELOG, packaging and docs agree
         run: bash scripts/check-version.sh
 
   msrv:

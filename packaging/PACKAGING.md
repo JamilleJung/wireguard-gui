@@ -190,7 +190,7 @@ enrollment instructions and source-versus-binary archive layout. Follow
 [release automation](../docs/RELEASES.md#how-releases-are-built) and keep the
 committed public signing key consistent with the release signing secret.
 
-## 1.9.3 compatibility and validation
+## Install prefix and helper validation
 
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
 path containing only letters, digits, `/`, `_`, `.` and `-`, with no empty,
