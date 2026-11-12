@@ -1,6 +1,6 @@
 # 📦 Releases
 
-Current published release: **[1.9.3 — 2026-11-02](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.9.3)**.
+Current published release: **[1.10.0 — 2026-11-05](https://github.com/JamilleJung/wireguard-gui/releases/tag/v1.10.0)**.
 This page describes current release packaging and selected historical changes.
 [CHANGELOG.md](../CHANGELOG.md) is the detailed version record. Documentation
 changes on `main` do not rebuild or replace an already published release.
@@ -9,16 +9,16 @@ changes on `main` do not rebuild or replace an already published release.
 
 Use the project's [release list](https://github.com/JamilleJung/wireguard-gui/releases)
 or [latest release](https://github.com/JamilleJung/wireguard-gui/releases/latest).
-Release 1.9.3 uses the following artifact names; AppImage is optional:
+Release 1.10.0 uses the following artifact names; AppImage is optional:
 
 | Artifact | Purpose |
 |---|---|
-| `wireguard-gui_1.9.3-1_amd64.deb` | Debian-family x86_64 application/helper, desktop assets and polkit rule |
-| `wireguard-gui-1.9.3-x86_64-linux.tar.gz` | Native Linux x86_64 application/helper and installer assets |
-| `wireguard-gui-1.9.3-aarch64-linux.tar.gz` | Native Linux ARM64 application/helper and installer assets |
-| `wireguard-gui-<version>-i686-linux.tar.gz` | Linux 32-bit x86 (i686) application/helper and installer assets (releases after 1.9.3) |
-| `wireguard-gui-<version>-armv7-linux.tar.gz` | Linux 32-bit ARMv7 hard-float (armhf) application/helper and installer assets (releases after 1.9.3) |
-| `wireguard-gui-1.9.3-x86_64.AppImage` | x86_64 AppImage; optional in the workflow, attached only when its optional build succeeds |
+| `wireguard-gui_1.10.0-1_amd64.deb` | Debian-family x86_64 application/helper, desktop assets and polkit rule |
+| `wireguard-gui-1.10.0-x86_64-linux.tar.gz` | Native Linux x86_64 application/helper and installer assets |
+| `wireguard-gui-1.10.0-aarch64-linux.tar.gz` | Native Linux ARM64 application/helper and installer assets |
+| `wireguard-gui-1.10.0-i686-linux.tar.gz` | Linux 32-bit x86 (i686) application/helper and installer assets |
+| `wireguard-gui-1.10.0-armv7-linux.tar.gz` | Linux 32-bit ARMv7 hard-float (armhf) application/helper and installer assets |
+| `wireguard-gui-1.10.0-x86_64.AppImage` | x86_64 AppImage; optional in the workflow, attached only when its optional build succeeds |
 | `SHA256SUMS` | SHA-256 digests of binary/package artifacts |
 | `SHA256SUMS.minisig` | minisign signature of the digest manifest |
 | `minisign.pub` | Public signing key, also committed in the repository |
@@ -54,8 +54,8 @@ verification the release workflow runs before publishing, against the
 committed key (never the copy shipped beside the artifacts):
 
 ```sh
-scripts/verify-release.sh --tag v1.9.3 --download             # fetch with gh, then verify
-scripts/verify-release.sh --tag v1.9.3 ~/Downloads/wg-gui     # an existing download
+scripts/verify-release.sh --tag v1.10.0 --download             # fetch with gh, then verify
+scripts/verify-release.sh --tag v1.10.0 ~/Downloads/wg-gui     # an existing download
 ```
 
 It checks the signature and trusted comment, every checksum, that each
@@ -89,7 +89,7 @@ activating an interface does not reapply them.
 
 [wireguard-tui](https://github.com/JamilleJung/wireguard-tui) is a separate
 terminal application with a related file/helper model. Both currently publish
-1.9.3, but their controls, CLI, supported artifacts and features differ. Read
+1.10.0, but their controls, CLI, supported artifacts and features differ. Read
 each project's own changelog and instructions; a matching number is not a
 promise of feature-identical behavior.
 
@@ -156,7 +156,7 @@ The AppImage uses uncompressed copies internally; extract it before inspecting
 its application/helper. Locked sources help repeat builds, but this is not a
 promise of identical binary bytes across every toolchain or distribution.
 
-## 1.9.3 behavior and upgrade checks
+## Helper, installer and update behavior
 
 Release helper discovery uses this project's own standard `/usr/local/lib/`
 and `/usr/lib/` paths, or an adjacent **trusted** executable. The executable must
@@ -213,6 +213,17 @@ using an archive created by another tool. Tests cover concrete failure paths;
 passing them does not prove compatibility with every host firewall or distro.
 
 ## Version history
+
+### 1.10.0 (2026-11-05)
+
+Kill switch moved to its own nftables table / iptables chain, never overrides
+your deny rules, allows IPv6 neighbor discovery and DHCP, survives live edits,
+and reports `missing`/`mismatch` with automatic repair and a Repair now
+button. Helper actions verify the resulting state; failed edits and restores
+no longer lose data. Adds per-peer health, full keyboard navigation and
+screen-reader labels, themes, and installer manifest, rollback and SELinux
+labeling. First release with i686 and armv7 tarballs. See the
+[changelog](../CHANGELOG.md#1100---2026-11-05) for the full list.
 
 ### 1.9.3 (2026-11-02)
 

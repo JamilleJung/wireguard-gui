@@ -5,6 +5,8 @@
 #   top released CHANGELOG.md entry (an "Unreleased" heading is skipped)
 #   packaging/aur/PKGBUILD pkgver, packaging/rpm/*.spec Version,
 #   packaging/apk/APKBUILD pkgver, packaging/void/template version
+#   the "latest/current release" lines in SECURITY.md, CONTRIBUTING.md and
+#   docs/RELEASES.md
 #   the git tag, when one is given or when running on a tag in GitHub Actions
 #
 # Usage: scripts/check-version.sh [--tag vX.Y.Z] [--root DIR]
@@ -15,7 +17,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tag=""
 
 usage() {
-    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -101,6 +103,21 @@ for spec in packaging/rpm/*.spec; do
 done
 optional_field "packaging/apk/APKBUILD pkgver" packaging/apk/APKBUILD 's/^pkgver=([^[:space:]#]+).*/\1/p'
 optional_field "packaging/void/template version" packaging/void/template 's/^version=([^[:space:]#]+).*/\1/p'
+
+# Docs that name the supported/current release must name this one. Every
+# matching line is checked, so a second stale mention is caught too.
+doc_release() {
+    # doc_release <file> <sed-expression printing the stated version>
+    local file="$1" expr="$2" value line=0
+    [ -e "$file" ] || return 0
+    while IFS= read -r value; do
+        line=$((line + 1))
+        report "$file release mention $line" "$value"
+    done < <(sed -nE "$expr" "$file")
+}
+doc_release SECURITY.md 's/.*latest release \(\*\*([^*]+)\*\*\).*/\1/p'
+doc_release CONTRIBUTING.md 's/.*latest release is \*\*([^*]+)\*\*.*/\1/p'
+doc_release docs/RELEASES.md 's/^Current (published )?release: \**\[([0-9][^] ]*).*/\2/p'
 
 if [ -n "$tag" ]; then
     if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then

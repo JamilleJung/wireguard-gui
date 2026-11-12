@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still detected and refused, but the preview could hide the line).
 - Redaction keeps line endings, so redacting text twice gives the same result.
 
+### Documentation
+
+- SECURITY, CONTRIBUTING and RELEASES named 1.9.3 as the supported release;
+  they now name 1.10.0, and `scripts/check-version.sh` (a required CI check)
+  fails when these lines disagree with `Cargo.toml`.
+- New table of what turns the kill switch off (disconnect, reboot, firewall
+  reload while the app is not running) and what keeps it on, so "not
+  persistent" can't be misread.
+- New "Shared and multi-user hosts" section: the passwordless helper grant
+  works for any program running as the granted user, and which setup fits
+  which kind of host.
+
 ## [1.10.0] - 2026-11-05
 
 ### Security and networking

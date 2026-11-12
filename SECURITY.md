@@ -10,13 +10,13 @@ page says exactly what that buys you, and what it doesn't.
 | Question | Short answer |
 |---|---|
 | Found a vulnerability? | Report it **privately**: [GitHub private vulnerability reporting](https://github.com/JamilleJung/wireguard-gui/security/advisories/new) or **izeystudio@gmail.com**. Not a public issue. |
-| Which versions get fixes? | Only the latest release (**1.9.3**) and `main`. |
+| Which versions get fixes? | Only the latest release (**1.10.0**) and `main`. |
 | Does the GUI run as root? | No. It runs as you; only the small `wg-helper` runs as root, one fixed verb per run. |
 | What can the helper be asked to do? | A fixed set of verbs on validated tunnel names: no paths, no options, no shell. |
-| Who can use it without a password? | Whoever the sudoers grant or the polkit rule (`wireguard` group + active local session) allows. They can read **every** tunnel key and manage **every** tunnel; this is not isolation between users. |
+| Who can use it without a password? | Whoever the sudoers grant or the polkit rule (`wireguard` group + active local session) allows. So can **any program running as that user**. They can read **every** tunnel key and manage **every** tunnel; this is not isolation between users. See [shared hosts](#-shared-and-multi-user-hosts). |
 | Can a config smuggle in root commands? | Not through the app: saves, imports, renames and restores refuse `PreUp`/`PostUp`/`PreDown`/`PostDown`. A hook-bearing file an administrator put in `/etc/wireguard` by hand still runs its hooks when activated; that stays the administrator's responsibility. |
 | Where are secrets exposed? | `/etc/wireguard`, user backups and exports (unencrypted, `0600`), Show QR, Running cfg, config copies and the editor. Clipboard history and screenshots can keep them. |
-| Is the kill switch a leak guarantee? | No. It is temporary host-output policy for one tunnel, gone after a reboot, and not server forwarding/NAT. |
+| Is the kill switch a leak guarantee? | No. It is temporary host-output policy for one connected tunnel. **Not persistent:** deactivating the tunnel or rebooting turns it off and nothing turns it back on. Not server forwarding/NAT. See [what survives what](#-kill-switch-scope-and-lifetime). |
 | Are updates verified? | Yes: minisign signature against the compiled-in key, then one exact checksum, then the verified installer. Nothing installs if a check fails. |
 | What can't it protect against? | Root, another process running as you, a compromised kernel or WireGuard toolchain, your editor, display, terminal, screen capture or clipboard history. |
 
@@ -32,7 +32,7 @@ Leave out real private keys and production configs; the
 Coordinated disclosure is appreciated, and you'll be kept in the loop on the
 fix.
 
-Only the latest release (**1.9.3**) and `main` receive fixes. Running something
+Only the latest release (**1.10.0**) and `main` receive fixes. Running something
 older? Please upgrade before reporting.
 
 ## 🎯 Trust and scope
@@ -52,6 +52,49 @@ prove every dependency, config or firewall environment safe.
 
 The architecture behind this boundary, with diagrams, is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#privilege-boundary).
+
+## 👥 Shared and multi-user hosts
+
+> [!WARNING]
+> The helper grant is **passwordless**. That is deliberate: the app checks
+> tunnel status in the background, and a password prompt every few seconds
+> would make it unusable. The cost is that the grant does not belong to
+> `wireguard-gui` alone. **Any program running as the granted user** can call
+> the helper without a password.
+
+Whoever holds the grant, and any process running as that user, can:
+
+- read every private and preshared key under `/etc/wireguard`, including
+  tunnels that other people set up;
+- replace or delete any managed config;
+- activate or deactivate any managed tunnel. Tunnels are system-wide, so a
+  full-tunnel config (`AllowedIPs = 0.0.0.0/0, ::/0`) carries **every user's**
+  traffic, not just yours;
+- turn on the kill switch, which blocks outgoing traffic for every user on
+  the host;
+- change which tunnels start on boot.
+
+The helper does not know who owns a tunnel; there is no per-user isolation.
+
+| Your host | Recommended setup |
+|---|---|
+| Personal laptop or desktop, one user | The default per-user sudoers grant is fine. |
+| Several people log in, only you manage VPNs | Grant only yourself. Don't add other accounts to the `wireguard` group. |
+| Several people manage VPNs | Use `--polkit` and add only trusted operators to `wireguard`. Treat each member as able to read all keys. |
+| Shared server, jump host, CI runner, or a user account that runs untrusted code | Don't install the helper grant. Manage WireGuard as root with `wg`/`wg-quick` instead. |
+
+Check and remove grants:
+
+- See who holds a grant: `sudo cat /etc/sudoers.d/wireguard-gui` and
+  `getent group wireguard`.
+- Remove one user from the polkit group: `sudo gpasswd -d USER wireguard`
+  (Alpine/BusyBox: `sudo deluser USER wireguard`); it takes effect at their
+  next login.
+- Remove everything the installer added: `./install.sh uninstall`. Your
+  configs in `/etc/wireguard` stay.
+- Review what the helper did: every mutating call writes one redacted
+  record to the system log, tagged `wireguard-gui`
+  (`journalctl -t wireguard-gui`).
 
 ## 🔑 Authorization and helper selection
 
@@ -247,6 +290,25 @@ bounds do not make arbitrary image decoders risk-free.
 </details>
 
 ## 🛑 Kill-switch scope and lifetime
+
+> [!WARNING]
+> **The kill switch is not persistent.** It protects one connected session.
+> It is not an "always block unless the VPN is up" setting, and nothing turns
+> it back on for you after a disconnect or a reboot.
+
+| When this happens | The kill switch afterwards | Traffic outside the tunnel |
+|---|---|---|
+| You quit the app (tray → Quit) | Rules stay in place | **Blocked**, but nothing repairs the rules while the app is not running |
+| A firewall reload wipes the rules, app running | `missing`; the app repairs it (red banner, up to three tries) | **Leaks** until the repair finishes |
+| A firewall reload wipes the rules, app not running | `missing` until you start the app again | **Leaks** |
+| You deactivate, delete or rename the tunnel in the app | Turned off and its record cleared | **Not blocked** |
+| You activate the tunnel again | Stays off; tick **Kill switch** again | **Not blocked** until you do |
+| The interface disappears without an app disconnect (`wg-quick down` in a shell, a crash) | Rules stay, status `mismatch` | **Blocked** (fails closed) until you deactivate in the app |
+| The machine reboots | Rules and record are gone; start-on-boot does not turn it back on | **Not blocked** |
+
+If you need traffic blocked from boot onwards, or whenever no tunnel is up,
+configure that in your own persistent firewall (nftables, firewalld, ufw).
+This kill switch does not do that.
 
 Only **one helper-managed kill switch** can be active at a time across managed
 tunnels. Turn the existing one off before enabling another. The helper requires

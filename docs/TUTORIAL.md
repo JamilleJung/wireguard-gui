@@ -328,10 +328,21 @@ If the status can't be read at all, the app says *status unknown* and disables
 the checkbox. It never pretends the switch is off.
 
 > [!IMPORTANT]
-> The kill switch is **temporary**. Its rules and the note that you asked for it
-> live in the kernel and under `/run`, so both are gone after a reboot.
-> Quitting the app doesn't remove them, and only one tunnel can own the kill
-> switch at a time: turn it off on one before turning it on for another.
+> The kill switch is **temporary**, not persistent. Its rules and the note that
+> you asked for it live in the kernel and under `/run`, so:
+>
+> - Quitting the app keeps the switch on.
+> - **Deactivating** the tunnel turns it off. **Activating** it again does not
+>   turn it back on: tick **Kill switch** again.
+> - A **reboot** clears it, even if the tunnel starts on boot.
+> - If a **firewall reload** wipes the rules while the app is **not running**,
+>   traffic can leave outside the tunnel until you start the app and it
+>   repairs the switch.
+>
+> Only one tunnel can own the kill switch at a time: turn it off on one before
+> turning it on for another. To block traffic from boot, or whenever no tunnel
+> is up, use your own persistent firewall. The full table is in
+> [SECURITY.md](../SECURITY.md#-kill-switch-scope-and-lifetime).
 
 <details>
 <summary>🔬 The nerdy details (nftables, iptables, fwmarks, IPv6)</summary>

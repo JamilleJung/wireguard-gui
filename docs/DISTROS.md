@@ -287,7 +287,7 @@ installer, packaging or helper, and on release tags. Without KVM the test
 falls back to TCG. For example, an aarch64 or x86_64 guest in Docker on an
 Apple silicon Mac takes 10 to 15 minutes.
 
-## 1.9.3 integration requirements
+## Integration requirements
 
 Before privileged writes or helper grants, `PREFIX` must be an absolute ASCII
 path containing only letters, digits, `/`, `_`, `.` and `-`, with no empty,

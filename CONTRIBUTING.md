@@ -326,7 +326,7 @@ source/prebuilt decisions without Docker. For a freshly staged tarball, also che
 its real layout:
 
 ```sh
-bash tests/installer-sanity.sh install.sh /path/to/wireguard-gui-1.9.3-x86_64-linux.tar.gz
+bash tests/installer-sanity.sh install.sh /path/to/wireguard-gui-1.10.0-x86_64-linux.tar.gz
 ```
 
 ### Release checks and dry runs
