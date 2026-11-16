@@ -19,7 +19,7 @@ path = "src/bin/wg-helper/main.rs"
 
 [dependencies]
 slint = "1"
-rfd = "0.17"
+rfd = "0.18"
 libc = "0.2"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 qrcode = { version = "0.14", default-features = false }
